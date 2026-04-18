@@ -179,12 +179,20 @@ func TestPowerLevels(t *testing.T) {
 				"users": map[string]string{},
 			}),
 		)
+		expectedStatus := 403
+		if roomVer >= 12 {
+			expectedStatus = 200
+		}
 		must.MatchResponse(t, res, match.HTTPResponse{
-			StatusCode: 403,
+			StatusCode: expectedStatus,
 		})
 
-		// Test if the old state still exists
+		// Test if the state was updated (V12) or rejected (V11)
 		content := alice.MustGetStateEventContent(t, roomID, "m.room.power_levels", "")
-		must.MatchGJSON(t, content, match.JSONKeyMissing("users"))
+		if roomVer >= 12 {
+			must.MatchGJSON(t, content, match.JSONKeyEqual("users", map[string]interface{}{}))
+		} else {
+			must.MatchGJSON(t, content, match.JSONKeyMissing("users"))
+		}
 	})
 }
