@@ -1,6 +1,7 @@
 package csapi_tests
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -97,16 +98,22 @@ func TestRoomMembers(t *testing.T) {
 			// Sync to make sure bob has joined
 			bob.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
+			roomVersion := alice.GetDefaultRoomVersion(t)
+			roomVer, _ := strconv.Atoi(string(roomVersion))
+			usersMap := map[string]interface{}{
+				bob.UserID: 100,
+			}
+			if roomVer < 12 {
+				usersMap[alice.UserID] = 100
+			}
+
 			stateKey := ""
 			alice.SendEventSynced(t, roomID, b.Event{
 				Type:     "m.room.power_levels",
 				StateKey: &stateKey,
 				Content: map[string]interface{}{
 					"invite": 100,
-					"users": map[string]interface{}{
-						alice.UserID: 100,
-						bob.UserID:   100,
-					},
+					"users":  usersMap,
 				},
 			})
 
