@@ -2,6 +2,7 @@ package csapi_tests
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -27,9 +28,8 @@ func TestDemotingUsersViaUsersDefault(t *testing.T) {
 		"preset": "public_chat",
 		"power_level_content_override": map[string]interface{}{
 			"users_default": 100, // the default is 0
-			"users": map[string]interface{}{
-				alice.UserID: 100,
-			},
+			// omit alice from users, as v12 explicitly privileges creators
+			"users": map[string]interface{}{},
 			"events":        map[string]int64{},
 			"notifications": map[string]int64{},
 		},
@@ -40,9 +40,8 @@ func TestDemotingUsersViaUsersDefault(t *testing.T) {
 		StateKey: b.Ptr(""),
 		Content: map[string]interface{}{
 			"users_default": 40, // we change the default to 40. We should be able to do this.
-			"users": map[string]interface{}{
-				alice.UserID: 100,
-			},
+			// omit alice from users, as v12 explicitly privileges creators
+			"users": map[string]interface{}{},
 			"events":        map[string]int64{},
 			"notifications": map[string]int64{},
 		},
@@ -94,6 +93,13 @@ func TestPowerLevels(t *testing.T) {
 				userDefault := int(body.Get("users_default").Num)
 				thisUser := int(body.Get("users." + client.GjsonEscape(alice.UserID)).Num)
 
+				roomVersion := alice.GetDefaultRoomVersion(t)
+				roomVer, _ := strconv.Atoi(string(roomVersion))
+				if roomVer >= 12 {
+					// In V12, creators are implicitly privileged and aren't necessarily listed in users
+					return nil
+				}
+
 				if thisUser > userDefault {
 					return nil
 				} else {
@@ -105,13 +111,19 @@ func TestPowerLevels(t *testing.T) {
 
 	// sytest: PUT /rooms/:room_id/state/m.room.power_levels can set levels
 	t.Run("PUT /rooms/:room_id/state/m.room.power_levels can set levels", func(t *testing.T) {
+		roomVersion := alice.GetDefaultRoomVersion(t)
+		roomVer, _ := strconv.Atoi(string(roomVersion))
+		usersMap := map[string]interface{}{
+			"@random-other-user:their.home": 20.0,
+		}
+		if roomVer < 12 {
+			usersMap[alice.UserID] = 100.0
+		}
+
 		// note: these need to be floats to allow a roundtrip comparison
 		PLContent := map[string]interface{}{
 			"invite": 100.0,
-			"users": map[string]interface{}{
-				alice.UserID:                    100.0,
-				"@random-other-user:their.home": 20.0,
-			},
+			"users": usersMap,
 		}
 
 		eventId := alice.SendEventSynced(t, roomID, b.Event{
@@ -135,14 +147,19 @@ func TestPowerLevels(t *testing.T) {
 
 	// sytest: PUT power_levels should not explode if the old power levels were empty
 	t.Run("PUT power_levels should not explode if the old power levels were empty", func(t *testing.T) {
+		roomVersion := alice.GetDefaultRoomVersion(t)
+		roomVer, _ := strconv.Atoi(string(roomVersion))
+		usersMap := map[string]interface{}{}
+		if roomVer < 12 {
+			usersMap[alice.UserID] = 100
+		}
+
 		// Absence of an "events" key
 		alice.SendEventSynced(t, roomID, b.Event{
 			Type:     "m.room.power_levels",
 			StateKey: b.Ptr(""),
 			Content: map[string]interface{}{
-				"users": map[string]interface{}{
-					alice.UserID: 100,
-				},
+				"users": usersMap,
 			},
 		})
 
