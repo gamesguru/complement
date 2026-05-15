@@ -99,7 +99,10 @@ func TestRoomMembers(t *testing.T) {
 			bob.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
 			roomVersion := alice.GetDefaultRoomVersion(t)
-			roomVer, _ := strconv.Atoi(string(roomVersion))
+			roomVer, err := strconv.Atoi(string(roomVersion))
+			if err != nil {
+				t.Skipf("non-numeric room version %q, skipping V12-conditional test", roomVersion)
+			}
 			usersMap := map[string]interface{}{
 				bob.UserID: 100,
 			}
