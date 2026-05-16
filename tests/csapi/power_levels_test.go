@@ -105,24 +105,18 @@ func TestPowerLevels(t *testing.T) {
 
 			func(body gjson.Result) error {
 				userDefault := int(body.Get("users_default").Num)
-				thisUser := int(body.Get("users." + client.GjsonEscape(alice.UserID)).Num)
+				thisUserRes := body.Get("users." + client.GjsonEscape(alice.UserID))
 
 				roomVersion := alice.GetDefaultRoomVersion(t)
 				roomVer, err := strconv.Atoi(string(roomVersion))
 				if err != nil {
 					return nil // non-numeric version, skip assertion
 				}
-				if roomVer >= 12 {
-					// In V12, creators are implicitly privileged via the create event,
-					// so they may not appear in "users". Verify the creator can still
-					// act with elevated privileges (the room was created successfully).
-					if userDefault > 0 {
-						// Creator should still work even when not listed
-						return nil
-					}
-					return nil
+				if roomVer >= 12 && !thisUserRes.Exists() {
+					return nil // In V12+, creators are implicitly privileged and may be absent from 'users'
 				}
 
+				thisUser := int(thisUserRes.Num)
 				if thisUser > userDefault {
 					return nil
 				} else {
@@ -149,7 +143,7 @@ func TestPowerLevels(t *testing.T) {
 		// note: these need to be floats to allow a roundtrip comparison
 		PLContent := map[string]interface{}{
 			"invite": 100.0,
-			"users": usersMap,
+			"users":  usersMap,
 		}
 
 		eventId := alice.SendEventSynced(t, roomID, b.Event{
