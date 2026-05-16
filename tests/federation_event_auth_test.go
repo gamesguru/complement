@@ -80,7 +80,8 @@ func TestEventAuth(t *testing.T) {
 		t.Helper()
 		// In V12+, m.room.create is no longer an auth event for anything except itself.
 		// Since it lacks a room_id, gomatrixserverlib drops it when parsing UntrustedEvents.
-		if room.Version >= "12" {
+		ver, err := strconv.Atoi(string(room.Version))
+		if err == nil && ver >= 12 {
 			createEventID := "$" + roomID[1:]
 			var filtered []string
 			for _, id := range wantAuthEventIDs {
