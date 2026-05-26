@@ -2,6 +2,7 @@ package csapi_tests
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -23,26 +24,38 @@ func TestDemotingUsersViaUsersDefault(t *testing.T) {
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
+	roomVersion := alice.GetDefaultRoomVersion(t)
+	roomVer, err := strconv.Atoi(string(roomVersion))
+	if err != nil {
+		t.Skipf("non-numeric room version %q, skipping V12-conditional test", roomVersion)
+	}
+
+	usersMap := map[string]interface{}{}
+	if roomVer < 12 {
+		usersMap[alice.UserID] = 100
+	}
+
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{
 		"preset": "public_chat",
 		"power_level_content_override": map[string]interface{}{
 			"users_default": 100, // the default is 0
-			"users": map[string]interface{}{
-				alice.UserID: 100,
-			},
+			"users":         usersMap,
 			"events":        map[string]int64{},
 			"notifications": map[string]int64{},
 		},
 	})
+
+	updatedUsersMap := map[string]interface{}{}
+	if roomVer < 12 {
+		updatedUsersMap[alice.UserID] = 100
+	}
 
 	alice.SendEventSynced(t, roomID, b.Event{
 		Type:     "m.room.power_levels",
 		StateKey: b.Ptr(""),
 		Content: map[string]interface{}{
 			"users_default": 40, // we change the default to 40. We should be able to do this.
-			"users": map[string]interface{}{
-				alice.UserID: 100,
-			},
+			"users":         updatedUsersMap,
 			"events":        map[string]int64{},
 			"notifications": map[string]int64{},
 		},
@@ -92,8 +105,18 @@ func TestPowerLevels(t *testing.T) {
 
 			func(body gjson.Result) error {
 				userDefault := int(body.Get("users_default").Num)
-				thisUser := int(body.Get("users." + client.GjsonEscape(alice.UserID)).Num)
+				thisUserRes := body.Get("users." + client.GjsonEscape(alice.UserID))
 
+				roomVersion := alice.GetDefaultRoomVersion(t)
+				roomVer, err := strconv.Atoi(string(roomVersion))
+				if err != nil {
+					return nil // non-numeric version, skip assertion
+				}
+				if roomVer >= 12 && !thisUserRes.Exists() {
+					return nil // In V12+, creators are implicitly privileged and may be absent from 'users'
+				}
+
+				thisUser := int(thisUserRes.Num)
 				if thisUser > userDefault {
 					return nil
 				} else {
@@ -105,13 +128,22 @@ func TestPowerLevels(t *testing.T) {
 
 	// sytest: PUT /rooms/:room_id/state/m.room.power_levels can set levels
 	t.Run("PUT /rooms/:room_id/state/m.room.power_levels can set levels", func(t *testing.T) {
+		roomVersion := alice.GetDefaultRoomVersion(t)
+		roomVer, err := strconv.Atoi(string(roomVersion))
+		if err != nil {
+			t.Skipf("non-numeric room version %q, skipping V12-conditional test", roomVersion)
+		}
+		usersMap := map[string]interface{}{
+			"@random-other-user:their.home": 20.0,
+		}
+		if roomVer < 12 {
+			usersMap[alice.UserID] = 100.0
+		}
+
 		// note: these need to be floats to allow a roundtrip comparison
 		PLContent := map[string]interface{}{
 			"invite": 100.0,
-			"users": map[string]interface{}{
-				alice.UserID:                    100.0,
-				"@random-other-user:their.home": 20.0,
-			},
+			"users":  usersMap,
 		}
 
 		eventId := alice.SendEventSynced(t, roomID, b.Event{
@@ -135,14 +167,22 @@ func TestPowerLevels(t *testing.T) {
 
 	// sytest: PUT power_levels should not explode if the old power levels were empty
 	t.Run("PUT power_levels should not explode if the old power levels were empty", func(t *testing.T) {
+		roomVersion := alice.GetDefaultRoomVersion(t)
+		roomVer, err := strconv.Atoi(string(roomVersion))
+		if err != nil {
+			t.Skipf("non-numeric room version %q, skipping V12-conditional test", roomVersion)
+		}
+		usersMap := map[string]interface{}{}
+		if roomVer < 12 {
+			usersMap[alice.UserID] = 100
+		}
+
 		// Absence of an "events" key
 		alice.SendEventSynced(t, roomID, b.Event{
 			Type:     "m.room.power_levels",
 			StateKey: b.Ptr(""),
 			Content: map[string]interface{}{
-				"users": map[string]interface{}{
-					alice.UserID: 100,
-				},
+				"users": usersMap,
 			},
 		})
 
@@ -162,12 +202,20 @@ func TestPowerLevels(t *testing.T) {
 				"users": map[string]string{},
 			}),
 		)
+		expectedStatus := 403
+		if roomVer >= 12 {
+			expectedStatus = 200
+		}
 		must.MatchResponse(t, res, match.HTTPResponse{
-			StatusCode: 403,
+			StatusCode: expectedStatus,
 		})
 
-		// Test if the old state still exists
+		// Test if the state was updated (V12) or rejected (V11)
 		content := alice.MustGetStateEventContent(t, roomID, "m.room.power_levels", "")
-		must.MatchGJSON(t, content, match.JSONKeyMissing("users"))
+		if roomVer >= 12 {
+			must.MatchGJSON(t, content, match.JSONKeyEqual("users", map[string]interface{}{}))
+		} else {
+			must.MatchGJSON(t, content, match.JSONKeyMissing("users"))
+		}
 	})
 }

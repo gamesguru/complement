@@ -214,7 +214,7 @@ func TestArchivedRoomsHistory(t *testing.T) {
 				t.Fatalf("timeline.events is not an array")
 			}
 			if len(timelineEvents.Array()) != 2 {
-				t.Fatalf("Expected two timeline events in %s", origin)
+				t.Fatalf("Expected two timeline events in %s, got: %v", origin, timelineEvents.Raw)
 			}
 
 			timelineEvent := timelineEvents.Array()[0]
