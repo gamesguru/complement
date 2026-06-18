@@ -33,10 +33,11 @@ with federation) inexplicably failing.
 
 To solve this, you will need to configure your firewall to allow such requests.
 
-If you are using [ufw](https://code.launchpad.net/ufw), this can be done with:
+If you are using [ufw](https://code.launchpad.net/ufw), this can be done by specifying your exact Docker bridge interface (e.g., `docker0` or `br-<id>`). Find the interface name using `ip link` or `ifconfig`, and then run:
 
 ```sh
-sudo ufw allow in on br-+ comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)"
+# Replace docker0 with your specific interface
+sudo ufw allow in on docker0 comment "(from Matrix Complement testing) Allow traffic from custom Docker networks to the host machine (host.docker.internal)"
 ```
 
 ### Running using Podman

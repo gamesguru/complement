@@ -26,7 +26,9 @@ func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 		LocalpartSuffix: "bob",
 		Password:        "bobpassword",
 	})
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{})
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": "10",
+	})
 
 	t.Run("parallel", func(t *testing.T) {
 		// sytest: Room creation reports m.room.create to myself
@@ -38,6 +40,7 @@ func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 					return false
 				}
 				must.Equal(t, ev.Get("sender").Str, alice.UserID, "wrong sender")
+				// The creator field was removed in room version 11 (MSC4239).
 				must.Equal(t, ev.Get("content").Get("creator").Str, alice.UserID, "wrong content.creator")
 				return true
 			}))

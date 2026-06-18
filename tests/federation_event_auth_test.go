@@ -83,7 +83,7 @@ func TestEventAuth(t *testing.T) {
 		// Since it lacks a room_id, gomatrixserverlib drops it when parsing UntrustedEvents.
 		ver, err := strconv.Atoi(string(room.Version))
 		if err == nil && ver >= 12 {
-			createEventID := "$" + roomID[1:]
+			createEventID := room.CurrentState("m.room.create", "").EventID()
 			var filtered []string
 			for _, id := range wantAuthEventIDs {
 				if id != createEventID {
