@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,6 +79,19 @@ func TestEventAuth(t *testing.T) {
 
 	getEventAuth := func(t *testing.T, eventID string, wantAuthEventIDs []string) {
 		t.Helper()
+		// In V12+, m.room.create is no longer an auth event for anything except itself.
+		// Since it lacks a room_id, gomatrixserverlib drops it when parsing UntrustedEvents.
+		ver, err := strconv.Atoi(string(room.Version))
+		if err == nil && ver >= 12 {
+			createEventID := room.CurrentState("m.room.create", "").EventID()
+			var filtered []string
+			for _, id := range wantAuthEventIDs {
+				if id != createEventID {
+					filtered = append(filtered, id)
+				}
+			}
+			wantAuthEventIDs = filtered
+		}
 		t.Logf("/event_auth for %s - want %v", eventID, wantAuthEventIDs)
 		fedClient := srv.FederationClient(deployment)
 		eventAuthResp, err := fedClient.GetEventAuth(
