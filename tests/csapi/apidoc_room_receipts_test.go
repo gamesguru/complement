@@ -7,6 +7,7 @@ import (
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
 )
 
@@ -86,6 +87,8 @@ func TestRoomReceipts(t *testing.T) {
 	})
 
 	t.Run("Receipts cannot be moved backwards", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite) // Dendrite allows read receipts to move backwards
+
 		eventID3 := sendMessageIntoRoom(t, alice, roomID)
 		eventID4 := sendMessageIntoRoom(t, alice, roomID)
 
