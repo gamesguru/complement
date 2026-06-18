@@ -52,7 +52,7 @@ var faultyEventTestCases = []FaultyEventTestCase{
 						Sender:   sender,
 						StateKey: &empty,
 						Content: map[string]interface{}{
-							"name": "This event is missing all prev_state_events so should be rejected",
+							"name": "This event is missing partial prev_state_events so should be rejected",
 						},
 						PrevEvents: []string{room.CurrentState(spec.MRoomMember, sender).EventID()},
 					},

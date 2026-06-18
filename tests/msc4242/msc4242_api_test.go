@@ -116,8 +116,8 @@ func ServerRoomImplStateDAG(t ct.TestLike, srv *federation.Server, opts ...State
 					}
 				}
 				if len(fwdExtrems) == 0 {
-					proto.PrevStateEvents = &[]string{
-						findLastStateEventID(room),
+					if lastStateID := findLastStateEventID(room); lastStateID != "" {
+						proto.PrevStateEvents = &[]string{lastStateID}
 					}
 				} else {
 					ids := make([]string, len(fwdExtrems))
@@ -336,9 +336,11 @@ func (g *Graph) GetMissingEvents(from []string, limit int) (result []gomatrixser
 		slices.Sort(prevs)
 		queue = append(queue, prevs...)
 		for _, p := range prevs {
-			result = append(result, g.events[p])
-			if len(result) >= limit {
-				return result
+			if ev := g.events[p]; ev != nil {
+				result = append(result, ev)
+				if len(result) >= limit {
+					return result
+				}
 			}
 		}
 	}

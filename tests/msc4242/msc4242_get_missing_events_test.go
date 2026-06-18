@@ -1156,7 +1156,7 @@ func TestMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
 					return
 				}
 				must.Equal(t, slices.Equal(body.LatestEvents, []string{eventD.EventID()}), true, fmt.Sprintf(
-					"unexpected latest events (expected event D) for non-state dag request: %v", body.LatestEvents,
+					"unexpected latest events (expected event D) for state dag request: %v", body.LatestEvents,
 				))
 				// defer to the test case
 				hitGetMissingEvents.Store(true)
