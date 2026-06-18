@@ -15,7 +15,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib"
 )
 
 func TestRoomCreationReportsEventsToMyself(t *testing.T) {
@@ -27,8 +26,9 @@ func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 		LocalpartSuffix: "bob",
 		Password:        "bobpassword",
 	})
-	defaultVer := alice.GetDefaultRoomVersion(t)
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{})
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": "10",
+	})
 
 	t.Run("parallel", func(t *testing.T) {
 		// sytest: Room creation reports m.room.create to myself
@@ -41,9 +41,7 @@ func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 				}
 				must.Equal(t, ev.Get("sender").Str, alice.UserID, "wrong sender")
 				// The creator field was removed in room version 11 (MSC4239).
-				if gomatrixserverlib.MustGetRoomVersion(defaultVer).CreatorInCreateEvent() {
-					must.Equal(t, ev.Get("content").Get("creator").Str, alice.UserID, "wrong content.creator")
-				}
+				must.Equal(t, ev.Get("content").Get("creator").Str, alice.UserID, "wrong content.creator")
 				return true
 			}))
 		})
