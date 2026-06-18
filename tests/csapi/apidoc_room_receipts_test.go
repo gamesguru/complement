@@ -99,12 +99,19 @@ func TestRoomReceipts(t *testing.T) {
 		// Do a sync without timeout and check that the receipt is still at the newer event.
 		res, _ := alice.MustSync(t, client.SyncReq{TimeoutMillis: "0"})
 		ephemeral := res.Get("rooms.join." + client.GjsonEscape(roomID) + ".ephemeral.events")
+		receiptFound := false
 		for _, ev := range ephemeral.Array() {
 			if ev.Get("type").Str == "m.receipt" {
-				if ev.Get("content").Get(eventID3).Get(`m\.read`).Get(alice.UserID).Exists() {
+				if ev.Get("content").Get(client.GjsonEscape(eventID3)).Get(`m\.read`).Get(client.GjsonEscape(alice.UserID)).Exists() {
 					t.Fatalf("Server allowed read receipt to move backwards to %s", eventID3)
 				}
+				if ev.Get("content").Get(client.GjsonEscape(eventID4)).Get(`m\.read`).Get(client.GjsonEscape(alice.UserID)).Exists() {
+					receiptFound = true
+				}
 			}
+		}
+		if !receiptFound {
+			t.Fatalf("Server dropped read receipt for %s", eventID4)
 		}
 	})
 }
