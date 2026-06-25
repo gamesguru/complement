@@ -10,12 +10,15 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 // TestRoomSummaryAllowedRoomIDs checks that the /summary endpoint includes
 // allowed_room_ids for rooms with restricted join rules, and omits the field
 // for rooms that do not use restricted join rules.
 func TestRoomSummaryAllowedRoomIDs(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite) // Dendrite does not support GET /_matrix/client/v1/room_summary/... (MSC3266)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
