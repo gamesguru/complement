@@ -191,7 +191,7 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 		onGetMissingEvents(w, req)
 	}).Methods("POST")
 
-	ver := alice.GetDefaultRoomVersion(t)
+	ver := gomatrixserverlib.RoomVersion("6")
 	charlie := srv.UserID("charlie")
 	room := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
 	roomAlias := srv.MakeAliasMapping("flibble", room.RoomID)
