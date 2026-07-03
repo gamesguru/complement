@@ -251,6 +251,8 @@ func (s *server) WaitForEvent(
 }
 
 func TestPartialStateJoin(t *testing.T) {
+	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
+
 	// createMemberEvent creates a membership event for the given user
 	createMembershipEvent := func(
 		t *testing.T, signingServer *server, room *federation.ServerRoom, userId string,
