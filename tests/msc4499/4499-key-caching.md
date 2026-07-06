@@ -283,7 +283,7 @@ prove which specific key body signed what event, and when.
 
 - **No automated key ID collision recovery.** Unlike some protocols that provide
   key-reset ceremonies or trusted-third-party recovery, Matrix provides no
-  automated mechanism, since it conflicts the zero-trust federation model.
+  automated mechanism, since it conflicts with the zero-trust federation model.
 
 - **Permanent key-body storage.** The permanent binding requirement means
   servers must retain key-body records indefinitely, proportional to the number

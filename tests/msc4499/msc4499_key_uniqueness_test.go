@@ -63,8 +63,12 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	if m.shouldCollide {
-		_, colPriv, _ := ed25519.GenerateKey(rand.Reader)
-		colPub := colPriv.Public().(ed25519.PublicKey)
+		colPub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(err.Error()))
+			return
+		}
 
 		rawJSON := fmt.Sprintf(`{
 			"server_name": "%s",
@@ -211,9 +215,9 @@ func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
 	mockKeyServer.verifyKeys[keyID] = pubKeyB
 	mockKeyServer.mu.Unlock()
 
-	// Query notary again with higher minimum_valid_until_ts to trigger a re-fetch.
+	// Query notary again with minimum_valid_until_ts greater than the cached valid_until_ts to force a re-fetch.
 	// Even on re-fetch, hs1 MUST reject the colliding Keypair B and stick to the first seen Keypair A.
-	minValidUntil := time.Now().Add(12 * time.Hour).UnixMilli()
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil, base64.RawStdEncoding.EncodeToString(pubKeyA))
 }
 
