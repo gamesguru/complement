@@ -506,7 +506,6 @@ func TestHistoricalEventVerification(t *testing.T) {
 
 	// Create a remote homeserver with standard federation handlers
 	srv := federation.NewServer(t, deployment,
-		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
