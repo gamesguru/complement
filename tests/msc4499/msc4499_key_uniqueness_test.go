@@ -23,7 +23,6 @@ import (
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 )
 
 type MockKeyServer struct {
@@ -168,7 +167,6 @@ func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName 
 
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -292,7 +290,6 @@ func TestKeyRotation(t *testing.T) {
 
 // Test that key ID collisions in a single payload are strictly rejected.
 func TestIntraPayloadRejection(t *testing.T) {
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -343,7 +340,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 	bodyBytes, err := json.Marshal(reqBody)
 	must.NotError(t, "failed to marshal notary query", err)
 
-	// 1. Control Case: Well-formed, non-colliding payload. This MUST succeed with 200 OK.
+	// Control Case: Well-formed, non-colliding payload. This MUST succeed with 200 OK.
 	respControl, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
 	must.NotError(t, "failed to POST notary query control", err)
 	defer respControl.Body.Close()
@@ -352,7 +349,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 		t.Fatalf("Control case: hs1 returned non-200 status %d for well-formed key response", respControl.StatusCode)
 	}
 
-	// 2. Collision Case: Enable collision, which MUST be strictly rejected.
+	// Collision Case: Enable collision, which MUST be strictly rejected.
 	mockKeyServer.mu.Lock()
 	mockKeyServer.shouldCollide = true
 	mockKeyServer.mu.Unlock()
@@ -370,7 +367,6 @@ func TestIntraPayloadRejection(t *testing.T) {
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func TestKeyFetchCoalescing(t *testing.T) {
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -516,7 +512,6 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 
 // Test that event signature validation respects the key's validity window (expired_ts).
 func TestHistoricalEventVerification(t *testing.T) {
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
