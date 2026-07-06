@@ -23,6 +23,7 @@ import (
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 type MockKeyServer struct {
@@ -167,6 +168,7 @@ func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName 
 
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -290,6 +292,7 @@ func TestKeyRotation(t *testing.T) {
 
 // Test that key ID collisions in a single payload are strictly rejected.
 func TestIntraPayloadRejection(t *testing.T) {
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -319,7 +322,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    time.Now().Add(24 * time.Hour),
-		shouldCollide: true,
+		shouldCollide: false, // Start as false for control case
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
@@ -340,6 +343,20 @@ func TestIntraPayloadRejection(t *testing.T) {
 	bodyBytes, err := json.Marshal(reqBody)
 	must.NotError(t, "failed to marshal notary query", err)
 
+	// 1. Control Case: Well-formed, non-colliding payload. This MUST succeed with 200 OK.
+	respControl, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query control", err)
+	defer respControl.Body.Close()
+
+	if respControl.StatusCode != 200 {
+		t.Fatalf("Control case: hs1 returned non-200 status %d for well-formed key response", respControl.StatusCode)
+	}
+
+	// 2. Collision Case: Enable collision, which MUST be strictly rejected.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.shouldCollide = true
+	mockKeyServer.mu.Unlock()
+
 	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp.Body.Close()
@@ -353,6 +370,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func TestKeyFetchCoalescing(t *testing.T) {
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -469,6 +487,9 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp.Body.Close()
 
+	// Wait for any deferred retries or background tasks from the first query to settle (quiescence)
+	time.Sleep(100 * time.Millisecond)
+
 	// Unblock mock key server
 	mockKeyServer.mu.Lock()
 	mockKeyServer.shouldFail = false
@@ -479,6 +500,9 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 	resp2, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp2.Body.Close()
+
+	// Allow a small window for any asynchronous/racy network requests to land
+	time.Sleep(100 * time.Millisecond)
 
 	mockKeyServer.mu.Lock()
 	reqCount := mockKeyServer.requestCount
@@ -492,6 +516,7 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 
 // Test that event signature validation respects the key's validity window (expired_ts).
 func TestHistoricalEventVerification(t *testing.T) {
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -506,15 +531,6 @@ func TestHistoricalEventVerification(t *testing.T) {
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
-	// Create a public room on srv
-	ver := alice.GetDefaultRoomVersion(t)
-	charlie := srv.UserID("charlie")
-	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
-	roomAlias := srv.MakeAliasMapping("historical_test", serverRoom.RoomID)
-
-	// Join hs1 to the room
-	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
-
 	// Generate key pairs
 	pubKeyActive, privKeyActive, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate active key", err)
@@ -524,6 +540,10 @@ func TestHistoricalEventVerification(t *testing.T) {
 
 	keyIDActive := gomatrixserverlib.KeyID("ed25519:msc4499_active")
 	keyIDExpired := gomatrixserverlib.KeyID("ed25519:msc4499_expired")
+
+	// Set srv active identity before creating the room so that room events are signed by our active key ID
+	srv.KeyID = keyIDActive
+	srv.Priv = privKeyActive
 
 	// Create our custom MockKeyServer that serves KeyActive,
 	// and KeyExpired under old_verify_keys with a dynamic expired_ts.
@@ -550,6 +570,15 @@ func TestHistoricalEventVerification(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Create a public room on srv
+	ver := alice.GetDefaultRoomVersion(t)
+	charlie := srv.UserID("charlie")
+	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	roomAlias := srv.MakeAliasMapping("historical_test", serverRoom.RoomID)
+
+	// Join hs1 to the room
+	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 
 	// Phase 1: Send a message signed by KeyExpired while it is still valid (expired_ts in the future)
 	// Temporarily set srv identity to KeyExpired so MustCreateEvent signs with it
