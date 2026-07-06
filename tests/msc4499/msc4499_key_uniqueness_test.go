@@ -344,19 +344,10 @@ func TestIntraPayloadRejection(t *testing.T) {
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp.Body.Close()
 
+	// Since the fetched key response payload is rejected as malformed due to collisions,
+	// hs1 MUST fail the notary query with a non-200 status code (e.g. 502 Bad Gateway / 500 Internal Error).
 	if resp.StatusCode == 200 {
-		respBytes, err := io.ReadAll(resp.Body)
-		must.NotError(t, "failed to read response", err)
-		result := gjson.ParseBytes(respBytes)
-		serverKeys := result.Get("server_keys").Array()
-		for _, sk := range serverKeys {
-			if sk.Get("server_name").Str == string(originName) {
-				foundKey := sk.Get("verify_keys." + client.GjsonEscape(string(keyID)) + ".key").Str
-				if foundKey != "" {
-					t.Fatalf("hs1 accepted a malformed/colliding intra-payload key response and returned key: %s", foundKey)
-				}
-			}
-		}
+		t.Fatalf("hs1 returned 200 OK for a query where the fetched key payload was malformed/colliding")
 	}
 }
 
