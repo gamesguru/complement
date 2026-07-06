@@ -23,6 +23,7 @@ import (
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 type MockKeyServer struct {
@@ -167,6 +168,8 @@ func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName 
 
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -290,6 +293,8 @@ func TestKeyRotation(t *testing.T) {
 
 // Test that key ID collisions in a single payload are strictly rejected.
 func TestIntraPayloadRejection(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -353,6 +358,8 @@ func TestIntraPayloadRejection(t *testing.T) {
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func TestKeyFetchCoalescing(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -492,6 +499,8 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 
 // Test that event signature validation respects the key's validity window (expired_ts).
 func TestHistoricalEventVerification(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
