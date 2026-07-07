@@ -365,6 +365,60 @@ func TestIntraPayloadRejection(t *testing.T) {
 	}
 }
 
+// Test that identical key material appearing in both verify_keys and old_verify_keys
+// under the same key ID is accepted. MSC4499 explicitly states: "The same key body
+// appearing under one key ID in both verify_keys and old_verify_keys is legal."
+// This is a common benign artifact during key rotation grace periods and MUST be accepted.
+func TestIdenticalCrossMapKeyIsLegal(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_crossmap")
+	pubKeyBase64 := base64.RawStdEncoding.EncodeToString(pubKey)
+
+	// Serve a payload where the same key ID has IDENTICAL key material
+	// in both verify_keys and old_verify_keys. This is explicitly legal.
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyID,
+		privKey:    privKey,
+		pubKey:     pubKey,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKey,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			keyID: {
+				VerifyKey: gomatrixserverlib.VerifyKey{
+					Key: spec.Base64Bytes(pubKey),
+				},
+				ExpiredTS: spec.AsTimestamp(time.Now().Add(-1 * time.Hour)),
+			},
+		},
+		validUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Query the notary — this MUST succeed. The identical cross-map key is legal.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyBase64)
+}
+
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func TestKeyFetchCoalescing(t *testing.T) {
 	deployment := complement.Deploy(t, 1)

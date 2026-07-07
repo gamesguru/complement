@@ -49,9 +49,10 @@ single inbound message or request if a valid key is already cached locally.
 **Negative caching and backoff.** Servers MUST cache fetch failures. A dead or
 unreachable remote server can cause fetch storms if every inbound event or
 reference triggers a fresh network request. Servers MUST implement exponential
-backoff (e.g., starting at 1 minute, capping at 1 hour) per remote server for
-failed key fetches. An inbound federation request whose authentication
-_requires_ a key fetch for the backoff-listed server SHOULD permit one immediate
+backoff per remote server for failed key fetches. Servers MUST NOT re-fetch a
+failed server's keys within 60 seconds of the last failure, up to a recommended
+cap of 1 hour. An inbound federation request whose authentication _requires_ a
+key fetch for the backoff-listed server SHOULD permit one immediate
 (rate-limited) fetch attempt. Implementations SHOULD coalesce concurrent
 outgoing key fetch requests for the same remote domain into a single active HTTP
 request to prevent network saturation. If that fetch succeeds and the request
@@ -144,7 +145,24 @@ multiple different public key bodies for the same key ID (e.g., across
 The same key body appearing under one key ID in both `verify_keys` and
 `old_verify_keys` is legal. If a receiving server detects a key ID collision
 within a single HTTP response, the entire response MUST be rejected as
-malformed.
+malformed. When a notary server rejects an upstream key response as malformed
+under this rule, the affected server MUST be omitted from the `server_keys`
+array in the notary's response (HTTP 200 with the key absent). The notary MUST
+NOT convert an upstream payload rejection into a non-200 status code, as this
+would break batch queries where only a subset of queried servers returned
+malformed payloads. When a direct fetch (`/_matrix/key/v2/server`) is rejected
+as malformed, the server MUST treat it as a fetch failure for purposes of
+negative caching and backoff.
+
+Implementations MUST employ a JSON parser or pre-processing step capable of
+detecting duplicate keys within a single JSON object for key response payloads
+(`/_matrix/key/v2/server` and `/_matrix/key/v2/query` responses), as standard
+JSON parsers in most languages silently deduplicate them. This requirement is
+specific to key response payloads due to their cryptographic sensitivity; it
+does not impose a general duplicate-key detection mandate on all Matrix JSON
+parsing. The cross-map collision check (same key ID appearing in both
+`verify_keys` and `old_verify_keys` with different key material) MUST be
+implemented regardless.
 
 **First Seen Wins.** The collision detection rule follows a strict **First Seen
 Wins** policy. The first public key body observed for a given
@@ -400,6 +418,17 @@ requirements that can be readily adopted. No API endpoints substantially change.
 - None. This MSC is independent of other proposals. It applies to `ed25519` keys
   today. It will apply equally to `fn-dsa-512` keys if accepted into the spec
   and if this document is not superseded by a refined or more encompassing MSC.
+
+## Open questions
+
+- **Role of community ban lists / Draunir / ACLs:**
+  - With First Seen Wins locally isolating a misconfigured server, how do external
+    moderation tools interact with this? If a server cannot federate due to a key mismatch,
+    do tools like Draunir see this as a temporary outage or something that triggers
+    administrative alerts? Furthermore, could room ACLs be used maliciously to force
+    a cache eviction or bypass the First Seen Wins rule?
+  - Should community ban lists play a role in banning servers where reasonable grounds
+    for suspecting bulk or spam generation of keys is known?
 
 ## Backwards compatibility
 
