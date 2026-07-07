@@ -25,10 +25,23 @@ This MSC standardizes signing key caching requirements, introduces a strict
 This MSC strengthens and supersedes the existing key caching and verification
 rules defined in the Matrix specification (specifically the
 [Server-Server API § Retrieving server keys](https://spec.matrix.org/v1.18/server-server-api/#retrieving-server-keys)
-and the notary query endpoint). In particular, this proposal upgrades the
-existing `SHOULD` caching guidance to `MUST`, formalizes the `valid_until_ts`
-7-day validity clamp as a normative cache constraint, and replaces any implicit
-"trial verification" logic with a strict 1:1 key ID uniqueness requirement.
+and the notary query endpoint).
+
+Specifically, this proposal introduces the following net-new behaviors that
+current implementations do not natively enforce:
+
+1. **First Seen Wins (FSW):** Replaces implicit "trial verification" logic with
+   a strict, permanent 1:1 key ID uniqueness requirement.
+2. **Negative Caching:** Upgrades the existing `SHOULD` caching guidance to a
+   `MUST`, and introduces formal exponential backoff constraints for failures.
+3. **Payload Sanitization:** Mandates the rejection of payloads containing
+   identical key IDs with differing key material, and requires duplicate key
+   detection within a single JSON dictionary.
+4. **Historical Validation:** Formalizes timestamp-aware key validity for
+   historical events, clarifying the role of `expired_ts`.
+
+This proposal also formalizes the `valid_until_ts` 7-day validity clamp as a
+normative cache constraint.
 
 ### Key caching requirements
 
@@ -52,11 +65,12 @@ reference triggers a fresh network request. Servers MUST implement exponential
 backoff per remote server for failed key fetches. Servers MUST NOT re-fetch a
 failed server's keys within 60 seconds of the last failure, up to a recommended
 cap of 1 hour. An inbound federation request whose authentication _requires_ a
-key fetch for the backoff-listed server SHOULD permit one immediate
-(rate-limited) fetch attempt. Implementations SHOULD coalesce concurrent
-outgoing key fetch requests for the same remote domain into a single active HTTP
-request to prevent network saturation. If that fetch succeeds and the request
-authenticates, servers SHOULD clear the backoff state.
+key fetch for the backoff-listed server (e.g., verifying X-Matrix signatures)
+SHOULD permit at most one immediate (rate-limited) fetch attempt per backoff
+interval. Implementations SHOULD coalesce concurrent outgoing key fetch requests
+for the same remote domain into a single active HTTP request to prevent network
+saturation. If that fetch succeeds and the request authenticates, servers SHOULD
+clear the backoff state.
 
 **Cache persistence.** Key caches SHOULD be persisted to durable storage (e.g.,
 database) rather than held only in memory. A server restart should not require
@@ -147,13 +161,14 @@ The same key body appearing under one key ID in both `verify_keys` and
 within a single HTTP response, the entire response MUST be rejected as
 malformed. When a notary server rejects an upstream key response as malformed
 under this rule, the malformed response MUST NOT be included in the
-`server_keys` array in the notary's response; previously-cached valid entries
-for the same server are unaffected (HTTP 200 with the malformed key absent). The
-notary MUST NOT convert an upstream payload rejection into a non-200 status
-code, as this would break batch queries where only a subset of queried servers
-returned malformed payloads. When a direct fetch (`/_matrix/key/v2/server`) is
-rejected as malformed, the server MUST treat it as a fetch failure for purposes
-of negative caching and backoff.
+`server_keys` array in the notary's response; the notary MAY continue serving
+previously-cached valid entries for that server in the same response if
+applicable (HTTP 200 with the malformed key absent). The notary MUST NOT convert
+an upstream payload rejection into a non-200 status code, as this would break
+batch queries where only a subset of queried servers returned malformed
+payloads. When a direct fetch (`/_matrix/key/v2/server`) is rejected as
+malformed, the server MUST treat it as a fetch failure for purposes of negative
+caching and backoff.
 
 Implementations MUST employ a JSON parser or pre-processing step capable of
 detecting duplicate keys within a single JSON object for key response payloads
@@ -273,17 +288,19 @@ must not be automated or triggered via inbound/outbound federation traffic.
 Cached keys, including keys retired to `old_verify_keys`, MUST be retained for
 historical PDU verification. An event signed by `algorithm:key_id` at time `T`
 (where `T` is the event's `origin_server_ts`) is valid if and only if: (1) `T`
-falls within the key's validity window (i.e., `T` is less than the key's
-`expired_ts` if present, and `T` is less than the `valid_until_ts` asserted when
-the key was active), and (2) the event signature cryptographically validates.
-The 7-day cache validity clamp restricts the window in which the key is
-authorized to sign new events, but does not invalidate historically signed
-events when verifying them years later.
+falls within the key's validity window, evaluated against the receiver's cached
+observation at the time of verification (i.e., `T` is less than the key's
+`expired_ts` if present in the cache, and `T` is less than the `valid_until_ts`
+asserted when the key was active), and (2) the event signature cryptographically
+validates. This means a key retired at the origin remains honored by peers until
+their local caches refresh. The 7-day cache validity clamp restricts the window
+in which the key is authorized to sign new events, but does not invalidate
+historically signed events when verifying them years later.
 
 Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. A future
-`expired_ts` (beyond a small clock-skew allowance) MUST be treated as malformed
-for that specific key entry, but MUST NOT poison the rest of the response
-payload.
+`expired_ts` (beyond a 5-minute clock-skew allowance) MUST be treated as
+malformed for that specific key entry, but MUST NOT poison the rest of the
+response payload.
 
 The strict key ID uniqueness requirement ensures that this lookup is always
 unambiguous: for any `(server_name, algorithm, key_id)` tuple, there is at most
@@ -385,6 +402,15 @@ prove which specific key body signed what event, and when.
   it under an existing ID). Hard rejection with operator alerting provides an
   early warning mechanism. They can also be a sign of outdated, legacy servers.
 
+- **Stolen retired keys and backdated forgeries.** The strict enforcement of
+  `expired_ts` prevents an attacker holding a compromised retired key from
+  signing fresh, current events. However, it cannot stop them from backdating
+  the `origin_server_ts` to a time before the `expired_ts` to forge plausible
+  historical events. While limiting stolen keys to backdated forgeries is still
+  a major reduction in power (and backdated events have limited utility due to
+  `prev_events` and depth constraints), `expired_ts` does not provide total
+  forward secrecy for the room history.
+
 - **Cache expiration is not binding expiration.** The `valid_until_ts` field
   governs when to _refresh_ the key endpoint, not when to _forget_ the key body.
   Servers that purge key-body bindings on `valid_until_ts` expiry create a
@@ -398,21 +424,30 @@ prove which specific key body signed what event, and when.
   on the number of cached key IDs per remote server name (e.g., 1,000 keys). If
   a remote server reaches this quota, receiving servers MUST NOT ignore new Key
   IDs permanently. Instead, they MUST evict the oldest or least-recently-used
-  expired keys (keys in `old_verify_keys` with the oldest `expired_ts`). Keys
-  currently published in the `verify_keys` section of a direct fetch MUST always
-  be prioritized and exempt from eviction. Implementations MUST rely on existing
-  federation rate-limiting to discard junk traffic before allocating database
-  records. In practice, legitimate servers publish single-digit numbers of
-  active keys at any given time; a server claiming thousands of key IDs is
-  unambiguously hostile. A future Proof-of-Work gated proposal may mitigate the
-  spurious bulk generation of keys behind Equihash or Cuckoo Cycle.
+  expired keys (keys in `old_verify_keys` with the oldest `expired_ts`). This
+  inevitably reopens collision blindness for the evicted key IDs, representing
+  an unavoidable trade-off between bounded storage and perfect permanent
+  pinning. Keys currently published in the `verify_keys` section of a direct
+  fetch MUST always be prioritized and exempt from eviction. Implementations
+  MUST rely on existing federation rate-limiting to discard junk traffic before
+  allocating database records. In practice, legitimate servers publish
+  single-digit numbers of active keys at any given time; a server claiming
+  thousands of key IDs is unambiguously hostile. A future Proof-of-Work gated
+  proposal may mitigate the spurious bulk generation of keys behind Equihash or
+  Cuckoo Cycle.
 
 ## Unstable prefix
 
 This MSC does not introduce new protocol identifiers and does not require an
-unstable prefix. The behavior changes (mandatory caching, permanent key-body
-binding, collision detection, trial verification prohibition) are implementation
-requirements that can be readily adopted. No API endpoints substantially change.
+unstable prefix. However, because strict collision rejection (First Seen Wins)
+may break federation with misconfigured servers in the wild, implementations
+SHOULD provide an initial **collision-observation phase**. During this phase,
+servers SHOULD log detected collisions (same key ID, different material) as
+warnings without rejecting the new key, allowing operators to gather real-world
+data on ecosystem breakage before switching to strict enforcement.
+Implementations are encouraged to gate strict enforcement behind a configuration
+flag (e.g., `org.matrix.msc4499_strict_caching`) during the rollout period. No
+API endpoints substantially change.
 
 ## Dependencies
 
@@ -429,7 +464,6 @@ requirements that can be readily adopted. No API endpoints substantially change.
       outage or something that triggers administrative alerts? Furthermore,
       could room ACLs be used maliciously to force a cache eviction or bypass
       the First Seen Wins rule?
-
     - Should community ban lists play a role in banning servers where reasonable
       grounds for suspecting bulk or spam generation of keys is known?
 
