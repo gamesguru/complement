@@ -1048,7 +1048,42 @@ func TestMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 
 	// Hand-craft raw JSON with a DUPLICATE key inside verify_keys.
 	// Go's json.Marshal would silently deduplicate this, so we must build it manually.
-	rawJSON := fmt.Sprintf(`{
+	// We test BOTH orderings: A-then-B and B-then-A. A server passing via
+	// signature-mismatch coincidence (parser dedup direction != signer dedup direction)
+	// will flip verdicts between orderings. Only both-orderings-rejected counts as a
+	// genuine pass.
+	keyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyDupeA)
+	keyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyDupeB)
+	orderings := []struct {
+		name   string
+		first  string
+		second string
+	}{
+		{"A-then-B", keyABase64, keyBBase64},
+		{"B-then-A", keyBBase64, keyABase64},
+	}
+
+	// Shared payload variable — handler reads from this; updated per ordering.
+	var currentPayload []byte
+	var payloadMu sync.Mutex
+
+	dupeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payloadMu.Lock()
+		payload := currentPayload
+		payloadMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(payload)
+	})
+
+	srv.Mux().Handle("/_matrix/key/v2/server", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", dupeHandler).Methods("GET")
+
+	for _, ordering := range orderings {
+		t.Run(ordering.name, func(t *testing.T) {
+
+			rawJSON := fmt.Sprintf(`{
 		"server_name": "%s",
 		"valid_until_ts": %d,
 		"verify_keys": {
@@ -1063,61 +1098,57 @@ func TestMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 			}
 		}
 	}`, originName, time.Now().Add(24*time.Hour).UnixMilli(),
-		signingKeyID, base64.RawStdEncoding.EncodeToString(pubKey),
-		dupeKeyID, base64.RawStdEncoding.EncodeToString(pubKeyDupeA),
-		dupeKeyID, base64.RawStdEncoding.EncodeToString(pubKeyDupeB), // DUPLICATE
-	)
+				signingKeyID, base64.RawStdEncoding.EncodeToString(pubKey),
+				dupeKeyID, ordering.first,
+				dupeKeyID, ordering.second, // DUPLICATE with reversed ordering
+			)
 
-	// Sign the raw JSON with the signing key
-	signedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
-	must.NotError(t, "failed to sign duplicate-key JSON", err)
+			// Sign the raw JSON with the signing key
+			signedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
+			must.NotError(t, "failed to sign duplicate-key JSON", err)
 
-	// Serve the hand-crafted duplicate-key payload
-	dupeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		w.Write(signedJSON)
-	})
+			// Update the shared payload for this ordering
+			payloadMu.Lock()
+			currentPayload = signedJSON
+			payloadMu.Unlock()
 
-	srv.Mux().Handle("/_matrix/key/v2/server", dupeHandler).Methods("GET")
-	srv.Mux().Handle("/_matrix/key/v2/server/", dupeHandler).Methods("GET")
-	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", dupeHandler).Methods("GET")
-
-	// Query the notary for the duplicate key ID — the notary fetches from our mock,
-	// gets the duplicate-key payload, and MUST reject it.
-	reqBody := map[string]interface{}{
-		"server_keys": map[string]interface{}{
-			string(originName): map[string]interface{}{
-				dupeKeyID: map[string]interface{}{
-					"minimum_valid_until_ts": 0,
+			// Query the notary for the duplicate key ID — the notary fetches from our mock,
+			// gets the duplicate-key payload, and MUST reject it.
+			reqBody := map[string]interface{}{
+				"server_keys": map[string]interface{}{
+					string(originName): map[string]interface{}{
+						dupeKeyID: map[string]interface{}{
+							"minimum_valid_until_ts": 0,
+						},
+					},
 				},
-			},
-		},
-	}
-	bodyBytes, err := json.Marshal(reqBody)
-	must.NotError(t, "failed to marshal notary query", err)
-
-	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
-	must.NotError(t, "failed to POST notary query", err)
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	must.NotError(t, "failed to read notary response", err)
-
-	// Per MSC4499: duplicate keys within a single JSON object MUST be detected and
-	// the payload rejected. The notary MUST return 200 with the key absent.
-	must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload has duplicate JSON keys")
-
-	result := gjson.ParseBytes(respBytes)
-	serverKeys := result.Get("server_keys").Array()
-	for _, sk := range serverKeys {
-		if sk.Get("server_name").Str == string(originName) {
-			foundKeyA := sk.Get("verify_keys." + client.GjsonEscape(dupeKeyID) + ".key").Str
-			if foundKeyA != "" {
-				t.Fatalf("hs1 returned the duplicate key %s in server_keys — duplicate JSON key detection is missing (key: %s)", dupeKeyID, foundKeyA)
 			}
-		}
-	}
+			bodyBytes, err := json.Marshal(reqBody)
+			must.NotError(t, "failed to marshal notary query", err)
+
+			resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+			must.NotError(t, "failed to POST notary query", err)
+			defer resp.Body.Close()
+
+			respBytes, err := io.ReadAll(resp.Body)
+			must.NotError(t, "failed to read notary response", err)
+
+			// Per MSC4499: duplicate keys within a single JSON object MUST be detected and
+			// the payload rejected. The notary MUST return 200 with the key absent.
+			must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload has duplicate JSON keys")
+
+			result := gjson.ParseBytes(respBytes)
+			serverKeys := result.Get("server_keys").Array()
+			for _, sk := range serverKeys {
+				if sk.Get("server_name").Str == string(originName) {
+					foundKeyA := sk.Get("verify_keys." + client.GjsonEscape(dupeKeyID) + ".key").Str
+					if foundKeyA != "" {
+						t.Fatalf("hs1 returned the duplicate key %s in server_keys — duplicate JSON key detection is missing (key: %s)", dupeKeyID, foundKeyA)
+					}
+				}
+			}
+		}) // end t.Run
+	} // end for orderings
 }
 
 // Test that once a key binding is confirmed via direct fetch, a subsequent direct fetch
@@ -1205,7 +1236,7 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	_, since := alice.MustSync(t, client.SyncReq{})
 
 	// Phase 2: Switch mock to serve key B for the same key ID.
-	// Set valid_until_ts to the past to force a re-fetch.
+	// Set valid_until to far future so the re-fetch satisfies any minimum_valid_until_ts.
 	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate key B", err)
 
@@ -1213,8 +1244,26 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	mockKeyServer.privKey = privKeyB
 	mockKeyServer.pubKey = pubKeyB
 	mockKeyServer.verifyKeys[keyID] = pubKeyB
-	mockKeyServer.validUntil = time.Now().Add(-1 * time.Hour) // expired, force re-fetch
+	mockKeyServer.requestCount = 0
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
 	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch via notary query with minimum_valid_until_ts beyond the
+	// cached valid_until_ts. This ensures hs1 actually hits the mock and sees key B.
+	fedHTTPClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+	minValid := time.Now().Add(25 * time.Hour).UnixMilli()
+	_ = queryNotaryRaw(t, fedHTTPClient, "https://hs1", string(srv.ServerName()), string(keyID), minValid)
+
+	// Verify the mock was actually consulted — without this, the test is vacuous
+	mockKeyServer.mu.Lock()
+	refetchCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if refetchCount == 0 {
+		t.Fatalf("Mock was never re-fetched in phase 2 — test is vacuous (hs1 used stale cache)")
+	}
 
 	// Phase 3: Send event signed by key B. hs1 may re-fetch (due to expired valid_until_ts)
 	// and get key B, but MUST reject it per FSW — key A is the permanent binding.
@@ -1416,6 +1465,23 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 	mockKeyServer.mu.Unlock()
 	if phase1Count == 0 {
 		t.Fatalf("Mock was never consulted in phase 1 — backoff path not exercised")
+	}
+
+	// Discriminating assertion: immediately re-query and prove backoff is active.
+	// A server with NO backoff would re-fetch here; one with backoff would not.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.requestCount = 0
+	mockKeyServer.mu.Unlock()
+
+	resp1b, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query (phase 1b)", err)
+	resp1b.Body.Close()
+
+	mockKeyServer.mu.Lock()
+	phase1bCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if phase1bCount > 0 {
+		t.Skipf("Server does not implement backoff — made %d request(s) during backoff window", phase1bCount)
 	}
 
 	// Phase 2: Unblock mock, set short valid_until so hs1 will try again
