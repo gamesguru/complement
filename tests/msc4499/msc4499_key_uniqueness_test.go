@@ -203,7 +203,7 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 }
 
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
-func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
+func TestMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -274,7 +274,7 @@ func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
 // Test that First Seen Wins is enforced at the event verification level, not just the notary endpoint.
 // An event signed by a colliding key B (different material for a previously-seen key ID)
 // MUST be rejected when sent via federation transaction.
-func TestFirstSeenWinsEventPath(t *testing.T) {
+func TestMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -411,7 +411,7 @@ func TestFirstSeenWinsEventPath(t *testing.T) {
 }
 
 // Test standard key rotation where old keys are retired and new keys have unique IDs.
-func TestKeyRotation(t *testing.T) {
+func TestMSC4499KeyRotation(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -481,7 +481,7 @@ func TestKeyRotation(t *testing.T) {
 // A collision is when the same key ID appears in both verify_keys and old_verify_keys
 // with DIFFERENT key material. MSC4499 requires the entire response to be rejected
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
-func TestIntraPayloadRejection(t *testing.T) {
+func TestMSC4499KeyIntraPayloadRejection(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -588,7 +588,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 // under the same key ID is accepted. MSC4499 explicitly states: "The same key body
 // appearing under one key ID in both verify_keys and old_verify_keys is legal."
 // This is a common benign artifact during key rotation grace periods and MUST be accepted.
-func TestIdenticalCrossMapKeyIsLegal(t *testing.T) {
+func TestMSC4499KeyIdenticalCrossMapIsLegal(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -639,7 +639,7 @@ func TestIdenticalCrossMapKeyIsLegal(t *testing.T) {
 }
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
-func TestKeyFetchCoalescing(t *testing.T) {
+func TestMSC4499KeyFetchCoalescing(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -743,7 +743,7 @@ func TestKeyFetchCoalescing(t *testing.T) {
 }
 
 // Test that failed key fetches are cached and subject to negative caching / backoff.
-func TestNegativeCachingAndBackoff(t *testing.T) {
+func TestMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -840,7 +840,7 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 // Two sub-cases:
 //   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
-func TestHistoricalEventVerification(t *testing.T) {
+func TestMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1017,7 +1017,7 @@ func TestHistoricalEventVerification(t *testing.T) {
 // This test hand-crafts raw JSON bytes with a literal duplicate key inside verify_keys,
 // bypassing Go's JSON marshaler (which silently deduplicates). The notary MUST reject
 // the payload and omit the colliding key from server_keys.
-func TestDuplicateJSONKeyRejection(t *testing.T) {
+func TestMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1125,7 +1125,7 @@ func TestDuplicateJSONKeyRejection(t *testing.T) {
 //
 // Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
 // Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
-func TestBindingPromotion(t *testing.T) {
+func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1276,7 +1276,7 @@ func TestBindingPromotion(t *testing.T) {
 // Per MSC4499 L423-437: implementations SHOULD enforce a limit (e.g., 1,000 keys),
 // and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
 // keys. Keys in verify_keys MUST always be prioritized and exempt from eviction.
-func TestStorageQuotaResilience(t *testing.T) {
+func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1355,7 +1355,7 @@ func TestStorageQuotaResilience(t *testing.T) {
 //
 // Note: we cannot test the full 60-second minimum in CI, so we test the
 // observable clear-on-success behavior with practical timing.
-func TestBackoffClearedOnSuccess(t *testing.T) {
+func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
