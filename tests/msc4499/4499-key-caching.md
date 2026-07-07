@@ -422,13 +422,14 @@ requirements that can be readily adopted. No API endpoints substantially change.
 ## Open questions
 
 - **Role of community ban lists / Draunir / ACLs:**
-  - With First Seen Wins locally isolating a misconfigured server, how do external
-    moderation tools interact with this? If a server cannot federate due to a key mismatch,
-    do tools like Draunir see this as a temporary outage or something that triggers
-    administrative alerts? Furthermore, could room ACLs be used maliciously to force
-    a cache eviction or bypass the First Seen Wins rule?
-  - Should community ban lists play a role in banning servers where reasonable grounds
-    for suspecting bulk or spam generation of keys is known?
+  - With First Seen Wins locally isolating a misconfigured server, how do
+    external moderation tools interact with this? If a server cannot federate
+    due to a key mismatch, do tools like Draunir see this as a temporary outage
+    or something that triggers administrative alerts? Furthermore, could room
+    ACLs be used maliciously to force a cache eviction or bypass the First Seen
+    Wins rule?
+  - Should community ban lists play a role in banning servers where reasonable
+    grounds for suspecting bulk or spam generation of keys is known?
 
 ## Backwards compatibility
 
