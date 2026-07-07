@@ -574,10 +574,7 @@ func TestIntraPayloadRejection(t *testing.T) {
 	serverKeys := result.Get("server_keys").Array()
 	for _, sk := range serverKeys {
 		if sk.Get("server_name").Str == string(originName) {
-			foundKey := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
-			if foundKey != "" {
-				t.Fatalf("hs1 returned the colliding key in server_keys — malformed payload was not rejected (key: %s)", foundKey)
-			}
+			t.Fatalf("hs1 included %s in server_keys; MSC4499 requires malformed upstream responses to be omitted from server_keys", originName)
 		}
 	}
 }
@@ -675,19 +672,60 @@ func TestKeyFetchCoalescing(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
 	// Query notary endpoint concurrently 10 times
-	var wg sync.WaitGroup
 	concurrency := 10
+	errCh := make(chan error, concurrency)
+	var wg sync.WaitGroup
 	wg.Add(concurrency)
+
+	wantKey := base64.RawStdEncoding.EncodeToString(pubKey)
+	bodyBytes, err := json.Marshal(map[string]any{
+		"server_keys": map[string]any{
+			string(originName): map[string]any{
+				string(keyID): map[string]any{"minimum_valid_until_ts": int64(0)},
+			},
+		},
+	})
+	must.NotError(t, "failed to marshal notary query", err)
 
 	for i := 0; i < concurrency; i++ {
 		go func() {
 			defer wg.Done()
-			queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKey))
+			resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != 200 {
+				errCh <- fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+				return
+			}
+			respBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			result := gjson.ParseBytes(respBytes)
+			serverKeys := result.Get("server_keys").Array()
+			var foundKey string
+			for _, sk := range serverKeys {
+				if sk.Get("server_name").Str == string(originName) {
+					foundKey = sk.Get("verify_keys." + client.GjsonEscape(string(keyID)) + ".key").Str
+				}
+			}
+			if foundKey != wantKey {
+				errCh <- fmt.Errorf("unexpected key: got %q want %q", foundKey, wantKey)
+			}
 		}()
 	}
 
 	wg.Wait()
-
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent notary query failed: %v", err)
+		}
+	}
 	mockKeyServer.mu.Lock()
 	reqCount := mockKeyServer.requestCount
 	mockKeyServer.mu.Unlock()
@@ -753,6 +791,13 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp.Body.Close()
+
+	mockKeyServer.mu.Lock()
+	initialReqCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if initialReqCount == 0 {
+		t.Fatalf("Mock key server was never consulted — negative caching/backoff code path was not exercised")
+	}
 
 	// Wait for any deferred retries or background tasks from the first query to settle (quiescence)
 	time.Sleep(100 * time.Millisecond)
