@@ -757,8 +757,14 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 	// Wait for any deferred retries or background tasks from the first query to settle (quiescence)
 	time.Sleep(100 * time.Millisecond)
 
-	// Unblock mock key server
+	// Verify Phase 1 actually hit the mock (if it didn't, the backoff assertion is vacuous)
 	mockKeyServer.mu.Lock()
+	if mockKeyServer.requestCount == 0 {
+		mockKeyServer.mu.Unlock()
+		t.Fatalf("Phase 1: mock key server was never consulted — test precondition failed")
+	}
+
+	// Unblock mock key server and reset counter for Phase 2
 	mockKeyServer.shouldFail = false
 	mockKeyServer.requestCount = 0 // reset
 	mockKeyServer.mu.Unlock()
@@ -811,25 +817,22 @@ func TestHistoricalEventVerification(t *testing.T) {
 	srv.KeyID = keyIDActive
 	srv.Priv = privKeyActive
 
-	// Create our custom MockKeyServer that serves KeyActive,
-	// and KeyExpired under old_verify_keys with a dynamic expired_ts.
+	// Create our custom MockKeyServer that serves both KeyActive and KeyExpired
+	// as active keys in verify_keys. In Phase 2 we'll rotate KeyExpired into
+	// old_verify_keys with a past expired_ts.
+	// NOTE: We do NOT put KeyExpired in old_verify_keys with a future expired_ts,
+	// because MSC4499 says a future expired_ts MUST be treated as malformed.
 	mockKeyServer := &MockKeyServer{
 		serverName: srv.ServerName(),
 		keyID:      keyIDActive,
 		privKey:    privKeyActive,
 		pubKey:     pubKeyActive,
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
-			keyIDActive: pubKeyActive,
+			keyIDActive:  pubKeyActive,
+			keyIDExpired: pubKeyExpired, // both keys are active in Phase 1
 		},
-		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
-			keyIDExpired: {
-				VerifyKey: gomatrixserverlib.VerifyKey{
-					Key: spec.Base64Bytes(pubKeyExpired),
-				},
-				ExpiredTS: spec.AsTimestamp(time.Now().Add(10 * time.Minute)), // initially valid (future expired_ts)
-			},
-		},
-		validUntil: time.Now().Add(24 * time.Hour),
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
 	}
 
 	// Register our custom key server on srv's Mux
@@ -846,8 +849,8 @@ func TestHistoricalEventVerification(t *testing.T) {
 	// Join hs1 to the room
 	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 
-	// Phase 1: Send a message signed by KeyExpired while it is still valid (expired_ts in the future)
-	// Temporarily set srv identity to KeyExpired so MustCreateEvent signs with it
+	// Phase 1: Send a message signed by KeyExpired while it is still active (in verify_keys).
+	// Temporarily set srv identity to KeyExpired so MustCreateEvent signs with it.
 	srv.KeyID = keyIDExpired
 	srv.Priv = privKeyExpired
 
@@ -865,7 +868,7 @@ func TestHistoricalEventVerification(t *testing.T) {
 	srv.KeyID = keyIDActive
 	srv.Priv = privKeyActive
 
-	// Send valid event. Since event.origin_server_ts (approx now) < expired_ts (now + 10m), hs1 MUST accept it!
+	// Send valid event. The key is currently active in verify_keys, so hs1 MUST accept it.
 	fedClient := srv.FederationClient(deployment)
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
@@ -886,8 +889,10 @@ func TestHistoricalEventVerification(t *testing.T) {
 	// Get since token after valid event is processed
 	_, since := alice.MustSync(t, client.SyncReq{})
 
-	// Phase 2: Now expire KeyExpired by setting its expired_ts to the past (now - 10m).
+	// Phase 2: Rotate KeyExpired out of verify_keys and into old_verify_keys
+	// with an expired_ts in the past (now - 10m). This simulates a key rotation.
 	mockKeyServer.mu.Lock()
+	delete(mockKeyServer.verifyKeys, keyIDExpired)
 	mockKeyServer.oldVerifyKeys[keyIDExpired] = gomatrixserverlib.OldVerifyKey{
 		VerifyKey: gomatrixserverlib.VerifyKey{
 			Key: spec.Base64Bytes(pubKeyExpired),
