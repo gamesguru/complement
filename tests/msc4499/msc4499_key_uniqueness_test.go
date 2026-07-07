@@ -250,6 +250,7 @@ func TestMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	mockKeyServer.privKey = privKeyB
 	mockKeyServer.pubKey = pubKeyB
 	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour) // perf: far future so re-fetch satisfies any minValidUntil
 	mockKeyServer.mu.Unlock()
 
 	// Query notary again with minimum_valid_until_ts beyond the cached valid_until_ts to force a re-fetch.
