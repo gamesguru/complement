@@ -1515,3 +1515,286 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 		t.Fatalf("Key not served from cache after successful fetch — got %q, want %q", foundKey2, wantKey)
 	}
 }
+
+// Test that a provisional (notary-learned) binding that has expired MUST NOT be
+// overridden by a direct fetch presenting different key material.
+//
+// Per MSC4499 L147-157: "a provisional binding MUST NOT be overridden if it has
+// already expired or been retired." A provisional key whose cached valid_until_ts
+// has passed is frozen. Any conflicting key body returned by a direct fetch for
+// that key ID MUST be rejected as a collision.
+//
+// Flow:
+//  1. Query notary → hs1 fetches key A with short valid_until_ts (provisional)
+//  2. Wait for valid_until_ts to expire
+//  3. Switch mock to serve key B for the same key ID
+//  4. Query notary with minimum_valid_until_ts forcing a re-fetch
+//  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
+func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_freeze")
+
+	// Phase 1: Serve key A with a short valid_until (2 seconds from now).
+	// The notary learns this as a provisional binding.
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(2 * time.Second),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+
+	// Phase 1: Query notary → hs1 fetches and caches key A (provisional)
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+
+	// Phase 2: Wait for valid_until_ts to expire
+	time.Sleep(3 * time.Second)
+
+	// Phase 3: Switch mock to serve key B for the same key ID.
+	// Set far-future valid_until so the re-fetch satisfies any constraint.
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
+
+	// Phase 4: Query with minimum_valid_until_ts beyond the expired cached time,
+	// forcing hs1 to re-fetch. The mock now serves key B.
+	minValidUntil := time.Now().Add(1 * time.Hour).UnixMilli()
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+
+	// Assert: key B MUST NOT be returned. The provisional binding is frozen.
+	// Acceptable outcomes:
+	//   1. key A is returned (frozen provisional — correct)
+	//   2. server is omitted from response (can't satisfy constraint — correct)
+	//   3. key B is returned (frozen provisional was overridden — VIOLATION)
+	if foundKey == pubKeyBBase64 {
+		t.Fatalf("hs1 returned colliding key B after provisional binding expired — " +
+			"Provisional Override Freeze not enforced. Expired provisional bindings " +
+			"MUST NOT be overridden by a direct fetch (MSC4499 L147-157)")
+	}
+
+	if foundKey == pubKeyABase64 {
+		t.Logf("hs1 correctly returned frozen provisional key A despite expired valid_until_ts")
+	} else if foundKey == "" {
+		t.Logf("hs1 correctly omitted the server (expired key A can't satisfy constraint, key B rejected)")
+	}
+}
+
+// Test that a key response payload with more than 50 keys in verify_keys is
+// treated as malformed/hostile and rejected entirely.
+//
+// Per MSC4499 L551-558: "If a single key response payload contains more than
+// 50 keys in its verify_keys dictionary, receiving servers MUST treat the entire
+// response payload as malformed/hostile and reject it."
+//
+// Flow:
+//  1. Serve a payload with 51 keys in verify_keys
+//  2. Query notary for the signing key
+//  3. Assert: the entire payload is rejected — signing key should NOT be found
+func TestMSC4499KeyVerifyKeysCeiling(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	sigPub, sigPriv, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate signing key", err)
+
+	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_ceiling_signer")
+
+	// Generate 51 keys in verify_keys (signing key + 50 fillers = 51 total,
+	// exceeding the 50-key ceiling).
+	numFillerKeys := 50
+	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+		sigKeyID: sigPub,
+	}
+	for i := 0; i < numFillerKeys; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, fmt.Sprintf("failed to generate filler key %d", i), err)
+		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_ceil_%04d", i))
+		verifyKeys[kid] = pub
+	}
+
+	mockKeyServer := &MockKeyServer{
+		serverName:    originName,
+		keyID:         sigKeyID,
+		privKey:       sigPriv,
+		pubKey:        sigPub,
+		verifyKeys:    verifyKeys,
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Query for the signing key. If hs1 enforces the 50-key ceiling, it should
+	// reject the entire payload and the signing key should be absent.
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0)
+
+	if foundKey != "" {
+		t.Fatalf("hs1 accepted a payload with %d verify_keys (ceiling is 50) — "+
+			"key %s was returned instead of rejecting the payload as hostile (MSC4499 L551-558)",
+			len(verifyKeys), sigKeyID)
+	}
+
+	t.Logf("hs1 correctly rejected the %d-key payload as hostile", len(verifyKeys))
+}
+
+// Test that a future expired_ts (beyond a 5-minute clock-skew allowance) is
+// treated as malformed for that specific key entry, but does NOT poison the
+// rest of the response payload.
+//
+// Per MSC4499 L351-354: "A future expired_ts (beyond a 5-minute clock-skew
+// allowance) MUST be treated as malformed for that specific key entry, but
+// MUST NOT poison the rest of the response payload."
+//
+// Flow:
+//  1. Serve a payload with two keys: key A (valid, in verify_keys) and key B
+//     (in old_verify_keys with expired_ts = now + 1 year — malformed)
+//  2. Query for key A → should be returned (payload not poisoned)
+//  3. Query for key B → should be absent (malformed entry ignored)
+func TestMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	// Key A: signing key, valid and in verify_keys
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	// Key B: in old_verify_keys with future expired_ts (malformed)
+	pubKeyB, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+
+	keyIDA := gomatrixserverlib.KeyID("ed25519:msc4499_sanity_a")
+	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_sanity_b")
+
+	// Future expired_ts: 1 year from now — clearly malformed
+	futureExpiredTs := spec.AsTimestamp(time.Now().Add(365 * 24 * time.Hour))
+
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyIDA,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyIDA: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			keyIDB: {
+				VerifyKey: gomatrixserverlib.VerifyKey{
+					Key: spec.Base64Bytes(pubKeyB),
+				},
+				ExpiredTS: futureExpiredTs,
+			},
+		},
+		validUntil: time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+
+	// Query for key A — the valid key. It MUST be returned (payload not poisoned
+	// by key B's malformed expired_ts).
+	foundKeyA := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyIDA), 0)
+	if foundKeyA != pubKeyABase64 {
+		t.Fatalf("Key A (valid) was not returned — the malformed expired_ts on key B "+
+			"appears to have poisoned the entire payload (got %q, want %q)", foundKeyA, pubKeyABase64)
+	}
+
+	// Query for key B — it has a future expired_ts and MUST be treated as malformed.
+	// The notary should not serve it in old_verify_keys.
+	// Check the raw response for key B in old_verify_keys.
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			string(originName): map[string]interface{}{
+				string(keyIDB): map[string]interface{}{
+					"minimum_valid_until_ts": 0,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary response", err)
+
+	must.Equal(t, resp.StatusCode, 200, "notary must return 200")
+
+	// Check if key B appears anywhere in old_verify_keys
+	result := gjson.ParseBytes(respBytes)
+	serverKeys := result.Get("server_keys").Array()
+	for _, sk := range serverKeys {
+		if sk.Get("server_name").Str == string(originName) {
+			foundKeyB := sk.Get("old_verify_keys." + client.GjsonEscape(string(keyIDB)) + ".key").Str
+			if foundKeyB != "" {
+				t.Fatalf("hs1 served key B (expired_ts in the future) in old_verify_keys — " +
+					"future expired_ts MUST be treated as malformed (MSC4499 L351-354)")
+			}
+		}
+	}
+
+	t.Logf("Key B (future expired_ts) correctly ignored; key A (valid) correctly served")
+}
