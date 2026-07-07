@@ -566,8 +566,10 @@ func TestIntraPayloadRejection(t *testing.T) {
 		t.Fatalf("Mock key server was never consulted — collision code path was not exercised (cache satisfied the query)")
 	}
 
-	// Per MSC4499: "the affected server MUST be omitted from the server_keys array
-	// in the notary's response (HTTP 200 with the key absent)."
+	// Per MSC4499: "the malformed response MUST NOT be included in the server_keys array
+	// in the notary's response; the notary MAY continue serving previously-cached valid entries
+	// for that server in the same response" — so we check that the colliding key is absent,
+	// not that the server is absent entirely.
 	must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload is malformed")
 
 	result := gjson.ParseBytes(respBytes)
@@ -830,6 +832,14 @@ func TestNegativeCachingAndBackoff(t *testing.T) {
 }
 
 // Test that event signature validation respects the key's validity window (expired_ts).
+// Uses a cold-cache design: keyIDExpired is never seen by hs1 until it appears in
+// old_verify_keys with a past expired_ts. This avoids the cache staleness confound
+// where hs1's cached entry would still show the key as active.
+//
+// Per MSC4499 L288-295: an event signed at time T is valid iff T < expired_ts.
+// Two sub-cases:
+//   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
+//   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func TestHistoricalEventVerification(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -855,23 +865,20 @@ func TestHistoricalEventVerification(t *testing.T) {
 	keyIDActive := gomatrixserverlib.KeyID("ed25519:msc4499_active")
 	keyIDExpired := gomatrixserverlib.KeyID("ed25519:msc4499_expired")
 
-	// Set srv active identity before creating the room so that room events are signed by our active key ID
+	// Set srv active identity to keyIDActive
 	srv.KeyID = keyIDActive
 	srv.Priv = privKeyActive
 
-	// Create our custom MockKeyServer that serves both KeyActive and KeyExpired
-	// as active keys in verify_keys. In Phase 2 we'll rotate KeyExpired into
-	// old_verify_keys with a past expired_ts.
-	// NOTE: We do NOT put KeyExpired in old_verify_keys with a future expired_ts,
-	// because MSC4499 says a future expired_ts MUST be treated as malformed.
+	// Phase 1: Mock key server serves ONLY keyIDActive in verify_keys.
+	// keyIDExpired does NOT appear anywhere — hs1 has never seen it (cold cache).
 	mockKeyServer := &MockKeyServer{
 		serverName: srv.ServerName(),
 		keyID:      keyIDActive,
 		privKey:    privKeyActive,
 		pubKey:     pubKeyActive,
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
-			keyIDActive:  pubKeyActive,
-			keyIDExpired: pubKeyExpired, // both keys are active in Phase 1
+			keyIDActive: pubKeyActive,
+			// NOTE: keyIDExpired is intentionally ABSENT — cold cache
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    time.Now().Add(24 * time.Hour),
@@ -882,96 +889,359 @@ func TestHistoricalEventVerification(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
-	// Create a public room on srv
+	// Create a public room on srv and have hs1 join.
+	// hs1 fetches keys during join, caches ONLY keyIDActive.
 	ver := alice.GetDefaultRoomVersion(t)
 	charlie := srv.UserID("charlie")
 	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
 	roomAlias := srv.MakeAliasMapping("historical_test", serverRoom.RoomID)
-
-	// Join hs1 to the room
 	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 
-	// Phase 1: Send a message signed by KeyExpired while it is still active (in verify_keys).
-	// Temporarily set srv identity to KeyExpired so MustCreateEvent signs with it.
+	// Get sync token after join
+	_, since := alice.MustSync(t, client.SyncReq{})
+
+	// Phase 2: Introduce keyIDExpired in old_verify_keys with expired_ts in the past.
+	// This is the first time hs1 will ever see this key ID — cold cache.
+	expiredTS := time.Now().Add(-1 * time.Hour)
+	mockKeyServer.mu.Lock()
+	mockKeyServer.oldVerifyKeys[keyIDExpired] = gomatrixserverlib.OldVerifyKey{
+		VerifyKey: gomatrixserverlib.VerifyKey{
+			Key: spec.Base64Bytes(pubKeyExpired),
+		},
+		ExpiredTS: spec.AsTimestamp(expiredTS), // expired 1 hour ago
+	}
+	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
+	mockKeyServer.validUntil = time.Now().Add(1 * time.Second)
+	mockKeyServer.mu.Unlock()
+
+	// Small sleep to let valid_until_ts expire so hs1 will re-fetch
+	time.Sleep(2 * time.Second)
+
+	// === Event A: Backdated origin_server_ts BEFORE expired_ts → MUST ACCEPT ===
+	// This is the legitimate "historical event verification" case: an event that was
+	// signed when the key was still active.
 	srv.KeyID = keyIDExpired
 	srv.Priv = privKeyExpired
 
+	// Build event A with a backdated origin_server_ts (2 hours before expired_ts)
+	backdatedTime := expiredTS.Add(-2 * time.Hour)
+	protoA, err := serverRoom.ProtoEventCreator(serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Historical event signed before key expired",
+		},
+	})
+	must.NotError(t, "failed to create proto event A", err)
+
+	verImpl := gomatrixserverlib.MustGetRoomVersion(serverRoom.Version)
+	eb := verImpl.NewEventBuilderFromProtoEvent(protoA)
+	eventA, err := eb.Build(backdatedTime, spec.ServerName(srv.ServerName()), srv.KeyID, srv.Priv)
+	must.NotError(t, "failed to build backdated event A", err)
+	serverRoom.AddEvent(eventA)
+
+	fedClient := srv.FederationClient(deployment)
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx()
+
+	respA, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-hist-valid-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{eventA.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for backdated historical event", err)
+	for eventID, pduResp := range respA.PDUs {
+		if pduResp.Error != "" {
+			t.Fatalf("hs1 rejected valid historical event %s (origin_server_ts before expired_ts): %s", eventID, pduResp.Error)
+		}
+	}
+
+	// === Event B: origin_server_ts = now, AFTER expired_ts → MUST REJECT ===
+	// This tests the "stolen retired key signing fresh events" case.
+	eventB := srv.MustCreateEvent(t, serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Fresh event signed by expired key — should be rejected",
+		},
+	})
+	serverRoom.AddEvent(eventB)
+
+	// Restore srv identity
+	srv.KeyID = keyIDActive
+	srv.Priv = privKeyActive
+
+	ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx2()
+
+	respB, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-hist-invalid-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{eventB.JSON()},
+	})
+
+	rejected := false
+	if err != nil {
+		rejected = true
+	} else {
+		for _, pduResp := range respB.PDUs {
+			if pduResp.Error != "" {
+				rejected = true
+				break
+			}
+		}
+	}
+
+	if !rejected {
+		// Wait and check sync to see if Alice received the invalid event
+		time.Sleep(500 * time.Millisecond)
+		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
+		for _, ev := range events {
+			if ev.Get("event_id").Str == eventB.EventID() {
+				t.Fatalf("hs1 accepted event %s signed by expired key (origin_server_ts after expired_ts) — expired_ts enforcement missing", eventB.EventID())
+			}
+		}
+	}
+}
+
+// Test that duplicate JSON keys within a single object in key response payloads
+// are detected and rejected. MSC4499 requires: "Implementations MUST employ a JSON
+// parser or pre-processing step capable of detecting duplicate keys within a single
+// JSON object for key response payloads."
+//
+// This test hand-crafts raw JSON bytes with a literal duplicate key inside verify_keys,
+// bypassing Go's JSON marshaler (which silently deduplicates). The notary MUST reject
+// the payload and omit the colliding key from server_keys.
+func TestDuplicateJSONKeyRejection(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	// Generate signing key for the mock server
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate signing key", err)
+
+	// Generate two different keys that will appear under the same key ID
+	pubKeyDupeA, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate dupe key A", err)
+	pubKeyDupeB, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate dupe key B", err)
+
+	signingKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_signer")
+	dupeKeyID := "ed25519:msc4499_dupetest"
+
+	// Hand-craft raw JSON with a DUPLICATE key inside verify_keys.
+	// Go's json.Marshal would silently deduplicate this, so we must build it manually.
+	rawJSON := fmt.Sprintf(`{
+		"server_name": "%s",
+		"valid_until_ts": %d,
+		"verify_keys": {
+			"%s": {
+				"key": "%s"
+			},
+			"%s": {
+				"key": "%s"
+			},
+			"%s": {
+				"key": "%s"
+			}
+		}
+	}`, originName, time.Now().Add(24*time.Hour).UnixMilli(),
+		signingKeyID, base64.RawStdEncoding.EncodeToString(pubKey),
+		dupeKeyID, base64.RawStdEncoding.EncodeToString(pubKeyDupeA),
+		dupeKeyID, base64.RawStdEncoding.EncodeToString(pubKeyDupeB), // DUPLICATE
+	)
+
+	// Sign the raw JSON with the signing key
+	signedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
+	must.NotError(t, "failed to sign duplicate-key JSON", err)
+
+	// Serve the hand-crafted duplicate-key payload
+	dupeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(signedJSON)
+	})
+
+	srv.Mux().Handle("/_matrix/key/v2/server", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", dupeHandler).Methods("GET")
+
+	// Query the notary for the duplicate key ID — the notary fetches from our mock,
+	// gets the duplicate-key payload, and MUST reject it.
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			string(originName): map[string]interface{}{
+				dupeKeyID: map[string]interface{}{
+					"minimum_valid_until_ts": 0,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary response", err)
+
+	// Per MSC4499: duplicate keys within a single JSON object MUST be detected and
+	// the payload rejected. The notary MUST return 200 with the key absent.
+	must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload has duplicate JSON keys")
+
+	result := gjson.ParseBytes(respBytes)
+	serverKeys := result.Get("server_keys").Array()
+	for _, sk := range serverKeys {
+		if sk.Get("server_name").Str == string(originName) {
+			foundKeyA := sk.Get("verify_keys." + client.GjsonEscape(dupeKeyID) + ".key").Str
+			if foundKeyA != "" {
+				t.Fatalf("hs1 returned the duplicate key %s in server_keys — duplicate JSON key detection is missing (key: %s)", dupeKeyID, foundKeyA)
+			}
+		}
+	}
+}
+
+// Test that once a key binding is confirmed via direct fetch, a subsequent direct fetch
+// presenting different key material for the same key ID is rejected (First Seen Wins
+// among direct observations).
+//
+// Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
+// Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
+func TestBindingPromotion(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	// Generate key A — this will be the permanent binding via direct fetch
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_binding")
+
+	// Set srv's signing identity to key A
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
+
+	// Mock key server serves key A via direct fetch
+	mockKeyServer := &MockKeyServer{
+		serverName: srv.ServerName(),
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Phase 1: Create room and join. This triggers a direct key fetch by hs1,
+	// which confirms key A as a permanent binding.
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	ver := alice.GetDefaultRoomVersion(t)
+	charlie := srv.UserID("charlie")
+	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	roomAlias := srv.MakeAliasMapping("binding_test", serverRoom.RoomID)
+	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
+
+	// Send a valid event signed by key A to confirm hs1 has pinned key A
 	eventValid := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
-			"body":    "Signed by key before it expired",
+			"body":    "Signed by key A (permanent binding)",
 		},
 	})
 	serverRoom.AddEvent(eventValid)
 
-	// Restore srv active identity
-	srv.KeyID = keyIDActive
-	srv.Priv = privKeyActive
-
-	// Send valid event. The key is currently active in verify_keys, so hs1 MUST accept it.
 	fedClient := srv.FederationClient(deployment)
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
 
 	resp, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-%d", time.Now().UnixNano())),
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-bind-valid-%d", time.Now().UnixNano())),
 		Origin:        spec.ServerName(srv.ServerName()),
 		Destination:   "hs1",
 		PDUs:          []json.RawMessage{eventValid.JSON()},
 	})
-	must.NotError(t, "SendTransaction failed for valid event", err)
+	must.NotError(t, "SendTransaction failed for key A event", err)
 	for eventID, pduResp := range resp.PDUs {
 		if pduResp.Error != "" {
-			t.Fatalf("hs1 rejected valid historical event %s: %s", eventID, pduResp.Error)
+			t.Fatalf("hs1 rejected valid event %s signed by key A: %s", eventID, pduResp.Error)
 		}
 	}
 
-	// Get since token after valid event is processed
 	_, since := alice.MustSync(t, client.SyncReq{})
 
-	// Phase 2: Rotate KeyExpired out of verify_keys and into old_verify_keys
-	// with an expired_ts in the past (now - 10m). This simulates a key rotation.
+	// Phase 2: Switch mock to serve key B for the same key ID.
+	// Set valid_until_ts to the past to force a re-fetch.
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+
 	mockKeyServer.mu.Lock()
-	delete(mockKeyServer.verifyKeys, keyIDExpired)
-	mockKeyServer.oldVerifyKeys[keyIDExpired] = gomatrixserverlib.OldVerifyKey{
-		VerifyKey: gomatrixserverlib.VerifyKey{
-			Key: spec.Base64Bytes(pubKeyExpired),
-		},
-		ExpiredTS: spec.AsTimestamp(time.Now().Add(-10 * time.Minute)), // expired (past)
-	}
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(-1 * time.Hour) // expired, force re-fetch
 	mockKeyServer.mu.Unlock()
 
-	// Clear hs1's key cache for KeyExpired so it re-fetches the updated expired_ts.
-	// Since Synapse/Dendrite might have already cached the old keys, we force a re-fetch by signing with the expired key again.
-	// Sign a new event with KeyExpired
-	srv.KeyID = keyIDExpired
-	srv.Priv = privKeyExpired
+	// Phase 3: Send event signed by key B. hs1 may re-fetch (due to expired valid_until_ts)
+	// and get key B, but MUST reject it per FSW — key A is the permanent binding.
+	srv.KeyID = keyID
+	srv.Priv = privKeyB
 
-	eventInvalid := srv.MustCreateEvent(t, serverRoom, federation.Event{
+	eventConflict := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
-			"body":    "Signed by key after it expired",
+			"body":    "Signed by key B — conflicting binding, should be rejected",
 		},
 	})
-	serverRoom.AddEvent(eventInvalid)
+	serverRoom.AddEvent(eventConflict)
 
-	// Restore srv active identity
-	srv.KeyID = keyIDActive
-	srv.Priv = privKeyActive
+	// Restore identity
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
 
-	// Send invalid event. Since event.origin_server_ts (approx now) > expired_ts (now - 10m), hs1 MUST reject it!
 	ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx2()
 
 	resp2, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-invalid-%d", time.Now().UnixNano())),
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-bind-conflict-%d", time.Now().UnixNano())),
 		Origin:        spec.ServerName(srv.ServerName()),
 		Destination:   "hs1",
-		PDUs:          []json.RawMessage{eventInvalid.JSON()},
+		PDUs:          []json.RawMessage{eventConflict.JSON()},
 	})
 
 	rejected := false
@@ -987,13 +1257,13 @@ func TestHistoricalEventVerification(t *testing.T) {
 	}
 
 	if !rejected {
-		// Wait a bit and check if Alice gets the invalid event in sync. If she did, it's a failure.
+		// Check sync — the conflicting event must NOT appear
 		time.Sleep(500 * time.Millisecond)
 		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
-			if ev.Get("event_id").Str == eventInvalid.EventID() {
-				t.Fatalf("hs1 accepted invalid historical event %s signed by expired key", eventInvalid.EventID())
+			if ev.Get("event_id").Str == eventConflict.EventID() {
+				t.Fatalf("hs1 accepted event %s signed by conflicting key B after permanent binding of key A — FSW not enforced on direct-vs-direct conflict", eventConflict.EventID())
 			}
 		}
 	}
