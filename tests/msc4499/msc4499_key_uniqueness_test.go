@@ -1327,7 +1327,7 @@ func TestStorageQuotaResilience(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
 	// Query the signing key — this forces hs1 to fetch and process the entire
-	// 1101-key payload. If the server has a quota, it must silently evict or
+	// 1001-key payload. If the server has a quota, it must silently evict or
 	// handle the overflow without error.
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
