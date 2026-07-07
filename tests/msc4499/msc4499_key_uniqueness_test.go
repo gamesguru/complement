@@ -1400,12 +1400,10 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
 
-	// Verify hs1 can still resolve the LAST filler key — if the server crashed,
-	// truncated the payload, or silently dropped new keys beyond a quota, this
-	// will fail.
-	lastPub := verifyKeys[lastKeyID]
+	// Verify hs1 can still resolve the LAST filler key
+	lastKey := oldVerifyKeys[lastKeyID]
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(lastKeyID), 0,
-		base64.RawStdEncoding.EncodeToString(lastPub))
+		base64.RawStdEncoding.EncodeToString(lastKey.Key))
 }
 
 // Test that a successful key fetch clears the backoff state for that server.
