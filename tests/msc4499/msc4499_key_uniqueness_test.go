@@ -569,17 +569,29 @@ func TestMSC4499KeyIntraPayloadRejection(t *testing.T) {
 
 	// Per MSC4499: "the malformed response MUST NOT be included in the server_keys array
 	// in the notary's response; the notary MAY continue serving previously-cached valid entries
-	// for that server in the same response" — so we check that the colliding key is absent,
-	// not that the server is absent entirely.
+	// for that server in the same response" — so the server MAY appear with the old cached
+	// controlKeyID, but the colliding payload MUST be absent.
 	must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload is malformed")
 
 	result := gjson.ParseBytes(respBytes)
 	serverKeys := result.Get("server_keys").Array()
 	for _, sk := range serverKeys {
 		if sk.Get("server_name").Str == string(originName) {
-			foundKey := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
-			if foundKey != "" {
-				t.Fatalf("hs1 returned the colliding key in server_keys — malformed payload was not rejected (key: %s)", foundKey)
+			// The colliding key ID MUST NOT appear — this is the malformed payload's key
+			foundCollide := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
+			if foundCollide != "" {
+				t.Fatalf("hs1 returned the colliding key %s in server_keys — malformed payload was not rejected (key body: %s)",
+					collideKeyID, foundCollide)
+			}
+
+			// If the server IS present, it must be the previously-cached controlKeyID entry,
+			// not any remnant of the malformed collision payload. Verify the control key is
+			// the one being served (proving this is a cached entry, not the rejected payload).
+			foundControl := sk.Get("verify_keys." + client.GjsonEscape(string(controlKeyID)) + ".key").Str
+			if foundControl == "" {
+				t.Fatalf("hs1 included server %s in server_keys but without the previously-cached control key %s — "+
+					"the entry is neither the cached valid entry nor the malformed payload (response: %s)",
+					originName, controlKeyID, string(respBytes))
 			}
 		}
 	}
@@ -1347,18 +1359,24 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 1000 filler key IDs + 1 signing key = 1001 total, just over the
-	// suggested 1,000-key quota boundary.
+	// Generate 1000 filler keys in old_verify_keys + 1 signing key in verify_keys
+	// = 1001 total, just over the suggested 1,000-key quota boundary.
 	numFillerKeys := 1000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
 	}
+	oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
 	var lastKeyID gomatrixserverlib.KeyID
 	for i := 0; i < numFillerKeys; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		must.NotError(t, fmt.Sprintf("failed to generate filler key %d", i), err)
 		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_filler_%04d", i))
-		verifyKeys[kid] = pub
+		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
+			VerifyKey: gomatrixserverlib.VerifyKey{
+				Key: spec.Base64Bytes(pub),
+			},
+			ExpiredTS: spec.AsTimestamp(time.Now().Add(time.Duration(-i) * time.Hour)),
+		}
 		lastKeyID = kid
 	}
 
@@ -1368,7 +1386,7 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 		privKey:       sigPriv,
 		pubKey:        sigPub,
 		verifyKeys:    verifyKeys,
-		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		oldVerifyKeys: oldVerifyKeys,
 		validUntil:    time.Now().Add(24 * time.Hour),
 	}
 
