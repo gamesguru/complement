@@ -271,6 +271,145 @@ func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
 }
 
+// Test that First Seen Wins is enforced at the event verification level, not just the notary endpoint.
+// An event signed by a colliding key B (different material for a previously-seen key ID)
+// MUST be rejected when sent via federation transaction.
+func TestFirstSeenWinsEventPath(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	// Generate key A — this will be the "first seen" key
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_fsw_event")
+
+	// Set srv's signing identity to key A
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
+
+	// Mock key server serves key A
+	mockKeyServer := &MockKeyServer{
+		serverName: srv.ServerName(),
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Create room and join hs1 — this pins key A via the room creation events
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	ver := alice.GetDefaultRoomVersion(t)
+	charlie := srv.UserID("charlie")
+	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	roomAlias := srv.MakeAliasMapping("fsw_event_test", serverRoom.RoomID)
+	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
+
+	// Phase 1: Send a valid event signed by key A — hs1 accepts and caches key A
+	eventValid := srv.MustCreateEvent(t, serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Signed by key A (first seen)",
+		},
+	})
+	serverRoom.AddEvent(eventValid)
+
+	fedClient := srv.FederationClient(deployment)
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx()
+
+	resp, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-fsw-valid-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{eventValid.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for valid event", err)
+	for eventID, pduResp := range resp.PDUs {
+		if pduResp.Error != "" {
+			t.Fatalf("hs1 rejected valid event %s signed by key A: %s", eventID, pduResp.Error)
+		}
+	}
+
+	// Get sync token after valid event
+	_, since := alice.MustSync(t, client.SyncReq{})
+
+	// Phase 2: Generate key B (different material, same key ID) and sign an event with it
+	_, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+
+	srv.KeyID = keyID
+	srv.Priv = privKeyB // sign with key B
+
+	eventPoisoned := srv.MustCreateEvent(t, serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Signed by key B (colliding — should be rejected)",
+		},
+	})
+	serverRoom.AddEvent(eventPoisoned)
+
+	// Restore identity to key A
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
+
+	// Send the poisoned event — hs1 MUST reject it because the signature was made by key B,
+	// but the only cached key body for this key ID is key A.
+	ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx2()
+
+	resp2, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-fsw-poisoned-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{eventPoisoned.JSON()},
+	})
+
+	rejected := false
+	if err != nil {
+		rejected = true
+	} else {
+		for _, pduResp := range resp2.PDUs {
+			if pduResp.Error != "" {
+				rejected = true
+				break
+			}
+		}
+	}
+
+	if !rejected {
+		// If no explicit rejection, check sync to see if Alice received the poisoned event
+		time.Sleep(500 * time.Millisecond)
+		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
+		for _, ev := range events {
+			if ev.Get("event_id").Str == eventPoisoned.EventID() {
+				t.Fatalf("hs1 accepted event %s signed by colliding key B — First Seen Wins not enforced at event verification level", eventPoisoned.EventID())
+			}
+		}
+	}
+}
+
 // Test standard key rotation where old keys are retired and new keys have unique IDs.
 func TestKeyRotation(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
