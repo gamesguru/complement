@@ -279,10 +279,10 @@ The 7-day cache validity clamp restricts the window in which the key is
 authorized to sign new events, but does not invalidate historically signed
 events when verifying them years later.
 
-Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. A future
-`expired_ts` (beyond a small clock-skew allowance) MUST be treated as malformed
-for that specific key entry, but does not poison the rest of the response
-payload. This should be uncommon, but servers must not use the key in this case.
+Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. An `expired_ts`
+which is implausibly far in the future (beyond a small clock-skew allowance or a
+reasonable rotation/grace window) SHOULD be treated as malformed for that specific
+key entry, but MUST NOT poison the rest of the response payload.
 
 The strict key ID uniqueness requirement ensures that this lookup is always
 unambiguous: for any `(server_name, algorithm, key_id)` tuple, there is at most
