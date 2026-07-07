@@ -165,6 +165,43 @@ func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName 
 	must.Equal(t, foundKey, expectedKeyBase64, fmt.Sprintf("Expected cached/authoritative key %s, but got %s", expectedKeyBase64, foundKey))
 }
 
+// queryNotaryRaw queries the notary and returns the key found for the given server/keyID,
+// or empty string if the server was omitted or the key was absent. Does not assert on
+// the key value, allowing callers to apply custom assertion logic.
+func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64) string {
+	t.Helper()
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			serverName: map[string]interface{}{
+				keyID: map[string]interface{}{
+					"minimum_valid_until_ts": minValidTS,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := clientObj.Post(hsURL+"/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary query response", err)
+
+	must.Equal(t, resp.StatusCode, 200, "notary query status code mismatch")
+
+	result := gjson.ParseBytes(respBytes)
+	serverKeys := result.Get("server_keys").Array()
+	var foundKey string
+	for _, sk := range serverKeys {
+		if sk.Get("server_name").Str == serverName {
+			foundKey = sk.Get("verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+		}
+	}
+	return foundKey
+}
+
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
@@ -215,10 +252,23 @@ func TestKeyIDFirstSeenWinsDirect(t *testing.T) {
 	mockKeyServer.verifyKeys[keyID] = pubKeyB
 	mockKeyServer.mu.Unlock()
 
-	// Query notary again with minimum_valid_until_ts greater than the cached valid_until_ts to force a re-fetch.
-	// Even on re-fetch, hs1 MUST reject the colliding Keypair B and stick to the first seen Keypair A.
+	// Query notary again with minimum_valid_until_ts beyond the cached valid_until_ts to force a re-fetch.
+	// The MSC's invariant is: "key B is NEVER returned and NEVER cached."
+	// Two compliant behaviors exist:
+	//   1. Return pinned key A (even though it may not satisfy minimum_valid_until_ts)
+	//   2. Return 200 with the server omitted (key A can't satisfy the time constraint, key B is rejected)
+	// Both are acceptable. The invariant we assert is: key B must NOT appear.
+	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil, base64.RawStdEncoding.EncodeToString(pubKeyA))
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+
+	if foundKey == pubKeyBBase64 {
+		t.Fatalf("hs1 returned colliding Keypair B after re-fetch — First Seen Wins was not enforced")
+	}
+
+	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
+	// (i.e., the cache was not poisoned by the colliding key B).
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
 }
 
 // Test standard key rotation where old keys are retired and new keys have unique IDs.
@@ -289,6 +339,9 @@ func TestKeyRotation(t *testing.T) {
 }
 
 // Test that key ID collisions in a single payload are strictly rejected.
+// A collision is when the same key ID appears in both verify_keys and old_verify_keys
+// with DIFFERENT key material. MSC4499 requires the entire response to be rejected
+// as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func TestIntraPayloadRejection(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -307,31 +360,50 @@ func TestIntraPayloadRejection(t *testing.T) {
 	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate key", err)
 
-	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_key")
+	controlKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_control")
 
 	mockKeyServer := &MockKeyServer{
 		serverName: originName,
-		keyID:      keyID,
+		keyID:      controlKeyID,
 		privKey:    privKey,
 		pubKey:     pubKey,
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
-			keyID: pubKey,
+			controlKeyID: pubKey,
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    time.Now().Add(24 * time.Hour),
-		shouldCollide: false, // Start as false for control case
+		shouldCollide: false,
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
-	// Since the key response payload contains duplicate/conflicting key bodies under the same key ID,
-	// hs1 MUST reject the entire payload as malformed, so the query must fail or not return any valid keys.
+	// Control Case: Well-formed, non-colliding payload. This MUST succeed with 200 OK.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(controlKeyID), 0,
+		base64.RawStdEncoding.EncodeToString(pubKey))
+
+	// Collision Case: Use a FRESH key ID so the notary cache cannot satisfy the query
+	// and the homeserver MUST re-fetch from our mock, hitting the collision code path.
+	collideKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_collide")
+	colPub, colPriv, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate collision key", err)
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.keyID = collideKeyID
+	mockKeyServer.privKey = colPriv
+	mockKeyServer.pubKey = colPub
+	mockKeyServer.verifyKeys = map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+		collideKeyID: colPub,
+	}
+	mockKeyServer.shouldCollide = true
+	mockKeyServer.requestCount = 0
+	mockKeyServer.mu.Unlock()
+
 	reqBody := map[string]interface{}{
 		"server_keys": map[string]interface{}{
 			string(originName): map[string]interface{}{
-				string(keyID): map[string]interface{}{
+				string(collideKeyID): map[string]interface{}{
 					"minimum_valid_until_ts": 0,
 				},
 			},
@@ -340,28 +412,34 @@ func TestIntraPayloadRejection(t *testing.T) {
 	bodyBytes, err := json.Marshal(reqBody)
 	must.NotError(t, "failed to marshal notary query", err)
 
-	// Control Case: Well-formed, non-colliding payload. This MUST succeed with 200 OK.
-	respControl, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
-	must.NotError(t, "failed to POST notary query control", err)
-	defer respControl.Body.Close()
-
-	if respControl.StatusCode != 200 {
-		t.Fatalf("Control case: hs1 returned non-200 status %d for well-formed key response", respControl.StatusCode)
-	}
-
-	// Collision Case: Enable collision, which MUST be strictly rejected.
-	mockKeyServer.mu.Lock()
-	mockKeyServer.shouldCollide = true
-	mockKeyServer.mu.Unlock()
-
 	resp, err := fedClient.Post("https://hs1/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
 	must.NotError(t, "failed to POST notary query", err)
 	defer resp.Body.Close()
 
-	// Since the fetched key response payload is rejected as malformed due to collisions,
-	// hs1 MUST fail the notary query with a non-200 status code (e.g. 502 Bad Gateway / 500 Internal Error).
-	if resp.StatusCode == 200 {
-		t.Fatalf("hs1 returned 200 OK for a query where the fetched key payload was malformed/colliding")
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary response", err)
+
+	// Verify the mock was actually consulted (not served from cache).
+	mockKeyServer.mu.Lock()
+	reqCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if reqCount == 0 {
+		t.Fatalf("Mock key server was never consulted — collision code path was not exercised (cache satisfied the query)")
+	}
+
+	// Per MSC4499: "the affected server MUST be omitted from the server_keys array
+	// in the notary's response (HTTP 200 with the key absent)."
+	must.Equal(t, resp.StatusCode, 200, "notary must return 200 even when upstream payload is malformed")
+
+	result := gjson.ParseBytes(respBytes)
+	serverKeys := result.Get("server_keys").Array()
+	for _, sk := range serverKeys {
+		if sk.Get("server_name").Str == string(originName) {
+			foundKey := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
+			if foundKey != "" {
+				t.Fatalf("hs1 returned the colliding key in server_keys — malformed payload was not rejected (key: %s)", foundKey)
+			}
+		}
 	}
 }
 
