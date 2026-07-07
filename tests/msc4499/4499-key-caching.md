@@ -146,13 +146,14 @@ The same key body appearing under one key ID in both `verify_keys` and
 `old_verify_keys` is legal. If a receiving server detects a key ID collision
 within a single HTTP response, the entire response MUST be rejected as
 malformed. When a notary server rejects an upstream key response as malformed
-under this rule, the affected server MUST be omitted from the `server_keys`
-array in the notary's response (HTTP 200 with the key absent). The notary MUST
-NOT convert an upstream payload rejection into a non-200 status code, as this
-would break batch queries where only a subset of queried servers returned
-malformed payloads. When a direct fetch (`/_matrix/key/v2/server`) is rejected
-as malformed, the server MUST treat it as a fetch failure for purposes of
-negative caching and backoff.
+under this rule, the malformed response MUST NOT be included in the
+`server_keys` array in the notary's response; previously-cached valid entries
+for the same server are unaffected (HTTP 200 with the malformed key absent). The
+notary MUST NOT convert an upstream payload rejection into a non-200 status
+code, as this would break batch queries where only a subset of queried servers
+returned malformed payloads. When a direct fetch (`/_matrix/key/v2/server`) is
+rejected as malformed, the server MUST treat it as a fetch failure for purposes
+of negative caching and backoff.
 
 Implementations MUST employ a JSON parser or pre-processing step capable of
 detecting duplicate keys within a single JSON object for key response payloads
@@ -279,10 +280,10 @@ The 7-day cache validity clamp restricts the window in which the key is
 authorized to sign new events, but does not invalidate historically signed
 events when verifying them years later.
 
-Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. An `expired_ts`
-which is implausibly far in the future (beyond a small clock-skew allowance or a
-reasonable rotation/grace window) SHOULD be treated as malformed for that specific
-key entry, but MUST NOT poison the rest of the response payload.
+Servers MUST sanity-check `expired_ts` values in `old_verify_keys`. A future
+`expired_ts` (beyond a small clock-skew allowance) MUST be treated as malformed
+for that specific key entry, but MUST NOT poison the rest of the response
+payload.
 
 The strict key ID uniqueness requirement ensures that this lookup is always
 unambiguous: for any `(server_name, algorithm, key_id)` tuple, there is at most
@@ -422,14 +423,15 @@ requirements that can be readily adopted. No API endpoints substantially change.
 ## Open questions
 
 - **Role of community ban lists / Draunir / ACLs:**
-  - With First Seen Wins locally isolating a misconfigured server, how do
-    external moderation tools interact with this? If a server cannot federate
-    due to a key mismatch, do tools like Draunir see this as a temporary outage
-    or something that triggers administrative alerts? Furthermore, could room
-    ACLs be used maliciously to force a cache eviction or bypass the First Seen
-    Wins rule?
-  - Should community ban lists play a role in banning servers where reasonable
-    grounds for suspecting bulk or spam generation of keys is known?
+    - With First Seen Wins locally isolating a misconfigured server, how do
+      external moderation tools interact with this? If a server cannot federate
+      due to a key mismatch, do tools like Draunir see this as a temporary
+      outage or something that triggers administrative alerts? Furthermore,
+      could room ACLs be used maliciously to force a cache eviction or bypass
+      the First Seen Wins rule?
+
+    - Should community ban lists play a role in banning servers where reasonable
+      grounds for suspecting bulk or spam generation of keys is known?
 
 ## Backwards compatibility
 
