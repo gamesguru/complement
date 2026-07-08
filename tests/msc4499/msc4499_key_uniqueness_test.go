@@ -158,7 +158,12 @@ func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName 
 	var foundKey string
 	for _, sk := range serverKeys {
 		if sk.Get("server_name").Str == serverName {
+			// Check verify_keys first
 			foundKey = sk.Get("verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			if foundKey == "" {
+				// Fallback to old_verify_keys
+				foundKey = sk.Get("old_verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			}
 		}
 	}
 
@@ -196,7 +201,12 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 	var foundKey string
 	for _, sk := range serverKeys {
 		if sk.Get("server_name").Str == serverName {
+			// Check verify_keys first
 			foundKey = sk.Get("verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			if foundKey == "" {
+				// Fallback to old_verify_keys
+				foundKey = sk.Get("old_verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			}
 		}
 	}
 	return foundKey
