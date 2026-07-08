@@ -34,7 +34,7 @@ import (
 // The test creates realistic room activity: topic changes, power level edits,
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
-func TestPaginationNoDuplicates(t *testing.T) {
+func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite) // Dendrite has known backfill issues
 
 	deployment := complement.Deploy(t, 2)
@@ -275,11 +275,241 @@ func TestPaginationNoDuplicates(t *testing.T) {
 	})
 }
 
+// TestPaginationForwardAndJumpToStart tests forward pagination (dir=f) and
+// the real-world scenario of a client jumping to the room's creation event
+// and scrolling downward. This exercises different code paths than backward
+// pagination — forward tokens, forward ordering, and the interaction between
+// "find the oldest token" and "paginate forward from it".
+func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+		LocalpartSuffix: "alice",
+	})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
+		LocalpartSuffix: "bob",
+	})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+	})
+
+	eventIDs := sendNMessages(t, alice, roomID, 100)
+
+	bob.MustJoinRoom(t, roomID, []spec.ServerName{
+		deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+	})
+
+	// Test pure forward pagination from the start
+	t.Run("Forward from start", func(t *testing.T) {
+		for _, limit := range []int{1, 3, 7, 50} {
+			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "f")
+			})
+		}
+	})
+
+	// Test backward pagination too for comparison
+	t.Run("Backward from end", func(t *testing.T) {
+		for _, limit := range []int{1, 3, 7, 50} {
+			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "b")
+			})
+		}
+	})
+
+	// The real adversarial scenario: paginate backward halfway, then jump to
+	// the room creation event and scroll forward from there.
+	// This simulates a user reading recent messages, then clicking "jump to
+	// beginning" and scrolling down — a common Element/client behavior.
+	t.Run("Jump to start mid-pagination then scroll forward", func(t *testing.T) {
+		for _, limit := range []int{3, 7} {
+			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// Step 1: Paginate backwards a few pages (simulating reading recent msgs)
+				var backwardEventIDs []string
+				fromToken := ""
+				pagesBack := 3
+
+				for page := 0; page < pagesBack; page++ {
+					queryParams := url.Values{
+						"dir":   []string{"b"},
+						"limit": []string{strconv.Itoa(limit)},
+					}
+					if fromToken != "" {
+						queryParams.Set("from", fromToken)
+					}
+
+					res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+						client.WithContentType("application/json"),
+						client.WithQueries(queryParams),
+					)
+					body := client.ParseJSON(t, res)
+
+					for _, event := range gjson.GetBytes(body, "chunk").Array() {
+						backwardEventIDs = append(backwardEventIDs, event.Get("event_id").Str)
+					}
+
+					endToken := gjson.GetBytes(body, "end")
+					if !endToken.Exists() {
+						break
+					}
+					fromToken = endToken.Str
+				}
+
+				t.Logf("Backward phase: collected %d events over %d pages", len(backwardEventIDs), pagesBack)
+
+				// Step 2: Now jump to the very start of the room.
+				// To get the "start" token, paginate backward all the way to get the
+				// final `end` token (which points to the room start).
+				startToken := ""
+				scanToken := ""
+				for i := 0; i < 500; i++ {
+					queryParams := url.Values{
+						"dir":   []string{"b"},
+						"limit": []string{"100"}, // use large limit to get there fast
+					}
+					if scanToken != "" {
+						queryParams.Set("from", scanToken)
+					}
+					res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+						client.WithContentType("application/json"),
+						client.WithQueries(queryParams),
+					)
+					body := client.ParseJSON(t, res)
+
+					endToken := gjson.GetBytes(body, "end")
+					if !endToken.Exists() {
+						// We've reached the start; use the `start` token from this
+						// response as our forward starting point
+						startTokenRes := gjson.GetBytes(body, "start")
+						if startTokenRes.Exists() {
+							startToken = startTokenRes.Str
+						}
+						break
+					}
+					scanToken = endToken.Str
+					// The last valid `end` token before we hit the wall
+					startToken = endToken.Str
+				}
+
+				if startToken == "" {
+					t.Fatal("could not find start token for room")
+				}
+
+				t.Logf("Found room start token: %s", startToken)
+
+				// Step 3: Now paginate FORWARD from the start token
+				var forwardEventIDs []string
+				var forwardTypes []string
+				fromToken = startToken
+				requestCount := 0
+
+				for {
+					queryParams := url.Values{
+						"dir":   []string{"f"},
+						"limit": []string{strconv.Itoa(limit)},
+						"from":  []string{fromToken},
+					}
+
+					res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+						client.WithContentType("application/json"),
+						client.WithQueries(queryParams),
+					)
+					body := client.ParseJSON(t, res)
+					requestCount++
+
+					for _, event := range gjson.GetBytes(body, "chunk").Array() {
+						forwardEventIDs = append(forwardEventIDs, event.Get("event_id").Str)
+						forwardTypes = append(forwardTypes, event.Get("type").Str)
+					}
+
+					endToken := gjson.GetBytes(body, "end")
+					if !endToken.Exists() {
+						break
+					}
+					fromToken = endToken.Str
+
+					if requestCount > 500 {
+						t.Fatalf("forward pagination did not terminate after %d requests", requestCount)
+					}
+				}
+
+				t.Logf("Forward phase: collected %d events over %d pages", len(forwardEventIDs), requestCount)
+
+				// CHECK: No duplicates in forward pagination
+				seen := make(map[string]int)
+				var duplicates []string
+				for i, eventID := range forwardEventIDs {
+					if firstIdx, exists := seen[eventID]; exists {
+						duplicates = append(duplicates, fmt.Sprintf(
+							"  %s at positions %d and %d (type: %s)",
+							eventID, firstIdx, i, forwardTypes[i],
+						))
+					} else {
+						seen[eventID] = i
+					}
+				}
+				if len(duplicates) > 0 {
+					shown := duplicates
+					if len(shown) > 20 {
+						shown = shown[:20]
+						shown = append(shown, fmt.Sprintf("  ... and %d more", len(duplicates)-20))
+					}
+					t.Errorf("FORWARD PAGINATION DUPLICATES (%d):\n%s",
+						len(duplicates), strings.Join(shown, "\n"))
+				}
+
+				// CHECK: All expected messages present in forward scan
+				var missing []string
+				for i, expectedID := range eventIDs {
+					if _, exists := seen[expectedID]; !exists {
+						missing = append(missing, fmt.Sprintf("  message %d: %s", i, expectedID))
+					}
+				}
+				if len(missing) > 0 {
+					shown := missing
+					if len(shown) > 20 {
+						shown = shown[:20]
+						shown = append(shown, fmt.Sprintf("  ... and %d more", len(missing)-20))
+					}
+					t.Errorf("FORWARD PAGINATION MISSING (%d of %d):\n%s",
+						len(missing), len(eventIDs), strings.Join(shown, "\n"))
+				}
+
+				// CHECK: Forward order should be chronological (not reversed)
+				var forwardMsgIDs []string
+				forwardSeen := make(map[string]bool)
+				for i, eventID := range forwardEventIDs {
+					if forwardTypes[i] == "m.room.message" && !forwardSeen[eventID] {
+						forwardMsgIDs = append(forwardMsgIDs, eventID)
+						forwardSeen[eventID] = true
+					}
+				}
+
+				minLen := len(forwardMsgIDs)
+				if len(eventIDs) < minLen {
+					minLen = len(eventIDs)
+				}
+				for i := 0; i < minLen; i++ {
+					if forwardMsgIDs[i] != eventIDs[i] {
+						t.Errorf("FORWARD ORDER MISMATCH at position %d: got %s, want %s",
+							i, forwardMsgIDs[i], eventIDs[i])
+						break
+					}
+				}
+			})
+		}
+	})
+}
+
 // TestPaginationTokenStability verifies that paginating the same room with
 // different limit values always yields the same complete, ordered set of
 // events. This catches bugs where pagination tokens encode limit-dependent
 // state that breaks when clients retry with different parameters.
-func TestPaginationTokenStability(t *testing.T) {
+func TestMessagesPaginationStressTokenStability(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 1)
@@ -359,9 +589,15 @@ type paginationResult struct {
 	eventsPerPage []int
 }
 
-// paginateRoom paginates backwards through a room's /messages endpoint,
-// collecting ALL events (including state events) without any filtering.
+// paginateRoom paginates through a room's /messages endpoint in the given
+// direction ("b" for backwards, "f" for forwards), collecting ALL events
+// (including state events) without any filtering.
 func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) paginationResult {
+	t.Helper()
+	return paginateRoomDir(t, user, roomID, limit, "b")
+}
+
+func paginateRoomDir(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string) paginationResult {
 	t.Helper()
 
 	result := paginationResult{}
@@ -369,7 +605,7 @@ func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) pa
 
 	for {
 		messageQueryParams := url.Values{
-			"dir":   []string{"b"},
+			"dir":   []string{dir},
 			"limit": []string{strconv.Itoa(limit)},
 		}
 		if fromToken != "" {
@@ -396,7 +632,7 @@ func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) pa
 			result.allEventTypes = append(result.allEventTypes, event.Get("type").Str)
 		}
 
-		// Paginate until no `end` token (reached room start)
+		// Paginate until no `end` token (reached the boundary)
 		endTokenRes := gjson.GetBytes(messagesResBody, "end")
 		if !endTokenRes.Exists() {
 			break
@@ -434,12 +670,8 @@ func collectAllMessageEventIDs(t *testing.T, user *client.CSAPI, roomID string, 
 	return messageEventIDs
 }
 
-// assertPaginationIntegrity paginates a room and checks three independent properties:
-//  1. NO DUPLICATES: no event_id appears more than once across all pages
-//  2. NO GAPS: every expected message event_id is present
-//  3. CORRECT ORDER: message events appear in the expected chronological order
-//
-// It also reports on non-message event types for diagnostic purposes.
+// assertPaginationIntegrity paginates a room backwards and checks integrity.
+// See assertPaginationIntegrityWithDir for details.
 func assertPaginationIntegrity(
 	t *testing.T,
 	user *client.CSAPI,
@@ -448,8 +680,27 @@ func assertPaginationIntegrity(
 	limit int,
 ) {
 	t.Helper()
+	assertPaginationIntegrityWithDir(t, user, roomID, expectedMessageEventIDs, limit, "b")
+}
 
-	result := paginateRoom(t, user, roomID, limit)
+// assertPaginationIntegrityWithDir paginates a room in the given direction and
+// checks three independent properties:
+//  1. NO DUPLICATES: no event_id appears more than once across all pages
+//  2. NO GAPS: every expected message event_id is present
+//  3. CORRECT ORDER: message events appear in the expected chronological order
+//
+// It also reports on non-message event types for diagnostic purposes.
+func assertPaginationIntegrityWithDir(
+	t *testing.T,
+	user *client.CSAPI,
+	roomID string,
+	expectedMessageEventIDs []string,
+	limit int,
+	dir string,
+) {
+	t.Helper()
+
+	result := paginateRoomDir(t, user, roomID, limit, dir)
 
 	t.Logf("Paginated with limit=%d: %d requests, %d total events, pages: %v",
 		limit, result.requestCount, len(result.allEventIDs), result.eventsPerPage)
@@ -501,24 +752,24 @@ func assertPaginationIntegrity(
 	}
 
 	// =====================================================================
-	// CHECK 3: Correct order (message events should be in reverse chronological
-	// order since we paginate backwards)
+	// CHECK 3: Correct order
+	// Backward pagination returns reverse-chronological; forward returns chronological
 	// =====================================================================
 	var messageEventsInPaginationOrder []string
+	paginationSeen := make(map[string]bool)
 	for i, eventID := range result.allEventIDs {
-		if result.allEventTypes[i] == "m.room.message" {
-			// Skip duplicates for order checking
-			if len(messageEventsInPaginationOrder) > 0 &&
-				messageEventsInPaginationOrder[len(messageEventsInPaginationOrder)-1] == eventID {
-				continue
-			}
+		if result.allEventTypes[i] == "m.room.message" && !paginationSeen[eventID] {
 			messageEventsInPaginationOrder = append(messageEventsInPaginationOrder, eventID)
+			paginationSeen[eventID] = true
 		}
 	}
 
-	// Pagination is backwards, so reverse for chronological comparison
+	// Convert to chronological order for comparison
 	chronological := slices.Clone(messageEventsInPaginationOrder)
-	slices.Reverse(chronological)
+	if dir == "b" {
+		slices.Reverse(chronological)
+	}
+	// If dir == "f", it's already chronological
 
 	// Find first out-of-order event
 	minLen := len(chronological)
