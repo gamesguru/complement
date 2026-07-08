@@ -617,10 +617,15 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 				t.Fatal("no saved token — room too small to partially paginate")
 			}
 
+			// Snapshot the pre-away message IDs for verification.
+			// Backward pagination from the stale token goes further into the past,
+			// so away-phase messages (which are newer) won't appear.
+			preAwayMessageIDs := make([]string, len(allTrackedEventIDs))
+			copy(preAwayMessageIDs, allTrackedEventIDs)
+
 			// === WHILE BOB IS "AWAY": Messy room activity ===
 			// Alice sends more messages (local events on hs1)
 			awayAliceMsgs := sendNMessages(t, alice, roomID, 15)
-			allTrackedEventIDs = append(allTrackedEventIDs, awayAliceMsgs...)
 
 			// Charlie joins (new local user, membership event)
 			charlie.MustJoinRoom(t, roomID, nil)
@@ -628,7 +633,6 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// Charlie sends messages
 			awayCharlieMsgs := sendNMessages(t, charlie, roomID, 5)
-			allTrackedEventIDs = append(allTrackedEventIDs, awayCharlieMsgs...)
 
 			// Topic change
 			alice.SendEventSynced(t, roomID, b.Event{
@@ -648,7 +652,6 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// Dana sends messages (federated received events on hs1)
 			awayDanaMsgs := sendNMessages(t, dana, roomID, 5)
-			allTrackedEventIDs = append(allTrackedEventIDs, awayDanaMsgs...)
 
 			// Charlie leaves
 			charlie.MustLeaveRoom(t, roomID)
@@ -656,7 +659,6 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// More alice messages after the churn
 			awayMoreAlice := sendNMessages(t, alice, roomID, 10)
-			allTrackedEventIDs = append(allTrackedEventIDs, awayMoreAlice...)
 
 			t.Logf("While-away phase: added %d more tracked messages + membership/state events",
 				len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
@@ -736,9 +738,11 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 					len(duplicates), strings.Join(shown, "\n"))
 			}
 
-			// CHECK 2: All pre-away messages present somewhere
+			// CHECK 2: All pre-away messages present somewhere.
+			// Only check pre-away messages since backward pagination from the
+			// stale token goes further into the past and won't see newer events.
 			var missingPreAway []string
-			for i, expectedID := range allTrackedEventIDs {
+			for i, expectedID := range preAwayMessageIDs {
 				if _, exists := seen[expectedID]; !exists {
 					missingPreAway = append(missingPreAway, fmt.Sprintf("  pre-away message %d: %s", i, expectedID))
 				}
@@ -750,7 +754,7 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 					shown = append(shown, fmt.Sprintf("  ... and %d more", len(missingPreAway)-20))
 				}
 				t.Errorf("STALE TOKEN RESUME: MISSING PRE-AWAY EVENTS (%d of %d):\n%s",
-					len(missingPreAway), len(allTrackedEventIDs), strings.Join(shown, "\n"))
+					len(missingPreAway), len(preAwayMessageIDs), strings.Join(shown, "\n"))
 			}
 
 			// CHECK 3: Event type breakdown for diagnostics
