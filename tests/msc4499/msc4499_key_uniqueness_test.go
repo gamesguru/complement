@@ -1369,9 +1369,9 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 1000 filler keys in old_verify_keys + 1 signing key in verify_keys
-	// = 1001 total, just over the suggested 1,000-key quota boundary.
-	numFillerKeys := 1000
+	// Generate 3000 filler keys in old_verify_keys + 1 signing key in verify_keys
+	// = 3001 total, just over the suggested 3,000-key quota boundary.
+	numFillerKeys := 3000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
 	}
@@ -1385,7 +1385,7 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 			VerifyKey: gomatrixserverlib.VerifyKey{
 				Key: spec.Base64Bytes(pub),
 			},
-			ExpiredTS: spec.AsTimestamp(time.Now().Add(time.Duration(-i) * time.Hour)),
+			ExpiredTS: spec.AsTimestamp(time.Now().Add(-10 * time.Hour).Add(time.Duration(-i) * time.Second)),
 		}
 		lastKeyID = kid
 	}
@@ -1410,10 +1410,16 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
 
-	// Verify hs1 can still resolve the LAST filler key
-	lastKey := oldVerifyKeys[lastKeyID]
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(lastKeyID), 0,
-		base64.RawStdEncoding.EncodeToString(lastKey.Key))
+	// Verify hs1 can still resolve the FIRST filler key (newest)
+	firstKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_filler_0000")
+	firstKey := oldVerifyKeys[firstKeyID]
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(firstKeyID), 0,
+		base64.RawStdEncoding.EncodeToString(firstKey.Key))
+
+	// Verify the LAST filler key (oldest) has been evicted
+	// We use queryNotaryRaw to avoid the hard assertion in queryNotary
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(lastKeyID), 0)
+	must.Equal(t, foundKey, "", "Expected oldest filler key to be evicted")
 }
 
 // Test that a successful key fetch clears the backoff state for that server.
