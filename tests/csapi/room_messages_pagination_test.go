@@ -823,20 +823,29 @@ func TestMessagesPaginationStressTokenStability(t *testing.T) {
 	}
 }
 
-// sendNMessages sends n messages into a room, confirming each is synced.
+// sendNMessages sends n messages into a room.
+//
+// We use unsynced sends here and then wait periodically for the latest event
+// to appear in /sync. That keeps the test behavior close to the old helper
+// while avoiding an expensive sync round-trip per message.
 // Returns the event IDs in send order.
 func sendNMessages(t *testing.T, sender *client.CSAPI, roomID string, n int) []string {
 	t.Helper()
 
 	eventIDs := make([]string, n)
+	const syncEvery = 10
 	for i := 0; i < n; i++ {
-		eventIDs[i] = sender.SendEventSynced(t, roomID, b.Event{
+		eventIDs[i] = sender.Unsafe_SendEventUnsynced(t, roomID, b.Event{
 			Type: "m.room.message",
 			Content: map[string]interface{}{
 				"msgtype": "m.text",
 				"body":    fmt.Sprintf("Message %d of %d", i+1, n),
 			},
 		})
+
+		if (i+1)%syncEvery == 0 || i+1 == n {
+			sender.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, eventIDs[i]))
+		}
 	}
 
 	t.Logf("Sent %d messages into room %s", n, roomID)
