@@ -305,9 +305,11 @@ func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 
 	// Test pure forward pagination from the start
 	t.Run("Forward from start", func(t *testing.T) {
+		// Derive a real start token by paginating backward to the beginning
+		startToken := findRoomStartToken(t, bob, roomID)
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "f")
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken)
 			})
 		}
 	})
@@ -541,32 +543,33 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 		LocalpartSuffix: "dana",
 	})
 
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset": "public_chat",
-	})
-
-	// Bob joins the room (federated)
-	bob.MustJoinRoom(t, roomID, []spec.ServerName{
-		deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
-	})
-
-	// === PRE-AWAY PHASE: Initial room activity ===
-	var allTrackedEventIDs []string
-	preAwayEventIDs := sendNMessages(t, alice, roomID, 30)
-	allTrackedEventIDs = append(allTrackedEventIDs, preAwayEventIDs...)
-
-	// Bob sends some messages too (so hs2 has both sent and received events)
-	bobPreAwayIDs := sendNMessages(t, bob, roomID, 10)
-	allTrackedEventIDs = append(allTrackedEventIDs, bobPreAwayIDs...)
-
-	// More from alice
-	morePreAway := sendNMessages(t, alice, roomID, 10)
-	allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
-
-	t.Logf("Pre-away phase: %d tracked messages", len(allTrackedEventIDs))
-
 	for _, limit := range []int{3, 7} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			// Fresh room per limit for full isolation
+			roomID := alice.MustCreateRoom(t, map[string]interface{}{
+				"preset": "public_chat",
+			})
+
+			// Bob joins the room (federated)
+			bob.MustJoinRoom(t, roomID, []spec.ServerName{
+				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			})
+
+			// === PRE-AWAY PHASE: Initial room activity ===
+			var allTrackedEventIDs []string
+			preAwayEventIDs := sendNMessages(t, alice, roomID, 30)
+			allTrackedEventIDs = append(allTrackedEventIDs, preAwayEventIDs...)
+
+			// Bob sends some messages too (so hs2 has both sent and received events)
+			bobPreAwayIDs := sendNMessages(t, bob, roomID, 10)
+			allTrackedEventIDs = append(allTrackedEventIDs, bobPreAwayIDs...)
+
+			// More from alice
+			morePreAway := sendNMessages(t, alice, roomID, 10)
+			allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
+
+			t.Logf("Pre-away phase: %d tracked messages", len(allTrackedEventIDs))
+
 			// === BOB PAGINATES BACKWARDS PARTWAY ===
 			// Simulate reading recent messages before closing the app
 			var preAwayCollected []string
@@ -617,8 +620,7 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			// === WHILE BOB IS "AWAY": Messy room activity ===
 			// Alice sends more messages (local events on hs1)
 			awayAliceMsgs := sendNMessages(t, alice, roomID, 15)
-			allTrackedForThisRun := slices.Clone(allTrackedEventIDs)
-			allTrackedForThisRun = append(allTrackedForThisRun, awayAliceMsgs...)
+			allTrackedEventIDs = append(allTrackedEventIDs, awayAliceMsgs...)
 
 			// Charlie joins (new local user, membership event)
 			charlie.MustJoinRoom(t, roomID, nil)
@@ -626,7 +628,7 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// Charlie sends messages
 			awayCharlieMsgs := sendNMessages(t, charlie, roomID, 5)
-			allTrackedForThisRun = append(allTrackedForThisRun, awayCharlieMsgs...)
+			allTrackedEventIDs = append(allTrackedEventIDs, awayCharlieMsgs...)
 
 			// Topic change
 			alice.SendEventSynced(t, roomID, b.Event{
@@ -641,10 +643,12 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			dana.MustJoinRoom(t, roomID, []spec.ServerName{
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
+			// Ensure dana leaves even if the test fails partway through
+			defer dana.MustLeaveRoom(t, roomID)
 
 			// Dana sends messages (federated received events on hs1)
 			awayDanaMsgs := sendNMessages(t, dana, roomID, 5)
-			allTrackedForThisRun = append(allTrackedForThisRun, awayDanaMsgs...)
+			allTrackedEventIDs = append(allTrackedEventIDs, awayDanaMsgs...)
 
 			// Charlie leaves
 			charlie.MustLeaveRoom(t, roomID)
@@ -652,7 +656,7 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// More alice messages after the churn
 			awayMoreAlice := sendNMessages(t, alice, roomID, 10)
-			allTrackedForThisRun = append(allTrackedForThisRun, awayMoreAlice...)
+			allTrackedEventIDs = append(allTrackedEventIDs, awayMoreAlice...)
 
 			t.Logf("While-away phase: added %d more tracked messages + membership/state events",
 				len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
@@ -759,9 +763,6 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 				typeReport = append(typeReport, fmt.Sprintf("%s: %d", eventType, count))
 			}
 			t.Logf("Combined event type breakdown: %s", strings.Join(typeReport, ", "))
-
-			// Clean up: dana leaves so the next limit iteration has a clean state
-			dana.MustLeaveRoom(t, roomID)
 		})
 	}
 }
@@ -850,19 +851,67 @@ type paginationResult struct {
 	eventsPerPage []int
 }
 
+// findRoomStartToken paginates backward through a room with large pages to find
+// the token pointing to the very start of the room timeline. This token can then
+// be used as a starting point for forward (dir=f) pagination.
+func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string {
+	t.Helper()
+
+	startToken := ""
+	scanToken := ""
+	for i := 0; i < 500; i++ {
+		queryParams := url.Values{
+			"dir":   []string{"b"},
+			"limit": []string{"100"},
+		}
+		if scanToken != "" {
+			queryParams.Set("from", scanToken)
+		}
+		res := user.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+			client.WithContentType("application/json"),
+			client.WithQueries(queryParams),
+		)
+		body := client.ParseJSON(t, res)
+
+		endToken := gjson.GetBytes(body, "end")
+		if !endToken.Exists() {
+			// Reached the start; use the `start` token from this response
+			startTokenRes := gjson.GetBytes(body, "start")
+			if startTokenRes.Exists() {
+				startToken = startTokenRes.Str
+			}
+			break
+		}
+		scanToken = endToken.Str
+		startToken = endToken.Str
+	}
+
+	if startToken == "" {
+		t.Fatal("could not find start token for room")
+	}
+
+	t.Logf("Found room start token: %s", startToken)
+	return startToken
+}
+
 // paginateRoom paginates through a room's /messages endpoint in the given
 // direction ("b" for backwards, "f" for forwards), collecting ALL events
 // (including state events) without any filtering.
 func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) paginationResult {
 	t.Helper()
-	return paginateRoomDir(t, user, roomID, limit, "b")
+	return paginateRoomDirFrom(t, user, roomID, limit, "b", "")
 }
 
 func paginateRoomDir(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string) paginationResult {
 	t.Helper()
+	return paginateRoomDirFrom(t, user, roomID, limit, dir, "")
+}
+
+func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string, initialToken string) paginationResult {
+	t.Helper()
 
 	result := paginationResult{}
-	fromToken := ""
+	fromToken := initialToken
 
 	for {
 		messageQueryParams := url.Values{
@@ -916,13 +965,11 @@ func collectAllMessageEventIDs(t *testing.T, user *client.CSAPI, roomID string, 
 
 	result := paginateRoom(t, user, roomID, limit)
 
-	// Filter to just message events, deduplicating
-	seen := make(map[string]bool)
+	// Filter to just message events, preserving exact pagination output.
 	var messageEventIDs []string
 	for i, eventID := range result.allEventIDs {
-		if result.allEventTypes[i] == "m.room.message" && !seen[eventID] {
+		if result.allEventTypes[i] == "m.room.message" {
 			messageEventIDs = append(messageEventIDs, eventID)
-			seen[eventID] = true
 		}
 	}
 
@@ -932,7 +979,6 @@ func collectAllMessageEventIDs(t *testing.T, user *client.CSAPI, roomID string, 
 }
 
 // assertPaginationIntegrity paginates a room backwards and checks integrity.
-// See assertPaginationIntegrityWithDir for details.
 func assertPaginationIntegrity(
 	t *testing.T,
 	user *client.CSAPI,
@@ -941,7 +987,7 @@ func assertPaginationIntegrity(
 	limit int,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDir(t, user, roomID, expectedMessageEventIDs, limit, "b")
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "")
 }
 
 // assertPaginationIntegrityWithDir paginates a room in the given direction and
@@ -960,8 +1006,23 @@ func assertPaginationIntegrityWithDir(
 	dir string,
 ) {
 	t.Helper()
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "")
+}
 
-	result := paginateRoomDir(t, user, roomID, limit, dir)
+// assertPaginationIntegrityWithDirFrom is the same as assertPaginationIntegrityWithDir
+// but accepts an initial pagination token (e.g. a start-of-room token for forward pagination).
+func assertPaginationIntegrityWithDirFrom(
+	t *testing.T,
+	user *client.CSAPI,
+	roomID string,
+	expectedMessageEventIDs []string,
+	limit int,
+	dir string,
+	initialToken string,
+) {
+	t.Helper()
+
+	result := paginateRoomDirFrom(t, user, roomID, limit, dir, initialToken)
 
 	t.Logf("Paginated with limit=%d: %d requests, %d total events, pages: %v",
 		limit, result.requestCount, len(result.allEventIDs), result.eventsPerPage)
