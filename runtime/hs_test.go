@@ -40,9 +40,9 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 	}()
 
 	tests := []struct {
-		hs             string
-		testName       string
-		skipOn         []string
+		hs              string
+		testName        string
+		skipOn          []string
 		expectedSkipped bool
 	}{
 		// Basic exact match skips
@@ -50,15 +50,15 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 		{Conduit, "TestSomeFunc", []string{Conduwuit}, false},
 
 		// Inheritance skips
-		{Conduwuit, "TestSomeFunc", []string{Conduit}, true}, // Conduwuit inherits Conduit
-		{Continuwuity, "TestSomeFunc", []string{Conduit}, true}, // Continuwuity inherits Conduit
+		{Conduwuit, "TestSomeFunc", []string{Conduit}, true},      // Conduwuit inherits Conduit
+		{Continuwuity, "TestSomeFunc", []string{Conduit}, true},   // Continuwuity inherits Conduit
 		{Continuwuity, "TestSomeFunc", []string{Conduwuit}, true}, // Continuwuity inherits Conduwuit
-		{Tuwunel, "TestSomeFunc", []string{Conduit}, true}, // Tuwunel inherits Conduit
+		{Tuwunel, "TestSomeFunc", []string{Conduit}, true},        // Tuwunel inherits Conduit
 
 		// Exemptions
-		{Tuwunel, "TestPartialStateJoin", []string{Conduit}, false}, // Tuwunel exempt on TestPartialStateJoin
+		{Tuwunel, "TestPartialStateJoin", []string{Conduit}, false},           // Tuwunel exempt on TestPartialStateJoin
 		{Tuwunel, "TestPartialStateJoin/Subtest", []string{Conduwuit}, false}, // Tuwunel exempt on subtest
-		{Continuwuity, "TestPartialStateJoin", []string{Conduwuit}, true}, // Continuwuity NOT exempt on TestPartialStateJoin
+		{Continuwuity, "TestPartialStateJoin", []string{Conduwuit}, true},     // Continuwuity NOT exempt on TestPartialStateJoin
 	}
 
 	for _, tc := range tests {
