@@ -131,6 +131,10 @@ func TestMSC4500StateHashMismatch(t *testing.T) {
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "do federation request", err)
 
+	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
+	must.NotError(t, "do federation request", err)
+	defer res.Body.Close()
+
 	resBody, err := io.ReadAll(res.Body)
 	must.NotError(t, "read res body", err)
 
