@@ -3,13 +3,14 @@ package msc4500
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"net/url"
 	"testing"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -19,33 +20,31 @@ func TestMSC4500StateAccumulator(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
-	alice := deployment.Client(t, "hs1", "")
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
-	roomID := alice.CreateRoom(t, map[string]interface{}{
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
 		"preset": "public_chat",
 	})
 
-	_, token := alice.SyncUntil(t, "", "m.room.create", func(ev gjson.Result) bool {
-		return ev.Get("room_id").Str == roomID
-	})
+	token := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
 
 	// Get the last event ID from the sync
-	res := alice.MustDoFunc(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"}, client.WithQueries(map[string]string{
-		"dir":   "b",
-		"limit": "1",
-		"from":  token,
+	res := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"}, client.WithQueries(url.Values{
+		"dir":   {"b"},
+		"limit": {"1"},
+		"from":  {token},
 	}))
-	body := client.ParseJSON(t, res)
+	body := must.ParseJSON(t, res.Body)
 	eventID := body.Get("chunk.0.event_id").Str
 
 	must.NotEqual(t, eventID, "", "Failed to find event ID")
 
 	// Call the federation endpoint using alice's homeserver
-	fedRes := deployment.UnauthenticatedClient(t, "hs1").MustDoFunc(t, "GET", []string{"_matrix", "federation", "unstable", "tk.nutra.msc4500", "state_accumulator", roomID}, client.WithQueries(map[string]string{
-		"event_id": eventID,
+	fedRes := deployment.UnauthenticatedClient(t, "hs1").MustDo(t, "GET", []string{"_matrix", "federation", "unstable", "tk.nutra.msc4500", "state_accumulator", roomID}, client.WithQueries(url.Values{
+		"event_id": {eventID},
 	}))
 
-	fedBody := client.ParseJSON(t, fedRes)
+	fedBody := must.ParseJSON(t, fedRes.Body)
 
 	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("event_id", eventID))
 	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", "lthash16"))
