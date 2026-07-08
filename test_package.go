@@ -76,8 +76,8 @@ type Deployment interface {
 	Network() string
 }
 
-// TestPackage represents the configuration for a package of tests. A package of tests
-// are all tests in the same Go package (directory).
+// TestPackage represents the configuration for a package of tests.
+// A package of tests are all tests in the same Go package (directory).
 type TestPackage struct {
 	// the config used for this package.
 	Config *config.Complement
@@ -117,6 +117,7 @@ func NewTestPackage(pkgNamespace string) (*TestPackage, error) {
 	}, nil
 }
 
+// Cleanup tears down any lingering dirty deployment and prunes test resources.
 func (tp *TestPackage) Cleanup() {
 	// any dirty deployments need logs printed and post scripts run
 	tp.existingDeploymentMu.Lock()
@@ -127,7 +128,7 @@ func (tp *TestPackage) Cleanup() {
 	tp.complementBuilder.Cleanup()
 }
 
-// Deploy will deploy the given blueprint or terminate the test.
+// OldDeploy will deploy the given blueprint or terminate the test.
 // It will construct the blueprint if it doesn't already exist in the docker image cache.
 // This function is the main setup function for all tests as it provides a deployment with
 // which tests can interact with.
@@ -151,6 +152,7 @@ func (tp *TestPackage) OldDeploy(t ct.TestLike, blueprint b.Blueprint) Deploymen
 	return dep
 }
 
+// Deploy provisions a standard deployment with the requested server count.
 func (tp *TestPackage) Deploy(t ct.TestLike, numServers int) Deployment {
 	t.Helper()
 	if tp.Config.EnableDirtyRuns {

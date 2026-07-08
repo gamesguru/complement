@@ -31,9 +31,8 @@ import (
 
 type ctxKey string
 
-const (
-	CtxKeyWithRetryUntil ctxKey = "complement_retry_until" // contains *retryUntilParams
-)
+// CtxKeyWithRetryUntil stores retry metadata on a request context.
+const CtxKeyWithRetryUntil ctxKey = "complement_retry_until" // contains *retryUntilParams
 
 var (
 	// use a deterministic seed but globally so we don't generate the same numbers for each client.
@@ -50,6 +49,7 @@ type retryUntilParams struct {
 // See functions starting with `With...` in this package for more info.
 type RequestOpt func(req *http.Request)
 
+// CSAPIOpts configures a CSAPI client.
 type CSAPIOpts struct {
 	UserID      string
 	AccessToken string
@@ -63,6 +63,7 @@ type CSAPIOpts struct {
 	Debug bool
 }
 
+// CSAPI is a helper client for Matrix CS API requests.
 type CSAPI struct {
 	UserID      string
 	AccessToken string
@@ -79,6 +80,7 @@ type CSAPI struct {
 	createRoomMutex *sync.Mutex
 }
 
+// NewCSAPI constructs a CSAPI client from the provided options.
 func NewCSAPI(opts CSAPIOpts) *CSAPI {
 	return &CSAPI{
 		UserID:           opts.UserID,
@@ -285,30 +287,36 @@ func (c *CSAPI) InviteRoom(t ct.TestLike, roomID string, userID string) *http.Re
 	return c.Do(t, "POST", []string{"_matrix", "client", "v3", "rooms", roomID, "invite"}, WithJSONBody(t, body))
 }
 
+// MustGetGlobalAccountData fetches a user account-data event and fails the test on error.
 func (c *CSAPI) MustGetGlobalAccountData(t ct.TestLike, eventType string) *http.Response {
 	res := c.GetGlobalAccountData(t, eventType)
 	mustRespond2xx(t, res)
 	return res
 }
 
+// GetGlobalAccountData fetches a user account-data event.
 func (c *CSAPI) GetGlobalAccountData(t ct.TestLike, eventType string) *http.Response {
 	return c.Do(t, "GET", []string{"_matrix", "client", "v3", "user", c.UserID, "account_data", eventType})
 }
 
+// MustSetGlobalAccountData writes a user account-data event and fails the test on error.
 func (c *CSAPI) MustSetGlobalAccountData(t ct.TestLike, eventType string, content map[string]interface{}) *http.Response {
 	return c.MustDo(t, "PUT", []string{"_matrix", "client", "v3", "user", c.UserID, "account_data", eventType}, WithJSONBody(t, content))
 }
 
+// MustGetRoomAccountData fetches room account-data and fails the test on error.
 func (c *CSAPI) MustGetRoomAccountData(t ct.TestLike, roomID string, eventType string) *http.Response {
 	res := c.GetRoomAccountData(t, roomID, eventType)
 	mustRespond2xx(t, res)
 	return res
 }
 
+// GetRoomAccountData fetches room account-data.
 func (c *CSAPI) GetRoomAccountData(t ct.TestLike, roomID string, eventType string) *http.Response {
 	return c.Do(t, "GET", []string{"_matrix", "client", "v3", "user", c.UserID, "rooms", roomID, "account_data", eventType})
 }
 
+// MustSetRoomAccountData writes room account-data and fails the test on error.
 func (c *CSAPI) MustSetRoomAccountData(t ct.TestLike, roomID string, eventType string, content map[string]interface{}) *http.Response {
 	return c.MustDo(t, "PUT", []string{"_matrix", "client", "v3", "user", c.UserID, "rooms", roomID, "account_data", eventType}, WithJSONBody(t, content))
 }
@@ -851,6 +859,7 @@ type loggedRoundTripper struct {
 	wrap   http.RoundTripper
 }
 
+// RoundTrip logs the request and response metadata before delegating.
 func (t *loggedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	res, err := t.wrap.RoundTrip(req)
@@ -888,6 +897,7 @@ func GetJSONFieldStr(t ct.TestLike, body []byte, wantKey string) string {
 	return res.Str
 }
 
+// GetJSONFieldStringArray extracts a JSON string array from the response body.
 func GetJSONFieldStringArray(t ct.TestLike, body []byte, wantKey string) []string {
 	t.Helper()
 

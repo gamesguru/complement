@@ -11,6 +11,7 @@ import (
 	"github.com/matrix-org/complement/config"
 )
 
+// Server is a lightweight HTTP server used by tests.
 type Server struct {
 	URL      string
 	Port     int
@@ -18,6 +19,7 @@ type Server struct {
 	listener net.Listener
 }
 
+// NewServer starts a test HTTP server bound to an ephemeral port.
 func NewServer(t *testing.T, comp *config.Complement, configFunc func(router *mux.Router)) *Server {
 	t.Helper()
 
@@ -44,6 +46,7 @@ func NewServer(t *testing.T, comp *config.Complement, configFunc func(router *mu
 	}
 }
 
+// Close shuts down the server and its listener.
 func (s *Server) Close() {
 	s.server.Close()
 	s.listener.Close()
