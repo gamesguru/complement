@@ -505,6 +505,267 @@ func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 	})
 }
 
+// TestMessagesPaginationStressStaleTokenResume simulates a client that paginates
+// partway through a room, closes the app (goes offline), and comes back later
+// after significant room activity has occurred. The client resumes pagination
+// from a saved `end` token. This tests whether pagination tokens remain valid
+// and produce correct results after the timeline has been mutated.
+//
+// During the "away" period, the room gets:
+//   - Messages from alice (local sender on hs1)
+//   - Messages from a new federated user on hs2 (received events)
+//   - Membership changes: new users joining and leaving
+//   - State changes: topic updates
+//
+// This catches bugs where:
+//   - Old pagination tokens are silently invalidated by new events
+//   - Gaps appear between the "pre-away" and "post-away" pagination results
+//   - Duplicates appear at the token boundary
+//   - New membership/state events confuse the token position
+func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+		LocalpartSuffix: "alice",
+	})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
+		LocalpartSuffix: "bob",
+	})
+	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+		LocalpartSuffix: "charlie",
+	})
+	dana := deployment.Register(t, "hs2", helpers.RegistrationOpts{
+		LocalpartSuffix: "dana",
+	})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+	})
+
+	// Bob joins the room (federated)
+	bob.MustJoinRoom(t, roomID, []spec.ServerName{
+		deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+	})
+
+	// === PRE-AWAY PHASE: Initial room activity ===
+	var allTrackedEventIDs []string
+	preAwayEventIDs := sendNMessages(t, alice, roomID, 30)
+	allTrackedEventIDs = append(allTrackedEventIDs, preAwayEventIDs...)
+
+	// Bob sends some messages too (so hs2 has both sent and received events)
+	bobPreAwayIDs := sendNMessages(t, bob, roomID, 10)
+	allTrackedEventIDs = append(allTrackedEventIDs, bobPreAwayIDs...)
+
+	// More from alice
+	morePreAway := sendNMessages(t, alice, roomID, 10)
+	allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
+
+	t.Logf("Pre-away phase: %d tracked messages", len(allTrackedEventIDs))
+
+	for _, limit := range []int{3, 7} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			// === BOB PAGINATES BACKWARDS PARTWAY ===
+			// Simulate reading recent messages before closing the app
+			var preAwayCollected []string
+			var preAwayTypes []string
+			savedToken := ""
+			pagesRead := 0
+
+			fromToken := ""
+			// Read ~3 pages worth
+			for page := 0; page < 4; page++ {
+				queryParams := url.Values{
+					"dir":   []string{"b"},
+					"limit": []string{strconv.Itoa(limit)},
+				}
+				if fromToken != "" {
+					queryParams.Set("from", fromToken)
+				}
+
+				res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+					client.WithContentType("application/json"),
+					client.WithQueries(queryParams),
+				)
+				body := client.ParseJSON(t, res)
+
+				for _, event := range gjson.GetBytes(body, "chunk").Array() {
+					preAwayCollected = append(preAwayCollected, event.Get("event_id").Str)
+					preAwayTypes = append(preAwayTypes, event.Get("type").Str)
+				}
+
+				endToken := gjson.GetBytes(body, "end")
+				if !endToken.Exists() {
+					break
+				}
+				fromToken = endToken.Str
+				pagesRead++
+			}
+
+			// Save the token — this is what the client stores before going offline
+			savedToken = fromToken
+
+			t.Logf("Bob read %d pages (%d events) before going 'offline'. Saved token: %s",
+				pagesRead, len(preAwayCollected), savedToken)
+
+			if savedToken == "" {
+				t.Fatal("no saved token — room too small to partially paginate")
+			}
+
+			// === WHILE BOB IS "AWAY": Messy room activity ===
+			// Alice sends more messages (local events on hs1)
+			awayAliceMsgs := sendNMessages(t, alice, roomID, 15)
+			allTrackedForThisRun := slices.Clone(allTrackedEventIDs)
+			allTrackedForThisRun = append(allTrackedForThisRun, awayAliceMsgs...)
+
+			// Charlie joins (new local user, membership event)
+			charlie.MustJoinRoom(t, roomID, nil)
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(charlie.UserID, roomID))
+
+			// Charlie sends messages
+			awayCharlieMsgs := sendNMessages(t, charlie, roomID, 5)
+			allTrackedForThisRun = append(allTrackedForThisRun, awayCharlieMsgs...)
+
+			// Topic change
+			alice.SendEventSynced(t, roomID, b.Event{
+				Type:     "m.room.topic",
+				StateKey: b.Ptr(""),
+				Content: map[string]interface{}{
+					"topic": "Bob missed this while offline",
+				},
+			})
+
+			// Dana joins from hs2 (federated membership event)
+			dana.MustJoinRoom(t, roomID, []spec.ServerName{
+				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			})
+
+			// Dana sends messages (federated received events on hs1)
+			awayDanaMsgs := sendNMessages(t, dana, roomID, 5)
+			allTrackedForThisRun = append(allTrackedForThisRun, awayDanaMsgs...)
+
+			// Charlie leaves
+			charlie.MustLeaveRoom(t, roomID)
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(charlie.UserID, roomID))
+
+			// More alice messages after the churn
+			awayMoreAlice := sendNMessages(t, alice, roomID, 10)
+			allTrackedForThisRun = append(allTrackedForThisRun, awayMoreAlice...)
+
+			t.Logf("While-away phase: added %d more tracked messages + membership/state events",
+				len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
+
+			// === BOB COMES BACK: Resume pagination from stale token ===
+			var resumeCollected []string
+			var resumeTypes []string
+			fromToken = savedToken
+			requestCount := 0
+
+			for {
+				queryParams := url.Values{
+					"dir":   []string{"b"},
+					"limit": []string{strconv.Itoa(limit)},
+					"from":  []string{fromToken},
+				}
+
+				res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+					client.WithContentType("application/json"),
+					client.WithQueries(queryParams),
+				)
+				body := client.ParseJSON(t, res)
+				requestCount++
+
+				for _, event := range gjson.GetBytes(body, "chunk").Array() {
+					resumeCollected = append(resumeCollected, event.Get("event_id").Str)
+					resumeTypes = append(resumeTypes, event.Get("type").Str)
+				}
+
+				endToken := gjson.GetBytes(body, "end")
+				if !endToken.Exists() {
+					break
+				}
+				fromToken = endToken.Str
+
+				if requestCount > 500 {
+					t.Fatalf("resume pagination did not terminate after %d requests", requestCount)
+				}
+			}
+
+			t.Logf("Resume phase: collected %d events over %d pages", len(resumeCollected), requestCount)
+
+			// === VERIFICATION ===
+			// Combine pre-away + resume into the full set
+			allCollected := append(preAwayCollected, resumeCollected...)
+			allTypes := append(preAwayTypes, resumeTypes...)
+
+			// CHECK 1: No duplicates across the entire session
+			seen := make(map[string]int)
+			var duplicates []string
+			for i, eventID := range allCollected {
+				if firstIdx, exists := seen[eventID]; exists {
+					duplicates = append(duplicates, fmt.Sprintf(
+						"  %s at positions %d and %d (type: %s) [%s]",
+						eventID, firstIdx, i, allTypes[i],
+						func() string {
+							if firstIdx < len(preAwayCollected) && i >= len(preAwayCollected) {
+								return "CROSS-BOUNDARY: appeared in pre-away AND resume"
+							}
+							if i < len(preAwayCollected) {
+								return "within pre-away"
+							}
+							return "within resume"
+						}(),
+					))
+				} else {
+					seen[eventID] = i
+				}
+			}
+			if len(duplicates) > 0 {
+				shown := duplicates
+				if len(shown) > 20 {
+					shown = shown[:20]
+					shown = append(shown, fmt.Sprintf("  ... and %d more", len(duplicates)-20))
+				}
+				t.Errorf("STALE TOKEN RESUME: DUPLICATES (%d) across pre-away + resume:\n%s",
+					len(duplicates), strings.Join(shown, "\n"))
+			}
+
+			// CHECK 2: All pre-away messages present somewhere
+			var missingPreAway []string
+			for i, expectedID := range allTrackedEventIDs {
+				if _, exists := seen[expectedID]; !exists {
+					missingPreAway = append(missingPreAway, fmt.Sprintf("  pre-away message %d: %s", i, expectedID))
+				}
+			}
+			if len(missingPreAway) > 0 {
+				shown := missingPreAway
+				if len(shown) > 20 {
+					shown = shown[:20]
+					shown = append(shown, fmt.Sprintf("  ... and %d more", len(missingPreAway)-20))
+				}
+				t.Errorf("STALE TOKEN RESUME: MISSING PRE-AWAY EVENTS (%d of %d):\n%s",
+					len(missingPreAway), len(allTrackedEventIDs), strings.Join(shown, "\n"))
+			}
+
+			// CHECK 3: Event type breakdown for diagnostics
+			typeCounts := make(map[string]int)
+			for _, eventType := range allTypes {
+				typeCounts[eventType]++
+			}
+			var typeReport []string
+			for eventType, count := range typeCounts {
+				typeReport = append(typeReport, fmt.Sprintf("%s: %d", eventType, count))
+			}
+			t.Logf("Combined event type breakdown: %s", strings.Join(typeReport, ", "))
+
+			// Clean up: dana leaves so the next limit iteration has a clean state
+			dana.MustLeaveRoom(t, roomID)
+		})
+	}
+}
+
 // TestPaginationTokenStability verifies that paginating the same room with
 // different limit values always yields the same complete, ordered set of
 // events. This catches bugs where pagination tokens encode limit-dependent
