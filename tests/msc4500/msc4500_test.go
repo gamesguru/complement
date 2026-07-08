@@ -113,17 +113,19 @@ func TestMSC4500StateHashMismatch(t *testing.T) {
 		"pdus":             pdus,
 		"state_hashes": map[string]interface{}{
 			badEvent.EventID(): map[string]interface{}{
-				"algorithm": "lthash16",
-				"digest":    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+				"after": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 			},
 		},
 	}
+
+	txnBody, err := json.Marshal(txnJSON)
+	must.NotError(t, "json marshal txn", err)
 
 	txnID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
 	reqURI := fmt.Sprintf("/_matrix/federation/v1/send/%s", txnID)
 
 	req := fclient.NewFederationRequest("PUT", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	err := req.SetContent(txnJSON)
+	err = req.SetContent(json.RawMessage(txnBody))
 	must.NotError(t, "set content", err)
 
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
