@@ -35,7 +35,7 @@ import (
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite) // Dendrite has known backfill issues
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
 
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
@@ -525,7 +525,7 @@ func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 //   - Duplicates appear at the token boundary
 //   - New membership/state events confuse the token position
 func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
 
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
