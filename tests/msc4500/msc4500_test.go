@@ -131,18 +131,22 @@ func TestMSC4500StateHashMismatch(t *testing.T) {
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "do federation request", err)
 
-	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
-	must.NotError(t, "do federation request", err)
-	defer res.Body.Close()
-
 	resBody, err := io.ReadAll(res.Body)
 	must.NotError(t, "read res body", err)
+	must.NotError(t, "close res body", res.Body.Close())
 
 	t.Logf("Response: %s", string(resBody))
 
 	// Verify the response contains state_hash_mismatch for the event
 	parsedRes := gjson.ParseBytes(resBody)
-	mismatchObj := parsedRes.Get(fmt.Sprintf("pdus.%s.state_hash_mismatch", badEvent.EventID()))
+	mismatchObj := gjson.Result{}
+	parsedRes.Get("pdus").ForEach(func(key, value gjson.Result) bool {
+		if key.Str == badEvent.EventID() {
+			mismatchObj = value.Get("state_hash_mismatch")
+			return false
+		}
+		return true
+	})
 	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
 	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16", "mismatch algorithm wrong")
 }
