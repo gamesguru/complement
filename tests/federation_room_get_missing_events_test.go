@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -191,7 +192,18 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 		onGetMissingEvents(w, req)
 	}).Methods("POST")
 
-	ver := alice.GetDefaultRoomVersion(t)
+	const MAX_SUPPORTED_VERSION = 11
+	roomVersion := alice.GetDefaultRoomVersion(t)
+	roomVer, err := strconv.Atoi(string(roomVersion))
+	if err != nil {
+		t.Fatalf("non-numeric room version %q", roomVersion)
+	}
+
+	verInt := roomVer
+	if verInt > MAX_SUPPORTED_VERSION {
+		verInt = MAX_SUPPORTED_VERSION
+	}
+	ver := gomatrixserverlib.RoomVersion(strconv.Itoa(verInt))
 	charlie := srv.UserID("charlie")
 	room := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
 	roomAlias := srv.MakeAliasMapping("flibble", room.RoomID)
