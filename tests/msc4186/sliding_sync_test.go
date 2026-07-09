@@ -259,7 +259,11 @@ func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Re
 				room["stripped_state"] = inviteState
 				delete(room, "invite_state")
 			}
-			if lists, ok := roomLists[roomID]; ok {
+			if _, ok := room["lists"]; ok {
+				// Some unstable endpoints use the legacy URL but already emit the
+				// MSC4186 per-room list membership field. Preserve it instead of
+				// deriving membership from legacy list ops.
+			} else if lists, ok := roomLists[roomID]; ok {
 				room["lists"] = sortedMapKeys(lists)
 			} else {
 				room["lists"] = []string{}
