@@ -569,6 +569,11 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			morePreAway := sendNMessages(t, alice, roomID, 10)
 			allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
 
+			// The stale token should represent a client that has caught up to the
+			// pre-away timeline. Otherwise later federation delivery can make
+			// pre-away events appear newer than the saved local cursor.
+			bob.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, morePreAway[len(morePreAway)-1]))
+
 			t.Logf("Pre-away phase: %d tracked messages", len(allTrackedEventIDs))
 
 			// === BOB PAGINATES BACKWARDS PARTWAY ===
@@ -648,6 +653,8 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			dana.MustJoinRoom(t, roomID, []spec.ServerName{
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
+			dana.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
 			// Ensure dana leaves even if the test fails partway through
 			defer dana.MustLeaveRoom(t, roomID)
 
