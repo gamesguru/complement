@@ -1,9 +1,14 @@
 package tests
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
+	"net/url"
+	"sort"
+	"sync"
 	"testing"
 
 	"github.com/matrix-org/complement"
@@ -17,6 +22,32 @@ import (
 
 const maxSafeJSONInteger = 1<<53 - 1
 
+type slidingSyncEndpoint struct {
+	name   string
+	paths  []string
+	legacy bool
+}
+
+var (
+	slidingSyncEndpointCandidates = []slidingSyncEndpoint{
+		{
+			name:  "v4",
+			paths: []string{"_matrix", "client", "v4", "sync"},
+		},
+		{
+			name:  "v5",
+			paths: []string{"_matrix", "client", "v5", "sync"},
+		},
+		{
+			name:   "unstable-org.matrix.simplified_msc3575",
+			paths:  []string{"_matrix", "client", "unstable", "org.matrix.simplified_msc3575", "sync"},
+			legacy: true,
+		},
+	}
+	slidingSyncEndpointCacheMu sync.Mutex
+	slidingSyncEndpointCache   = map[string]slidingSyncEndpoint{}
+)
+
 type slidingSyncReq struct {
 	ConnID            string
 	Pos               string
@@ -27,6 +58,69 @@ type slidingSyncReq struct {
 func mustDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq) (string, gjson.Result) {
 	t.Helper()
 
+	endpoints := slidingSyncEndpointCandidates
+	slidingSyncEndpointCacheMu.Lock()
+	if cachedEndpoint, ok := slidingSyncEndpointCache[user.BaseURL]; ok {
+		endpoints = []slidingSyncEndpoint{cachedEndpoint}
+	}
+	slidingSyncEndpointCacheMu.Unlock()
+
+	var failures []string
+	for _, endpoint := range endpoints {
+		pos, body, ok, failure := tryDoSlidingSync(t, user, req, endpoint)
+		if ok {
+			slidingSyncEndpointCacheMu.Lock()
+			slidingSyncEndpointCache[user.BaseURL] = endpoint
+			slidingSyncEndpointCacheMu.Unlock()
+			return pos, body
+		}
+		failures = append(failures, failure)
+	}
+
+	t.Fatalf("no supported sliding sync endpoint found for %s: %v", user.BaseURL, failures)
+	panic("unreachable")
+}
+
+func tryDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq, endpoint slidingSyncEndpoint) (string, gjson.Result, bool, string) {
+	t.Helper()
+
+	requestBody := slidingSyncRequestBody(req)
+	requestOpts := []client.RequestOpt{client.WithJSONBody(t, requestBody)}
+	if endpoint.legacy {
+		requestBody = legacySlidingSyncRequestBody(requestBody)
+		query := url.Values{}
+		if req.Pos != "" {
+			query.Set("pos", req.Pos)
+			query.Set("timeout", "0")
+		}
+		requestOpts = []client.RequestOpt{client.WithJSONBody(t, requestBody), client.WithQueries(query)}
+	}
+
+	resp := user.Do(t, "POST", endpoint.paths, requestOpts...)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read sliding sync response body from %s: %s", endpoint.name, err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound || gjson.GetBytes(respBody, "errcode").Str == "M_UNRECOGNIZED" {
+		return "", gjson.Result{}, false, fmt.Sprintf("%s returned %s: %s", endpoint.name, resp.Status, string(respBody))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		t.Fatalf("sliding sync endpoint %s returned non-2xx code: %s - body: %s", endpoint.name, resp.Status, string(respBody))
+	}
+
+	jsonBody := gjson.ParseBytes(respBody)
+	if endpoint.legacy {
+		jsonBody = normalizeLegacySlidingSyncResponse(t, jsonBody)
+	}
+	pos := jsonBody.Get("pos").Str
+	if pos == "" {
+		t.Fatalf("sliding sync endpoint %s response missing pos: %s", endpoint.name, jsonBody.Raw)
+	}
+	return pos, jsonBody, true, ""
+}
+
+func slidingSyncRequestBody(req slidingSyncReq) map[string]interface{} {
 	body := map[string]interface{}{}
 	if req.ConnID != "" {
 		body["conn_id"] = req.ConnID
@@ -42,10 +136,151 @@ func mustDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq) (st
 		body["room_subscriptions"] = req.RoomSubscriptions
 	}
 
-	resp := user.MustDo(t, "POST", []string{"_matrix", "client", "v4", "sync"}, client.WithJSONBody(t, body))
-	respBody := client.ParseJSON(t, resp)
-	jsonBody := gjson.ParseBytes(respBody)
-	return client.GetJSONFieldStr(t, respBody, "pos"), jsonBody
+	return body
+}
+
+func legacySlidingSyncRequestBody(body map[string]interface{}) map[string]interface{} {
+	legacyBody := map[string]interface{}{}
+	if connID, ok := body["conn_id"]; ok {
+		legacyBody["conn_id"] = connID
+	}
+	if lists, ok := body["lists"].(map[string]interface{}); ok {
+		legacyLists := map[string]interface{}{}
+		for listKey, listConfig := range lists {
+			legacyLists[listKey] = legacySlidingSyncListConfig(listConfig, true)
+		}
+		legacyBody["lists"] = legacyLists
+	}
+	if roomSubscriptions, ok := body["room_subscriptions"].(map[string]interface{}); ok {
+		legacyRoomSubscriptions := map[string]interface{}{}
+		for roomID, roomConfig := range roomSubscriptions {
+			legacyRoomSubscriptions[roomID] = legacySlidingSyncListConfig(roomConfig, false)
+		}
+		legacyBody["room_subscriptions"] = legacyRoomSubscriptions
+	}
+	if extensions, ok := body["extensions"]; ok {
+		legacyBody["extensions"] = extensions
+	}
+	return legacyBody
+}
+
+func legacySlidingSyncListConfig(config interface{}, includeRanges bool) map[string]interface{} {
+	configMap, _ := config.(map[string]interface{})
+	legacyConfig := map[string]interface{}{}
+	if timelineLimit, ok := configMap["timeline_limit"]; ok {
+		legacyConfig["timeline_limit"] = timelineLimit
+	}
+	if requiredState, ok := configMap["required_state"].(map[string]interface{}); ok {
+		legacyConfig["required_state"] = legacyRequiredState(requiredState)
+	}
+	if filters, ok := configMap["filters"]; ok {
+		legacyConfig["filters"] = filters
+	}
+	if includeRanges {
+		if rangeValue, ok := configMap["range"]; ok {
+			legacyConfig["ranges"] = []interface{}{rangeValue}
+		}
+	}
+	return legacyConfig
+}
+
+func legacyRequiredState(requiredState map[string]interface{}) [][]string {
+	var legacyState [][]string
+	if include, ok := requiredState["include"].([]map[string]interface{}); ok {
+		for _, state := range include {
+			legacyState = append(legacyState, legacyRequiredStateElement(state))
+		}
+	} else if include, ok := requiredState["include"].([]interface{}); ok {
+		for _, rawState := range include {
+			state, _ := rawState.(map[string]interface{})
+			legacyState = append(legacyState, legacyRequiredStateElement(state))
+		}
+	}
+	if lazyMembers, _ := requiredState["lazy_members"].(bool); lazyMembers {
+		legacyState = append(legacyState, []string{"m.room.member", "$LAZY"})
+	}
+	return legacyState
+}
+
+func legacyRequiredStateElement(state map[string]interface{}) []string {
+	eventType := "*"
+	stateKey := "*"
+	if value, ok := state["type"].(string); ok {
+		eventType = value
+	}
+	if value, ok := state["state_key"].(string); ok {
+		stateKey = value
+	}
+	return []string{eventType, stateKey}
+}
+
+func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Result {
+	t.Helper()
+
+	var normalized map[string]interface{}
+	if err := json.Unmarshal([]byte(res.Raw), &normalized); err != nil {
+		t.Fatalf("failed to parse legacy sliding sync response: %s", err)
+	}
+
+	roomLists := map[string]map[string]struct{}{}
+	if lists, ok := normalized["lists"].(map[string]interface{}); ok {
+		for listKey, rawList := range lists {
+			list, _ := rawList.(map[string]interface{})
+			ops, _ := list["ops"].([]interface{})
+			for _, rawOp := range ops {
+				op, _ := rawOp.(map[string]interface{})
+				roomIDs, _ := op["room_ids"].([]interface{})
+				for _, rawRoomID := range roomIDs {
+					roomID, _ := rawRoomID.(string)
+					if roomID == "" {
+						continue
+					}
+					if _, ok := roomLists[roomID]; !ok {
+						roomLists[roomID] = map[string]struct{}{}
+					}
+					roomLists[roomID][listKey] = struct{}{}
+				}
+			}
+		}
+	}
+
+	if rooms, ok := normalized["rooms"].(map[string]interface{}); ok {
+		for roomID, rawRoom := range rooms {
+			room, _ := rawRoom.(map[string]interface{})
+			if timeline, ok := room["timeline"]; ok {
+				room["timeline_events"] = timeline
+				delete(room, "timeline")
+			}
+			if expandedTimeline, ok := room["unstable_expanded_timeline"]; ok {
+				room["expanded_timeline"] = expandedTimeline
+				delete(room, "unstable_expanded_timeline")
+			}
+			if inviteState, ok := room["invite_state"]; ok {
+				room["stripped_state"] = inviteState
+				delete(room, "invite_state")
+			}
+			if lists, ok := roomLists[roomID]; ok {
+				room["lists"] = sortedMapKeys(lists)
+			} else {
+				room["lists"] = []string{}
+			}
+		}
+	}
+
+	normalizedBytes, err := json.Marshal(normalized)
+	if err != nil {
+		t.Fatalf("failed to encode normalized legacy sliding sync response: %s", err)
+	}
+	return gjson.ParseBytes(normalizedBytes)
+}
+
+func sortedMapKeys(m map[string]struct{}) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func slidingList(timelineLimit int, from int, to int) map[string]interface{} {
