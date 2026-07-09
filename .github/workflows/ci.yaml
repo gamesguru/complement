@@ -1,8 +1,9 @@
+---
 name: Tests
 
 on:
   push:
-    branches: [ 'master', 'main' ]
+    branches: ["master", "main"]
   pull_request:
   workflow_dispatch:
 
@@ -31,15 +32,15 @@ jobs:
           (cd homeserver && docker build -t complement-dendrite -f build/scripts/Complement.Dockerfile .)
           (cd cmd/homerunner/test && ./test.sh)
 
-
   complement:
     name: Complement (${{ matrix.homeserver }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: false # ensure if synapse fails we keep running dendrite and vice-versa
+      fail-fast: false # ensure one homeserver failure doesn't stop the others
       matrix:
         include:
           - homeserver: Synapse
+            runner: ubuntu-latest
             repo: element-hq/synapse
             tags: synapse_blacklist
             packages: ./tests/msc3874 ./tests/msc3902 ./tests/msc4306 ./tests/msc4499
@@ -47,9 +48,22 @@ jobs:
             timeout: 10m
 
           - homeserver: Dendrite
+            runner: ubuntu-latest
             repo: element-hq/dendrite
             tags: dendrite_blacklist
             packages: ./tests/msc4499
+            env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
+            timeout: 10m
+
+          - homeserver: Continuwuity
+            runner: ubuntu-22.04
+            repo: gamesguru/continuwuity
+            release_tag: guru/dev-2026-03-27+b1-presence+b2-federation
+            release_asset: conduwuit-x86-64-v3-ubuntu-22.04.tar.gz
+            prebuilts_tag: prebuilts-v0.5
+            prebuilts_arch: x86-64-v3
+            prebuilts_os: ubuntu-22.04
+            tags: continuwuity_blacklist
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
             timeout: 10m
 
@@ -96,9 +110,34 @@ jobs:
             (wget -O - "https://github.com/${{ matrix.repo }}/archive/$BRANCH_NAME.tar.gz" | tar -xz --strip-components=1 -C homeserver) && break
           done
 
-      # Build homeserver image
+      - name: "Download Continuwuity release binary"
+        if: ${{ matrix.homeserver == 'Continuwuity' }}
+        shell: bash
+        run: |
+          mkdir -p homeserver/target/latest
+          curl -fL "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.release_tag }}/${{ matrix.release_asset }}" -o /tmp/continuwuity-release.tar.gz
+          tar -xzf /tmp/continuwuity-release.tar.gz -C homeserver
+          cp homeserver/bin/conduwuit homeserver/target/latest/conduwuit
+          chmod +x homeserver/target/latest/conduwuit
 
-        # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
+      - name: "Download Continuwuity prebuilts"
+        if: ${{ matrix.homeserver == 'Continuwuity' }}
+        shell: bash
+        run: |
+          mkdir -p /tmp/continuwuity-prebuilts
+          curl -fsSL "https://api.github.com/repos/${{ matrix.repo }}/releases/tags/${{ matrix.prebuilts_tag }}" \
+            | jq -r '.assets[]
+              | select(.name | endswith("-${{ matrix.prebuilts_arch }}-${{ matrix.prebuilts_os }}.tar.gz"))
+              | .browser_download_url' \
+            | while IFS= read -r url; do
+                [ -n "$url" ] || continue
+                fname=/tmp/continuwuity-prebuilts/$(basename "$url")
+                curl -fL "$url" -o "$fname"
+                sudo tar -xzf "$fname" -C /usr/local
+              done
+
+      # Build homeserver image
+      # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
       - run: |
           docker build -t matrixdotorg/synapse:latest -f docker/Dockerfile .
           docker build -t matrixdotorg/synapse-workers:latest -f docker/Dockerfile-workers .
@@ -116,6 +155,13 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
 
+      - run: make complement/docker COMPLEMENT_IMAGE=homeserver
+        if: ${{ matrix.homeserver == 'Continuwuity' }}
+        working-directory: homeserver
+        env:
+          DOCKER_BUILDKIT: 1
+          COMPLEMENT_BASE_IMAGE: ubuntu:22.04
+
       - run: |
           set -o pipefail &&
           ${{ matrix.env }} go test -v -json -tags "${{ matrix.tags }}" -timeout "${{ matrix.timeout }}" ./tests ./tests/csapi ${{ matrix.packages }} | .ci/scripts/gotestfmt
@@ -125,3 +171,4 @@ jobs:
         env:
           COMPLEMENT_BASE_IMAGE: homeserver
           DOCKER_BUILDKIT: 1
+          COMPLEMENT_HOST_MOUNTS: /usr/local/lib:/usr/local/lib:ro
