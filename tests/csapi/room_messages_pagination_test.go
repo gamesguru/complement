@@ -16,6 +16,7 @@ import (
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
+	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
@@ -128,10 +129,10 @@ func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 			Type:     "m.room.power_levels",
 			StateKey: b.Ptr(""),
 			Content: map[string]interface{}{
-				"users": map[string]interface{}{
+				"users": powerLevelUsersForRoomVersion(t, alice.GetDefaultRoomVersion(t), alice.UserID, map[string]interface{}{
 					alice.UserID:   100,
 					charlie.UserID: 50,
-				},
+				}),
 			},
 		})
 
@@ -850,6 +851,16 @@ func sendNMessages(t *testing.T, sender *client.CSAPI, roomID string, n int) []s
 
 	t.Logf("Sent %d messages into room %s", n, roomID)
 	return eventIDs
+}
+
+func powerLevelUsersForRoomVersion(t *testing.T, roomVersion gomatrixserverlib.RoomVersion, creator string, users map[string]interface{}) map[string]interface{} {
+	t.Helper()
+
+	if gomatrixserverlib.MustGetRoomVersion(roomVersion).PrivilegedCreators() {
+		delete(users, creator)
+	}
+
+	return users
 }
 
 // paginationResult holds the raw results of paginating through a room.
