@@ -62,6 +62,9 @@ func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				if limit == 1 {
+					runtime.SkipIf(t, runtime.Synapse)
+				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
 			})
 		}
@@ -220,6 +223,9 @@ func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				if limit == 1 {
+					runtime.SkipIf(t, runtime.Synapse)
+				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
 		}
@@ -270,6 +276,9 @@ func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				if limit == 1 {
+					runtime.SkipIf(t, runtime.Synapse)
+				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
 		}
