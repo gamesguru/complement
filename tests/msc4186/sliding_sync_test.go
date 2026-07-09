@@ -185,7 +185,7 @@ func legacySlidingSyncListConfig(config interface{}, includeRanges bool) map[str
 }
 
 func legacyRequiredState(requiredState map[string]interface{}) [][]string {
-	var legacyState [][]string
+	legacyState := [][]string{}
 	if include, ok := requiredState["include"].([]map[string]interface{}); ok {
 		for _, state := range include {
 			legacyState = append(legacyState, legacyRequiredStateElement(state))
