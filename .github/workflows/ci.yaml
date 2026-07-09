@@ -57,8 +57,11 @@ jobs:
           - homeserver: Continuwuity
             runner: ubuntu-22.04
             repo: gamesguru/continuwuity
-            release_tag: v0.5.10-850-d1517fba3-main
+            release_tag: guru/dev-2026-03-27+b1-presence+b2-federation
             release_asset: conduwuit-x86-64-v3-ubuntu-22.04.tar.gz
+            prebuilts_tag: prebuilts-v0.5
+            prebuilts_arch: x86-64-v3
+            prebuilts_os: ubuntu-22.04
             tags: continuwuity_blacklist
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
             timeout: 10m
@@ -111,10 +114,25 @@ jobs:
         shell: bash
         run: |
           mkdir -p homeserver/target/latest
-          wget -O /tmp/continuwuity-release.tar.gz "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.release_tag }}/${{ matrix.release_asset }}"
-          tar -xzf /tmp/continuwuity-release.tar.gz -C homeserver
+          gh release download "${{ matrix.release_tag }}" -R "${{ matrix.repo }}" -p "${{ matrix.release_asset }}" -D /tmp/continuwuity-release
+          tar -xzf /tmp/continuwuity-release/${{ matrix.release_asset }} -C homeserver
           cp homeserver/bin/conduwuit homeserver/target/latest/conduwuit
           chmod +x homeserver/target/latest/conduwuit
+
+      - name: "Download Continuwuity prebuilts"
+        if: ${{ matrix.homeserver == 'Continuwuity' }}
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/continuwuity-prebuilts
+          gh release download "${{ matrix.prebuilts_tag }}" \
+            -R "${{ matrix.repo }}" \
+            --pattern "*-${{ matrix.prebuilts_arch }}-${{ matrix.prebuilts_os }}.tar.gz" \
+            --dir /tmp/continuwuity-prebuilts
+          for archive in /tmp/continuwuity-prebuilts/*.tar.gz; do
+            sudo tar -xzf "$archive" -C /
+          done
 
       # Build homeserver image
       # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
@@ -151,3 +169,4 @@ jobs:
         env:
           COMPLEMENT_BASE_IMAGE: homeserver
           DOCKER_BUILDKIT: 1
+          COMPLEMENT_HOST_MOUNTS: /usr/local/lib:/usr/local/lib:ro
