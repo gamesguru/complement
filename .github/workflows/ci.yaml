@@ -133,7 +133,7 @@ jobs:
                 [ -n "$url" ] || continue
                 fname=/tmp/continuwuity-prebuilts/$(basename "$url")
                 curl -fL "$url" -o "$fname"
-                sudo tar -xzf "$fname" -C /
+                sudo tar -xzf "$fname" -C /usr/local
               done
 
       # Build homeserver image
