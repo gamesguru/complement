@@ -358,6 +358,7 @@ func unsafeSendMessage(t *testing.T, user *client.CSAPI, roomID string, body str
 	})
 }
 
+// TestMSC4186SlidingSyncLists verifies initial and incremental sliding sync list responses.
 func TestMSC4186SlidingSyncLists(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -428,6 +429,7 @@ func TestMSC4186SlidingSyncLists(t *testing.T) {
 	})
 }
 
+// TestMSC4186SlidingSyncSubscriptions verifies explicit room subscriptions outside the requested list range.
 func TestMSC4186SlidingSyncSubscriptions(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -454,6 +456,7 @@ func TestMSC4186SlidingSyncSubscriptions(t *testing.T) {
 	requireRoom(t, res, newRoom)
 }
 
+// TestMSC4186SlidingSyncListDeltas verifies list membership deltas for subscribed rooms.
 func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -494,6 +497,7 @@ func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
 	)
 }
 
+// TestMSC4186SlidingSyncExpandedTimeline verifies timeline expansion on incremental requests.
 func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -526,6 +530,7 @@ func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 	)
 }
 
+// TestMSC4186SlidingSyncBulkLoad verifies timeline truncation and bump stamps across many rooms.
 func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -585,6 +590,7 @@ func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
 	}
 }
 
+// TestMSC4186SlidingSyncIncrementalRoomDeltas verifies omitted unchanged fields and required state changes.
 func TestMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -704,6 +710,7 @@ func TestMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
 	})
 }
 
+// TestMSC4186SlidingSyncMembershipListSemantics verifies leave, kick, and ban visibility in list responses.
 func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
