@@ -1,3 +1,4 @@
+---
 name: Tests
 
 on:
@@ -114,25 +115,26 @@ jobs:
         shell: bash
         run: |
           mkdir -p homeserver/target/latest
-          gh release download "${{ matrix.release_tag }}" -R "${{ matrix.repo }}" -p "${{ matrix.release_asset }}" -D /tmp/continuwuity-release
-          tar -xzf /tmp/continuwuity-release/${{ matrix.release_asset }} -C homeserver
+          curl -fL "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.release_tag }}/${{ matrix.release_asset }}" -o /tmp/continuwuity-release.tar.gz
+          tar -xzf /tmp/continuwuity-release.tar.gz -C homeserver
           cp homeserver/bin/conduwuit homeserver/target/latest/conduwuit
           chmod +x homeserver/target/latest/conduwuit
 
       - name: "Download Continuwuity prebuilts"
         if: ${{ matrix.homeserver == 'Continuwuity' }}
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p /tmp/continuwuity-prebuilts
-          gh release download "${{ matrix.prebuilts_tag }}" \
-            -R "${{ matrix.repo }}" \
-            --pattern "*-${{ matrix.prebuilts_arch }}-${{ matrix.prebuilts_os }}.tar.gz" \
-            --dir /tmp/continuwuity-prebuilts
-          for archive in /tmp/continuwuity-prebuilts/*.tar.gz; do
-            sudo tar -xzf "$archive" -C /
-          done
+          curl -fsSL "https://api.github.com/repos/${{ matrix.repo }}/releases/tags/${{ matrix.prebuilts_tag }}" \
+            | jq -r '.assets[]
+              | select(.name | endswith("-${{ matrix.prebuilts_arch }}-${{ matrix.prebuilts_os }}.tar.gz"))
+              | .browser_download_url' \
+            | while IFS= read -r url; do
+                [ -n "$url" ] || continue
+                fname=/tmp/continuwuity-prebuilts/$(basename "$url")
+                curl -fL "$url" -o "$fname"
+                sudo tar -xzf "$fname" -C /
+              done
 
       # Build homeserver image
       # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
