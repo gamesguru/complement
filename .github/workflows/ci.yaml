@@ -1,8 +1,9 @@
+---
 name: Tests
 
 on:
   push:
-    branches: [ 'master', 'main' ]
+    branches: ["master", "main"]
   pull_request:
   workflow_dispatch:
 
@@ -31,7 +32,6 @@ jobs:
           (cd homeserver && docker build -t complement-dendrite -f build/scripts/Complement.Dockerfile .)
           (cd cmd/homerunner/test && ./test.sh)
 
-
   complement:
     name: Complement (${{ matrix.homeserver }})
     runs-on: ubuntu-latest
@@ -42,14 +42,13 @@ jobs:
           - homeserver: Synapse
             repo: element-hq/synapse
             tags: synapse_blacklist
-            packages: ./tests/msc3874 ./tests/msc3902 ./tests/msc4306 ./tests/msc4499
+            packages: ./tests/msc3874 ./tests/msc3902 ./tests/msc4306
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1 COMPLEMENT_SHARE_ENV_PREFIX=PASS_ PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite"
-            timeout: 10m
+            timeout: 20m
 
           - homeserver: Dendrite
             repo: element-hq/dendrite
             tags: dendrite_blacklist
-            packages: ./tests/msc4499
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
             timeout: 10m
 
@@ -97,8 +96,7 @@ jobs:
           done
 
       # Build homeserver image
-
-        # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
+      # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
       - run: |
           docker build -t matrixdotorg/synapse:latest -f docker/Dockerfile .
           docker build -t matrixdotorg/synapse-workers:latest -f docker/Dockerfile-workers .

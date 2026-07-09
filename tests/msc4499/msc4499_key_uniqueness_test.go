@@ -215,7 +215,7 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -495,7 +495,7 @@ func TestMSC4499KeyRotation(t *testing.T) {
 // with DIFFERENT key material. MSC4499 requires the entire response to be rejected
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func TestMSC4499KeyIntraPayloadRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -771,7 +771,7 @@ func TestMSC4499KeyFetchCoalescing(t *testing.T) {
 
 // Test that failed key fetches are cached and subject to negative caching / backoff.
 func TestMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -869,7 +869,7 @@ func TestMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func TestMSC4499KeyHistoricalEventVerification(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1356,7 +1356,7 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 // and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
 // keys. Keys in verify_keys MUST always be prioritized and exempt from eviction.
 func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1571,7 +1571,7 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  4. Query notary with minimum_valid_until_ts forcing a re-fetch
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1666,7 +1666,7 @@ func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 //  2. Query notary for the signing key
 //  3. Assert: the entire payload is rejected — signing key should NOT be found
 func TestMSC4499KeyVerifyKeysCeiling(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1740,7 +1740,7 @@ func TestMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 //  2. Query for key A → should be returned (payload not poisoned)
 //  3. Query for key B → should be absent (malformed entry ignored)
 func TestMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
