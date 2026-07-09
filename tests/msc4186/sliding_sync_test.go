@@ -340,8 +340,8 @@ func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
 			}
 		}
 
-		if limited := room.Get("limited"); limited.Exists() && !limited.Bool() {
-			t.Fatalf("room %s explicitly set limited=false despite truncating %d messages to 7: %s", loaded.roomID, len(loaded.eventIDs), room.Raw)
+		if limited := room.Get("limited"); !limited.Exists() || !limited.Bool() {
+			t.Fatalf("room %s must set limited=true after truncating %d messages to 7: %s", loaded.roomID, len(loaded.eventIDs), room.Raw)
 		}
 	}
 }

@@ -534,6 +534,18 @@ The `StateStub` is used in `required_state` to indicate that a piece of state ha
 | `type` | string | Yes | The `type` of the state entry that was deleted |
 | `state_key` | string | Yes | The `state_key` of the state entry that was deleted |
 
+### `StrippedState` type
+
+The `StrippedState` type follows the same format as stripped state events in the `/v3/sync` `invite_state.events`
+response.
+
+| Name | Type | Required | Comment |
+| - | - | - | - |
+| `type` | string | Yes | The event type. |
+| `state_key` | string | Yes | The state key. |
+| `sender` | string | Yes | The user ID of the sender. |
+| `content` | object | Yes | The stripped event content. |
+
 
 ### Example response
 
@@ -559,7 +571,7 @@ The `StateStub` is used in `required_state` to indicate that a piece of state ha
               },
               ...
           ],
-          "timeline": [
+          "timeline_events": [
               {"sender":"@alice:example.com","type":"m.room.message", "content":{"body":"B"}},
               ...
           ],
@@ -691,7 +703,7 @@ Differences from the experimental implementation of simplified sliding sync in S
 
 1. Add `set_presence` URL param.
 2. Rename `invite_state` to `stripped_state`
-3. When state is deleted we return a stub `{"type: "..", "state_key": ".." }` in `required_state`.
+3. When state is deleted we return a stub `{"type": "..", "state_key": ".." }` in `required_state`.
 4. Rename `unstable_expanded_timeline` to `expanded_timeline`
 5. Add `lists` to room response
 6. Add `membership` field to room response.
