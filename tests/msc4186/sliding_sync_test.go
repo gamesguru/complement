@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
@@ -51,8 +54,11 @@ var (
 type slidingSyncReq struct {
 	ConnID            string
 	Pos               string
+	Timeout           int
+	SetPresence       string
 	Lists             map[string]interface{}
 	RoomSubscriptions map[string]interface{}
+	Extensions        map[string]interface{}
 }
 
 func mustDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq) (string, gjson.Result) {
@@ -81,7 +87,49 @@ func mustDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq) (st
 	panic("unreachable")
 }
 
+// lookupSlidingSyncEndpoint returns the endpoint previously discovered for user by
+// mustDoSlidingSync. Callers that need to observe non-2xx responses (e.g. negative
+// tests) should establish the endpoint with a successful mustDoSlidingSync call first.
+func lookupSlidingSyncEndpoint(t *testing.T, user *client.CSAPI) slidingSyncEndpoint {
+	t.Helper()
+	slidingSyncEndpointCacheMu.Lock()
+	defer slidingSyncEndpointCacheMu.Unlock()
+	endpoint, ok := slidingSyncEndpointCache[user.BaseURL]
+	if !ok {
+		t.Fatalf("no cached sliding sync endpoint for %s; call mustDoSlidingSync first", user.BaseURL)
+	}
+	return endpoint
+}
+
+// doSlidingSyncExpectError issues a sliding sync request against the previously
+// discovered endpoint for user and returns the raw status code and body, without
+// failing the test on a non-2xx response.
+func doSlidingSyncExpectError(t *testing.T, user *client.CSAPI, req slidingSyncReq) (int, gjson.Result) {
+	t.Helper()
+	endpoint := lookupSlidingSyncEndpoint(t, user)
+	return doSlidingSyncRequest(t, user, req, endpoint)
+}
+
 func tryDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq, endpoint slidingSyncEndpoint) (string, gjson.Result, bool, string) {
+	t.Helper()
+
+	statusCode, jsonBody := doSlidingSyncRequest(t, user, req, endpoint)
+
+	if statusCode == http.StatusNotFound || jsonBody.Get("errcode").Str == "M_UNRECOGNIZED" {
+		return "", gjson.Result{}, false, fmt.Sprintf("%s returned %d: %s", endpoint.name, statusCode, jsonBody.Raw)
+	}
+	if statusCode < 200 || statusCode >= 300 {
+		t.Fatalf("sliding sync endpoint %s returned non-2xx code: %d - body: %s", endpoint.name, statusCode, jsonBody.Raw)
+	}
+
+	pos := jsonBody.Get("pos").Str
+	if pos == "" {
+		t.Fatalf("sliding sync endpoint %s response missing pos: %s", endpoint.name, jsonBody.Raw)
+	}
+	return pos, jsonBody, true, ""
+}
+
+func doSlidingSyncRequest(t *testing.T, user *client.CSAPI, req slidingSyncReq, endpoint slidingSyncEndpoint) (int, gjson.Result) {
 	t.Helper()
 
 	requestBody := slidingSyncRequestBody(req)
@@ -91,7 +139,7 @@ func tryDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq, endp
 		query := url.Values{}
 		if req.Pos != "" {
 			query.Set("pos", req.Pos)
-			query.Set("timeout", "0")
+			query.Set("timeout", strconv.Itoa(req.Timeout))
 		}
 		requestOpts = []client.RequestOpt{client.WithJSONBody(t, requestBody), client.WithQueries(query)}
 	}
@@ -102,22 +150,11 @@ func tryDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq, endp
 		t.Fatalf("failed to read sliding sync response body from %s: %s", endpoint.name, err)
 	}
 
-	if resp.StatusCode == http.StatusNotFound || gjson.GetBytes(respBody, "errcode").Str == "M_UNRECOGNIZED" {
-		return "", gjson.Result{}, false, fmt.Sprintf("%s returned %s: %s", endpoint.name, resp.Status, string(respBody))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		t.Fatalf("sliding sync endpoint %s returned non-2xx code: %s - body: %s", endpoint.name, resp.Status, string(respBody))
-	}
-
 	jsonBody := gjson.ParseBytes(respBody)
-	if endpoint.legacy {
+	if endpoint.legacy && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		jsonBody = normalizeLegacySlidingSyncResponse(t, jsonBody)
 	}
-	pos := jsonBody.Get("pos").Str
-	if pos == "" {
-		t.Fatalf("sliding sync endpoint %s response missing pos: %s", endpoint.name, jsonBody.Raw)
-	}
-	return pos, jsonBody, true, ""
+	return resp.StatusCode, jsonBody
 }
 
 func slidingSyncRequestBody(req slidingSyncReq) map[string]interface{} {
@@ -127,13 +164,19 @@ func slidingSyncRequestBody(req slidingSyncReq) map[string]interface{} {
 	}
 	if req.Pos != "" {
 		body["pos"] = req.Pos
-		body["timeout"] = 0
+		body["timeout"] = req.Timeout
+	}
+	if req.SetPresence != "" {
+		body["set_presence"] = req.SetPresence
 	}
 	if req.Lists != nil {
 		body["lists"] = req.Lists
 	}
 	if req.RoomSubscriptions != nil {
 		body["room_subscriptions"] = req.RoomSubscriptions
+	}
+	if req.Extensions != nil {
+		body["extensions"] = req.Extensions
 	}
 
 	return body
@@ -143,6 +186,9 @@ func legacySlidingSyncRequestBody(body map[string]interface{}) map[string]interf
 	legacyBody := map[string]interface{}{}
 	if connID, ok := body["conn_id"]; ok {
 		legacyBody["conn_id"] = connID
+	}
+	if setPresence, ok := body["set_presence"]; ok {
+		legacyBody["set_presence"] = setPresence
 	}
 	if lists, ok := body["lists"].(map[string]interface{}); ok {
 		legacyLists := map[string]interface{}{}
@@ -301,6 +347,12 @@ func slidingListWithRequiredState(timelineLimit int, from int, to int, requiredS
 	}
 }
 
+func slidingListWithFilters(timelineLimit int, from int, to int, filters map[string]interface{}) map[string]interface{} {
+	list := slidingList(timelineLimit, from, to)
+	list["filters"] = filters
+	return list
+}
+
 func slidingSubscription(timelineLimit int) map[string]interface{} {
 	return map[string]interface{}{
 		"timeline_limit": timelineLimit,
@@ -310,10 +362,43 @@ func slidingSubscription(timelineLimit int) map[string]interface{} {
 	}
 }
 
+func slidingSubscriptionWithRequiredState(timelineLimit int, requiredState map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"timeline_limit": timelineLimit,
+		"required_state": requiredState,
+	}
+}
+
 func allRoomsList(timelineLimit int, from int, to int) map[string]interface{} {
 	return map[string]interface{}{
 		"all": slidingList(timelineLimit, from, to),
 	}
+}
+
+func setRoomTag(t *testing.T, user *client.CSAPI, roomID string, tag string) {
+	t.Helper()
+	res := user.Do(t, "PUT", []string{"_matrix", "client", "v3", "user", user.UserID, "rooms", roomID, "tags", tag},
+		client.WithJSONBody(t, map[string]interface{}{}),
+	)
+	must.MatchResponse(t, res, match.HTTPResponse{StatusCode: http.StatusOK})
+}
+
+// heroUserID extracts a user ID from a heroes array entry, which may be either a
+// plain string (legacy m.heroes style) or an object containing a user_id field
+// (MSC4186 RoomResult.heroes style).
+func heroUserID(hero gjson.Result) string {
+	if hero.Type == gjson.String {
+		return hero.Str
+	}
+	return hero.Get("user_id").Str
+}
+
+func serverNameOf(userID string) string {
+	parts := strings.SplitN(userID, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return parts[1]
 }
 
 func roomResult(res gjson.Result, roomID string) gjson.Result {
@@ -850,4 +935,671 @@ func ban(t *testing.T, user *client.CSAPI, roomID string, targetUserID string) {
 		}),
 	)
 	must.MatchResponse(t, res, match.HTTPResponse{StatusCode: http.StatusOK})
+}
+
+// TestMSC4186SlidingSyncSetPresence verifies the top-level set_presence field updates
+// the requesting user's presence state, and that omitting it defaults to online.
+func TestMSC4186SlidingSyncSetPresence(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	since := bob.MustSyncUntil(t, client.SyncReq{})
+
+	t.Run("set_presence unavailable updates presence", func(t *testing.T) {
+		mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID:      "set-presence-unavailable",
+			SetPresence: "unavailable",
+			Lists:       allRoomsList(1, 0, 0),
+		})
+		since = bob.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncPresenceHas(alice.UserID, b.Ptr("unavailable")))
+	})
+
+	t.Run("set_presence offline updates presence", func(t *testing.T) {
+		mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID:      "set-presence-offline",
+			SetPresence: "offline",
+			Lists:       allRoomsList(1, 0, 0),
+		})
+		since = bob.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncPresenceHas(alice.UserID, b.Ptr("offline")))
+	})
+
+	t.Run("omitted set_presence defaults to online", func(t *testing.T) {
+		mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "set-presence-default",
+			Lists:  allRoomsList(1, 0, 0),
+		})
+		bob.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncPresenceHas(alice.UserID, b.Ptr("online")))
+	})
+}
+
+// TestMSC4186SlidingSyncLongPolling verifies the server blocks on a non-zero timeout
+// and unblocks promptly once a new event arrives, rather than waiting out the timeout.
+func TestMSC4186SlidingSyncLongPolling(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{})
+	sendMessage(t, alice, roomID, "initial")
+
+	pos, _ := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "long-polling",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	responseChan := make(chan gjson.Result, 1)
+	go func() {
+		defer close(responseChan)
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID:  "long-polling",
+			Pos:     pos,
+			Timeout: 20000,
+			Lists:   allRoomsList(1, 0, 0),
+		})
+		responseChan <- res
+	}()
+
+	// Give the long poll time to actually start blocking on the server before
+	// checking that it hasn't returned prematurely.
+	time.Sleep(2 * time.Second)
+
+	select {
+	case res := <-responseChan:
+		t.Fatalf("sliding sync returned before any new event was sent: %s", res.Raw)
+	default:
+	}
+
+	eventID := sendMessage(t, alice, roomID, "unblock me")
+
+	select {
+	case res := <-responseChan:
+		room := requireRoom(t, res, roomID)
+		must.MatchGJSON(t, room,
+			match.JSONKeyEqual("timeline_events.0.event_id", eventID),
+		)
+	case <-time.After(15 * time.Second):
+		t.Fatal("sliding sync long poll did not unblock within 15s of a new event")
+	}
+}
+
+// TestMSC4186SlidingSyncExtensionsToDevice verifies basic parsing and passthrough of
+// the top-level extensions node, using the to_device extension as a concrete example.
+func TestMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	toDeviceExt := map[string]interface{}{
+		"to_device": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+
+	pos, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID:     "extensions-to-device",
+		Lists:      allRoomsList(1, 0, 0),
+		Extensions: toDeviceExt,
+	})
+	must.MatchGJSON(t, res,
+		match.JSONKeyPresent("extensions.to_device.next_batch"),
+	)
+
+	bob.MustSendToDeviceMessages(t, "m.room_key_request", map[string]map[string]map[string]interface{}{
+		alice.UserID: {
+			"*": {"action": "request", "request_id": "test-request-id"},
+		},
+	})
+
+	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID:     "extensions-to-device",
+		Pos:        pos,
+		Lists:      allRoomsList(1, 0, 0),
+		Extensions: toDeviceExt,
+	})
+
+	found := false
+	for _, ev := range res.Get("extensions.to_device.events").Array() {
+		if ev.Get("sender").Str == bob.UserID && ev.Get("content.request_id").Str == "test-request-id" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected to_device extension to deliver queued message from %s: %s", bob.UserID, res.Raw)
+	}
+}
+
+// TestMSC4186SlidingSyncListFilters verifies SlidingRoomFilter fields narrow list
+// membership as expected.
+func TestMSC4186SlidingSyncListFilters(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	t.Run("is_dm filters direct message rooms", func(t *testing.T) {
+		dmRoom := alice.MustCreateRoom(t, map[string]interface{}{
+			"preset":    "trusted_private_chat",
+			"is_direct": true,
+			"invite":    []string{bob.UserID},
+		})
+		alice.MustSetGlobalAccountData(t, "m.direct", map[string]interface{}{
+			bob.UserID: []string{dmRoom},
+		})
+		normalRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-is-dm",
+			Lists: map[string]interface{}{
+				"dms": slidingListWithFilters(1, 0, 9, map[string]interface{}{"is_dm": true}),
+			},
+		})
+		requireRoom(t, res, dmRoom)
+		requireNoRoom(t, res, normalRoom)
+
+		_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-is-dm",
+			Lists: map[string]interface{}{
+				"dms": slidingListWithFilters(1, 0, 9, map[string]interface{}{"is_dm": false}),
+			},
+		})
+		requireRoom(t, res, normalRoom)
+		requireNoRoom(t, res, dmRoom)
+	})
+
+	t.Run("is_encrypted filters encrypted rooms", func(t *testing.T) {
+		encryptedRoom := alice.MustCreateRoom(t, map[string]interface{}{
+			"initial_state": []map[string]interface{}{
+				{
+					"type":      "m.room.encryption",
+					"state_key": "",
+					"content":   map[string]interface{}{"algorithm": "m.megolm.v1.aes-sha2"},
+				},
+			},
+		})
+		plainRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-is-encrypted",
+			Lists: map[string]interface{}{
+				"encrypted": slidingListWithFilters(1, 0, 9, map[string]interface{}{"is_encrypted": true}),
+			},
+		})
+		requireRoom(t, res, encryptedRoom)
+		requireNoRoom(t, res, plainRoom)
+	})
+
+	t.Run("is_invited filters invited-only rooms", func(t *testing.T) {
+		invitedRoom := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+		alice.MustInviteRoom(t, invitedRoom, bob.UserID)
+		joinedRoom := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+		bob.MustJoinRoom(t, joinedRoom, nil)
+		bob.MustSyncUntil(t, client.SyncReq{}, client.SyncInvitedTo(bob.UserID, invitedRoom))
+
+		_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
+			ConnID: "filter-is-invited",
+			Lists: map[string]interface{}{
+				"invited": slidingListWithFilters(1, 0, 9, map[string]interface{}{"is_invited": true}),
+			},
+		})
+		requireRoom(t, res, invitedRoom)
+		requireNoRoom(t, res, joinedRoom)
+	})
+
+	t.Run("room_types and not_room_types filter spaces", func(t *testing.T) {
+		spaceRoom := alice.MustCreateRoom(t, map[string]interface{}{
+			"creation_content": map[string]interface{}{"type": "m.space"},
+		})
+		normalRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-room-types",
+			Lists: map[string]interface{}{
+				"spaces": slidingListWithFilters(1, 0, 9, map[string]interface{}{"room_types": []interface{}{"m.space"}}),
+			},
+		})
+		requireRoom(t, res, spaceRoom)
+		requireNoRoom(t, res, normalRoom)
+
+		_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-not-room-types",
+			Lists: map[string]interface{}{
+				"non-spaces": slidingListWithFilters(1, 0, 9, map[string]interface{}{"not_room_types": []interface{}{"m.space"}}),
+			},
+		})
+		requireRoom(t, res, normalRoom)
+		requireNoRoom(t, res, spaceRoom)
+	})
+
+	t.Run("tags and not_tags filter tagged rooms", func(t *testing.T) {
+		favouriteRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+		setRoomTag(t, alice, favouriteRoom, "m.favourite")
+		untaggedRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-tags",
+			Lists: map[string]interface{}{
+				"favourites": slidingListWithFilters(1, 0, 9, map[string]interface{}{"tags": []interface{}{"m.favourite"}}),
+			},
+		})
+		requireRoom(t, res, favouriteRoom)
+		requireNoRoom(t, res, untaggedRoom)
+
+		_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-not-tags",
+			Lists: map[string]interface{}{
+				"non-favourites": slidingListWithFilters(1, 0, 9, map[string]interface{}{"not_tags": []interface{}{"m.favourite"}}),
+			},
+		})
+		requireRoom(t, res, untaggedRoom)
+		requireNoRoom(t, res, favouriteRoom)
+	})
+
+	t.Run("spaces filters rooms by space membership", func(t *testing.T) {
+		serverName := serverNameOf(alice.UserID)
+		spaceRoom := alice.MustCreateRoom(t, map[string]interface{}{
+			"creation_content": map[string]interface{}{"type": "m.space"},
+		})
+		childRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+		alice.SendEventSynced(t, spaceRoom, b.Event{
+			Type:     "m.space.child",
+			StateKey: b.Ptr(childRoom),
+			Content: map[string]interface{}{
+				"via": []string{serverName},
+			},
+		})
+		unrelatedRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: "filter-spaces",
+			Lists: map[string]interface{}{
+				"in-space": slidingListWithFilters(1, 0, 9, map[string]interface{}{"spaces": []interface{}{spaceRoom}}),
+			},
+		})
+		requireRoom(t, res, childRoom)
+		requireNoRoom(t, res, unrelatedRoom)
+		requireNoRoom(t, res, spaceRoom)
+	})
+}
+
+// TestMSC4186SlidingSyncRangeShifting verifies that growing a list's range across
+// requests (e.g. [0,1] then [0,4]) returns the newly-visible rooms as deltas without
+// re-sending rooms that were already visible and unchanged.
+func TestMSC4186SlidingSyncRangeShifting(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomIDs := make([]string, 0, 5)
+	for i := 0; i < 5; i++ {
+		roomID := alice.MustCreateRoom(t, map[string]interface{}{})
+		sendMessage(t, alice, roomID, fmt.Sprintf("room %d initial", i))
+		roomIDs = append(roomIDs, roomID)
+	}
+	// roomIDs[4] is the most recently active room, so with recency sort it should
+	// occupy position 0 and roomIDs[0] should occupy position 4.
+	top := []string{roomIDs[4], roomIDs[3]}
+	newlyVisible := []string{roomIDs[2], roomIDs[1], roomIDs[0]}
+
+	pos, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "range-shifting",
+		Lists:  allRoomsList(1, 0, 1),
+	})
+	must.MatchGJSON(t, res, match.JSONKeyEqual("lists.all.count", float64(5)))
+	for _, roomID := range top {
+		room := requireRoom(t, res, roomID)
+		must.MatchGJSON(t, room, match.JSONKeyEqual("initial", true))
+	}
+	for _, roomID := range newlyVisible {
+		requireNoRoom(t, res, roomID)
+	}
+
+	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "range-shifting",
+		Pos:    pos,
+		Lists:  allRoomsList(1, 0, 4),
+	})
+	must.MatchGJSON(t, res, match.JSONKeyEqual("lists.all.count", float64(5)))
+	for _, roomID := range newlyVisible {
+		room := requireRoom(t, res, roomID)
+		must.MatchGJSON(t, room, match.JSONKeyEqual("initial", true))
+	}
+	// Rooms already visible in the prior response should be omitted entirely from
+	// this delta, since nothing about them changed.
+	for _, roomID := range top {
+		requireNoRoom(t, res, roomID)
+	}
+}
+
+// TestMSC4186SlidingSyncLazyLoading verifies lazy_members:true only returns member
+// state for senders relevant to the returned timeline, and expands as new senders
+// become relevant.
+func TestMSC4186SlidingSyncLazyLoading(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, nil)
+	charlie.MustJoinRoom(t, roomID, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(charlie.UserID, roomID))
+
+	sendMessage(t, alice, roomID, "from bob's perspective")
+	sendMessage(t, bob, roomID, "bob speaks")
+
+	lazyRequiredState := map[string]interface{}{
+		"include":      []map[string]interface{}{},
+		"lazy_members": true,
+	}
+
+	pos, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "lazy-loading",
+		Lists: map[string]interface{}{
+			"all": slidingListWithRequiredState(1, 0, 0, lazyRequiredState),
+		},
+	})
+	room := requireRoom(t, res, roomID)
+	requiredState := room.Get("required_state").Array()
+
+	var sawBob, sawCharlie bool
+	for _, ev := range requiredState {
+		if ev.Get("type").Str != "m.room.member" {
+			continue
+		}
+		switch ev.Get("state_key").Str {
+		case bob.UserID:
+			sawBob = true
+		case charlie.UserID:
+			sawCharlie = true
+		}
+	}
+	if !sawBob {
+		t.Fatalf("expected lazy_members to include bob's member event since he sent the returned timeline event: %s", room.Raw)
+	}
+	if sawCharlie {
+		t.Fatalf("expected lazy_members to omit charlie's member event since he sent no relevant timeline events: %s", room.Raw)
+	}
+
+	// Once charlie sends a message, an incremental non-gappy sync should lazily
+	// expand to include his member event too.
+	sendMessage(t, charlie, roomID, "charlie speaks")
+
+	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "lazy-loading",
+		Pos:    pos,
+		Lists: map[string]interface{}{
+			"all": slidingListWithRequiredState(1, 0, 0, lazyRequiredState),
+		},
+	})
+	room = requireRoom(t, res, roomID)
+	sawCharlie = false
+	for _, ev := range room.Get("required_state").Array() {
+		if ev.Get("type").Str == "m.room.member" && ev.Get("state_key").Str == charlie.UserID {
+			sawCharlie = true
+		}
+	}
+	if !sawCharlie {
+		t.Fatalf("expected lazy_members to expand to include charlie's member event after he spoke: %s", room.Raw)
+	}
+}
+
+// TestMSC4186SlidingSyncRequiredStateExclude verifies required_state.exclude omits
+// matching state events even when a broader include would otherwise return them.
+func TestMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+		"name":   "Exclude members room",
+	})
+	bob.MustJoinRoom(t, roomID, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	requiredState := map[string]interface{}{
+		"include": []map[string]interface{}{
+			{"type": "*", "state_key": "*"},
+		},
+		"exclude": []map[string]interface{}{
+			{"type": "m.room.member", "state_key": "*"},
+		},
+	}
+
+	_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "required-state-exclude",
+		Lists: map[string]interface{}{
+			"all": slidingListWithRequiredState(1, 0, 0, requiredState),
+		},
+	})
+	room := requireRoom(t, res, roomID)
+
+	var sawName, sawMember bool
+	for _, ev := range room.Get("required_state").Array() {
+		switch ev.Get("type").Str {
+		case "m.room.name":
+			sawName = true
+		case "m.room.member":
+			sawMember = true
+		}
+	}
+	if !sawName {
+		t.Fatalf("expected required_state to include m.room.name via the wildcard include: %s", room.Raw)
+	}
+	if sawMember {
+		t.Fatalf("expected required_state.exclude to omit all m.room.member events: %s", room.Raw)
+	}
+}
+
+// TestMSC4186SlidingSyncInviteStrippedState verifies that a remote invite is
+// delivered with a stripped_state payload describing the room.
+func TestMSC4186SlidingSyncInviteStrippedState(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"name":   "Invite room",
+		"invite": []string{bob.UserID},
+	})
+	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncInvitedTo(bob.UserID, roomID))
+
+	_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
+		ConnID: "invite-stripped-state",
+		Lists:  allRoomsList(1, 0, 9),
+	})
+	room := requireRoom(t, res, roomID)
+	must.MatchGJSON(t, room,
+		match.JSONKeyEqual("membership", "invite"),
+	)
+
+	var sawName, sawInvite bool
+	for _, ev := range room.Get("stripped_state").Array() {
+		if ev.Get("type").Str == "m.room.name" && ev.Get("content.name").Str == "Invite room" {
+			sawName = true
+		}
+		if ev.Get("type").Str == "m.room.member" && ev.Get("state_key").Str == bob.UserID && ev.Get("content.membership").Str == "invite" {
+			sawInvite = true
+		}
+	}
+	if !sawName {
+		t.Fatalf("expected stripped_state to include m.room.name: %s", room.Raw)
+	}
+	if !sawInvite {
+		t.Fatalf("expected stripped_state to include the invitee's m.room.member event: %s", room.Raw)
+	}
+}
+
+// TestMSC4186SlidingSyncHeroes verifies that a room without an explicit m.room.name
+// returns a heroes payload describing other members.
+func TestMSC4186SlidingSyncHeroes(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "heroes",
+		Lists:  allRoomsList(1, 0, 9),
+	})
+	room := requireRoom(t, res, roomID)
+	must.MatchGJSON(t, room,
+		match.JSONKeyMissing("name"),
+	)
+
+	heroes := room.Get("heroes").Array()
+	if len(heroes) == 0 {
+		t.Fatalf("expected heroes to be populated for a room with no name: %s", room.Raw)
+	}
+	found := false
+	for _, hero := range heroes {
+		if heroUserID(hero) == bob.UserID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected heroes to include %s: %s", bob.UserID, room.Raw)
+	}
+}
+
+// TestMSC4186SlidingSyncRoomMetadata verifies joined_count, invited_count, avatar,
+// and prev_batch fields on RoomResult.
+func TestMSC4186SlidingSyncRoomMetadata(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+		"initial_state": []map[string]interface{}{
+			{
+				"type":      "m.room.avatar",
+				"state_key": "",
+				"content":   map[string]interface{}{"url": "mxc://example.com/avatar"},
+			},
+		},
+	})
+	bob.MustJoinRoom(t, roomID, nil)
+	alice.MustInviteRoom(t, roomID, charlie.UserID)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	for i := 0; i < 3; i++ {
+		sendMessage(t, alice, roomID, fmt.Sprintf("msg %d", i))
+	}
+
+	_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "room-metadata",
+		Lists:  allRoomsList(1, 0, 9),
+	})
+	room := requireRoom(t, res, roomID)
+	must.MatchGJSON(t, room,
+		match.JSONKeyEqual("joined_count", float64(2)),
+		match.JSONKeyEqual("invited_count", float64(1)),
+		match.JSONKeyEqual("avatar", "mxc://example.com/avatar"),
+		match.JSONKeyPresent("prev_batch"),
+	)
+}
+
+// TestMSC4186SlidingSyncUnknownPos verifies that an unrecognised or expired pos
+// token is rejected with 400 M_UNKNOWN_POS.
+func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	alice.MustCreateRoom(t, map[string]interface{}{})
+
+	mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "unknown-pos",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	statusCode, body := doSlidingSyncExpectError(t, alice, slidingSyncReq{
+		ConnID: "unknown-pos",
+		Pos:    "this-pos-value-does-not-exist-1234567890",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	if statusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown pos, got %d: %s", statusCode, body.Raw)
+	}
+	must.MatchGJSON(t, body,
+		match.JSONKeyEqual("errcode", "M_UNKNOWN_POS"),
+	)
+}
+
+// TestMSC4186SlidingSyncMaxLimits verifies the server enforces the 100 lists / 100
+// room subscriptions per-request limit with 400 M_INVALID_PARAM.
+func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	existingRoomID := alice.MustCreateRoom(t, map[string]interface{}{})
+	serverName := serverNameOf(alice.UserID)
+
+	mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "max-limits",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	t.Run("More than 100 lists is rejected", func(t *testing.T) {
+		lists := map[string]interface{}{}
+		for i := 0; i < 101; i++ {
+			lists[fmt.Sprintf("list-%d", i)] = slidingList(1, 0, 0)
+		}
+		statusCode, body := doSlidingSyncExpectError(t, alice, slidingSyncReq{
+			ConnID: "max-limits-lists",
+			Lists:  lists,
+		})
+		if statusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 for more than 100 lists, got %d: %s", statusCode, body.Raw)
+		}
+		must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", "M_INVALID_PARAM"))
+	})
+
+	t.Run("More than 100 room subscriptions is rejected", func(t *testing.T) {
+		subs := map[string]interface{}{
+			existingRoomID: slidingSubscription(1),
+		}
+		for i := 0; i < 100; i++ {
+			subs[fmt.Sprintf("!nonexistent-%d:%s", i, serverName)] = slidingSubscription(1)
+		}
+		statusCode, body := doSlidingSyncExpectError(t, alice, slidingSyncReq{
+			ConnID:            "max-limits-subs",
+			Lists:             allRoomsList(1, 0, 0),
+			RoomSubscriptions: subs,
+		})
+		if statusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400 for more than 100 room subscriptions, got %d: %s", statusCode, body.Raw)
+		}
+		must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", "M_INVALID_PARAM"))
+	})
 }
