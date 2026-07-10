@@ -42,6 +42,7 @@ func TestForwardExtremitySurvivesOutlierChild(t *testing.T) {
 
 	destination := deployment.GetFullyQualifiedHomeserverName(t, "hs1")
 	remoteMembers := make([]string, 20)
+	memberEvents := make([]gomatrixserverlib.PDU, 0, len(remoteMembers))
 	memberPDUs := make([]json.RawMessage, 0, len(remoteMembers))
 	for i := range remoteMembers {
 		userID := srv.UserID(fmt.Sprintf("remote-%02d", i))
@@ -55,10 +56,11 @@ func TestForwardExtremitySurvivesOutlierChild(t *testing.T) {
 			},
 		})
 		room.AddEvent(memberEvent)
+		memberEvents = append(memberEvents, memberEvent)
 		memberPDUs = append(memberPDUs, memberEvent.JSON())
 	}
 	sendPDUBatches(t, srv, deployment, destination, memberPDUs, 20)
-	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(room.RoomID, mustEventID(memberPDUs[len(memberPDUs)-1])))
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(room.RoomID, memberEvents[len(memberEvents)-1].EventID()))
 
 	backlogPDUs := make([]json.RawMessage, 0, 120)
 	backlogEvents := make([]gomatrixserverlib.PDU, 0, 120)
