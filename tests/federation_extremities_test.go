@@ -233,6 +233,3 @@ func sendPDUBatches(t *testing.T, srv *federation.Server, deployment federation.
 	}
 }
 
-func mustEventID(pdu json.RawMessage) string {
-	return gjson.ParseBytes(pdu).Get("event_id").Str
-}
