@@ -26,6 +26,7 @@ func TestAdminYoloCommandsUnderStress(t *testing.T) {
 
 	// Register Alice, who becomes the server admin (first user)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	adminRoom := helpers.CreateConduwuitAdminRoom(t, alice)
 
 	// Create a room that we can use for load generation and for the admin commands
 	// that require a room ID argument.
@@ -105,7 +106,7 @@ func TestAdminYoloCommandsUnderStress(t *testing.T) {
 							atomic.AddInt32(&errorCount, 1)
 						}
 					}()
-					helpers.SendConduwuitAdminCommand(t, alice, cmd)
+					helpers.SendConduwuitAdminCommand(t, alice, adminRoom, cmd)
 				}()
 
 				commandIndex++

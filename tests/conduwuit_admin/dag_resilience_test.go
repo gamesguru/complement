@@ -42,14 +42,53 @@ func TestDAGPathologyAndFederationResilience(t *testing.T) {
 	})
 
 	// Inject the fixture.
-	helpers.SendConduwuitAdminCommand(t, alice, fmt.Sprintf("yolo import-pdus %s %s", roomID, fixturePath))
+	adminRoom := helpers.CreateConduwuitAdminRoom(t, alice)
+	helpers.SendConduwuitAdminCommand(t, alice, adminRoom, fmt.Sprintf("yolo import-pdus %s %s", roomID, fixturePath))
 
-	srv := federation.NewServer(t, deployment)
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleEventRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
 	cancel := srv.Listen()
 	defer cancel()
 
 	bob := srv.UserID("bob")
 	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob)
+
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		var events []json.RawMessage
+		for _, ev := range serverRoom.Timeline {
+			events = append(events, ev.JSON())
+		}
+		res := struct {
+			Events []json.RawMessage `json:"events"`
+		}{
+			Events: events,
+		}
+		resBytes, _ := json.Marshal(&res)
+		w.WriteHeader(200)
+		w.Write(resBytes)
+	})
+
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		var authChainIDs []string
+		var pduIDs []string
+		for _, ev := range serverRoom.AllCurrentState() {
+			pduIDs = append(pduIDs, ev.EventID())
+			authChainIDs = append(authChainIDs, ev.EventID())
+		}
+		res := struct {
+			AuthChainIDs []string `json:"auth_chain_ids"`
+			PDUIDs       []string `json:"pdu_ids"`
+		}{
+			AuthChainIDs: authChainIDs,
+			PDUIDs:       pduIDs,
+		}
+		resBytes, _ := json.Marshal(&res)
+		w.WriteHeader(200)
+		w.Write(resBytes)
+	})
 
 	t.Log("Sending initial backlog")
 	var backlogEvents []gomatrixserverlib.PDU
@@ -122,14 +161,12 @@ func TestDAGPathologyAndFederationResilience(t *testing.T) {
 	forkTip = stateForkEvent1
 
 	stateForkEvent2 := srv.MustCreateEvent(t, serverRoom, federation.Event{
-		Type:       "m.room.power_levels",
-		StateKey:   b.Ptr(""),
+		Type:       "m.room.message",
 		Sender:     bob,
 		PrevEvents: []string{forkTip.EventID()},
 		Content: map[string]interface{}{
-			"users": map[string]interface{}{
-				bob: 100, // Attempt to gain admin rights in the fork
-			},
+			"msgtype": "m.text",
+			"body":    "Another event in the fork",
 		},
 	})
 	serverRoom.AddEvent(stateForkEvent2)
@@ -138,7 +175,7 @@ func TestDAGPathologyAndFederationResilience(t *testing.T) {
 
 	// Fire yolo command to crunch the graph concurrently
 	t.Log("Triggering yolo reorder-timeline")
-	helpers.SendConduwuitAdminCommand(t, alice, fmt.Sprintf("yolo reorder-timeline %s", roomID))
+	helpers.SendConduwuitAdminCommand(t, alice, adminRoom, fmt.Sprintf("yolo reorder-timeline %s", roomID))
 
 	sendPDUBatches(t, srv, deployment, "hs1", forkPDUs, 10)
 
@@ -159,7 +196,7 @@ func TestDAGPathologyAndFederationResilience(t *testing.T) {
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, mergeTip.EventID()))
 
 	t.Log("Triggering yolo force-set-state")
-	helpers.SendConduwuitAdminCommand(t, alice, fmt.Sprintf("yolo force-set-state %s hs2", roomID))
+	helpers.SendConduwuitAdminCommand(t, alice, adminRoom, fmt.Sprintf("yolo force-set-state %s hs2", roomID))
 
 	t.Log("Sending outlier event")
 	outlierChild := srv.MustCreateEvent(t, serverRoom, federation.Event{
@@ -217,13 +254,13 @@ func TestDAGPathologyAndFederationResilience(t *testing.T) {
 		},
 	})
 
-	res := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", localAfterOutlier}, nil)
+	res := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", localAfterOutlier})
 	must.MatchResponse(t, res, match.HTTPResponse{
 		StatusCode: http.StatusOK,
 	})
 
 	t.Log("Validating DAG via get-room-dag yolo command")
-	helpers.SendConduwuitAdminCommand(t, alice, fmt.Sprintf("yolo get-room-dag %s", roomID))
+	helpers.SendConduwuitAdminCommand(t, alice, adminRoom, fmt.Sprintf("yolo get-room-dag %s", roomID))
 }
 
 func sendPDUBatches(t *testing.T, srv *federation.Server, deployment complement.Deployment, destination spec.ServerName, pdus []json.RawMessage, batchSize int) {

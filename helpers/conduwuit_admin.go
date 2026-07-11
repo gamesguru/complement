@@ -9,11 +9,8 @@ import (
 	"github.com/matrix-org/complement/ct"
 )
 
-// SendConduwuitAdminCommand creates a DM with the conduwuit admin bot and sends the given command.
-// Example: helpers.SendConduwuitAdminCommand(t, alice, "server clear-caches")
-// Note: The client must be a registered user on the target conduwuit homeserver, typically the first registered user (admin).
-// Returns the room ID of the created admin room.
-func SendConduwuitAdminCommand(t ct.TestLike, c *client.CSAPI, command string) string {
+// CreateConduwuitAdminRoom creates a DM with the conduwuit admin bot and returns the room ID.
+func CreateConduwuitAdminRoom(t ct.TestLike, c *client.CSAPI) string {
 	t.Helper()
 
 	// Extract the server name from the client's UserID (e.g., "@alice:hs1" -> "hs1")
@@ -27,10 +24,16 @@ func SendConduwuitAdminCommand(t ct.TestLike, c *client.CSAPI, command string) s
 	adminBot := fmt.Sprintf("@conduwuit:%s", serverName)
 
 	// Create a DM room with the admin bot
-	roomID := c.MustCreateRoom(t, map[string]interface{}{
+	return c.MustCreateRoom(t, map[string]interface{}{
 		"invite":    []string{adminBot},
 		"is_direct": true,
 	})
+}
+
+// SendConduwuitAdminCommand sends the given command to the specified admin room.
+// Example: helpers.SendConduwuitAdminCommand(t, alice, roomID, "server clear-caches")
+func SendConduwuitAdminCommand(t ct.TestLike, c *client.CSAPI, roomID string, command string) {
+	t.Helper()
 
 	// Ensure the command starts with !admin
 	if !strings.HasPrefix(command, "!admin ") {
@@ -47,6 +50,4 @@ func SendConduwuitAdminCommand(t ct.TestLike, c *client.CSAPI, command string) s
 	})
 
 	t.Logf("Sent admin command '%s' via Admin Room %s", command, roomID)
-
-	return roomID
 }

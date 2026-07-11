@@ -7,5 +7,5 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	complement.TestMain(m, "fed")
+	complement.TestMain(m, "conduwuit_admin")
 }
