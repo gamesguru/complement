@@ -24,7 +24,9 @@ import (
 // TestDAGPathologyAndFederationResilience tests conduwuit's ability to handle complex DAG structures,
 // import them, reorder timelines, and remain responsive to federation traffic without splintering.
 func TestDAGPathologyAndFederationResilience(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
+	if runtime.Homeserver != runtime.Continuwuity {
+		t.Skip("Skipping conduwuit-specific DAG resilience test on non-conduwuit homeserver")
+	}
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

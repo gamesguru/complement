@@ -19,7 +19,9 @@ import (
 // dangerous/heavy "yolo" admin commands concurrently with active user load
 // without crashing or deadlocking.
 func TestAdminYoloCommandsUnderStress(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
+	if runtime.Homeserver != runtime.Continuwuity {
+		t.Skip("Skipping conduwuit-specific admin yolo stress test on non-conduwuit homeserver")
+	}
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
