@@ -183,7 +183,7 @@ func TestForwardExtremitySurvivesOutlierChild(t *testing.T) {
 			outlierChild.EventID(),
 		},
 	})
-	_, err = fedClient.SendTransaction(context.Background(), gomatrixserverlib.Transaction{
+	resp, err = fedClient.SendTransaction(context.Background(), gomatrixserverlib.Transaction{
 		TransactionID:  "pull-outlier-child",
 		Origin:         srv.ServerName(),
 		Destination:    destination,
@@ -193,6 +193,9 @@ func TestForwardExtremitySurvivesOutlierChild(t *testing.T) {
 		},
 	})
 	must.NotError(t, "failed to send carrier event", err)
+	if result, ok := resp.PDUs[carrier.EventID()]; !ok || result.Error == "" {
+		t.Fatalf("expected carrier event %s to be processed and rejected, got %v", carrier.EventID(), resp.PDUs)
+	}
 
 	localAfterOutlier := alice.SendEventSynced(t, room.RoomID, b.Event{
 		Type: "m.room.message",
@@ -232,4 +235,3 @@ func sendPDUBatches(t *testing.T, srv *federation.Server, deployment federation.
 		srv.MustSendTransaction(t, deployment, destination, pdus[start:end], nil)
 	}
 }
-
