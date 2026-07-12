@@ -152,7 +152,7 @@ func doSlidingSyncRequest(t *testing.T, user *client.CSAPI, req slidingSyncReq, 
 
 	jsonBody := gjson.ParseBytes(respBody)
 	if endpoint.legacy && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		jsonBody = normalizeLegacySlidingSyncResponse(t, jsonBody)
+		jsonBody = normalizeLegacySlidingSyncResponse(t, user.UserID, jsonBody)
 	}
 	return resp.StatusCode, jsonBody
 }
@@ -260,7 +260,7 @@ func legacyRequiredStateElement(state map[string]interface{}) []string {
 	return []string{eventType, stateKey}
 }
 
-func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Result {
+func normalizeLegacySlidingSyncResponse(t *testing.T, userID string, res gjson.Result) gjson.Result {
 	t.Helper()
 
 	var normalized map[string]interface{}
@@ -305,6 +305,9 @@ func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Re
 				room["stripped_state"] = inviteState
 				delete(room, "invite_state")
 			}
+			if _, ok := room["membership"]; !ok {
+				room["membership"] = deriveLegacyMembership(room, userID)
+			}
 			if _, ok := room["lists"]; ok {
 				// Some unstable endpoints use the legacy URL but already emit the
 				// MSC4186 per-room list membership field. Preserve it instead of
@@ -322,6 +325,32 @@ func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Re
 		t.Fatalf("failed to encode normalized legacy sliding sync response: %s", err)
 	}
 	return gjson.ParseBytes(normalizedBytes)
+}
+
+// deriveLegacyMembership infers the MSC4186 RoomResult.membership field for a
+// legacy MSC3575 room, which carries no such field directly. A pending invite
+// is signalled by the presence of stripped_state; otherwise the room's own
+// timeline is scanned backwards for the user's most recent m.room.member
+// event, since a timeline_limit that only captures the tail of the room will
+// include exactly the event that removed (or last confirmed) the user's
+// membership.
+func deriveLegacyMembership(room map[string]interface{}, userID string) string {
+	if _, ok := room["stripped_state"]; ok {
+		return "invite"
+	}
+	timeline, _ := room["timeline_events"].([]interface{})
+	for i := len(timeline) - 1; i >= 0; i-- {
+		event, _ := timeline[i].(map[string]interface{})
+		if event["type"] != "m.room.member" || event["state_key"] != userID {
+			continue
+		}
+		content, _ := event["content"].(map[string]interface{})
+		if membership, ok := content["membership"].(string); ok {
+			return membership
+		}
+		break
+	}
+	return "join"
 }
 
 func sortedMapKeys(m map[string]struct{}) []string {
@@ -950,6 +979,14 @@ func TestMSC4186SlidingSyncSetPresence(t *testing.T) {
 	bob.MustJoinRoom(t, roomID, nil)
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
+	mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "set-presence-warmup",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+	if lookupSlidingSyncEndpoint(t, alice).legacy {
+		t.Skip("legacy MSC3575 endpoints do not support the set_presence field")
+	}
+
 	since := bob.MustSyncUntil(t, client.SyncReq{})
 
 	t.Run("set_presence unavailable updates presence", func(t *testing.T) {
@@ -1140,6 +1177,9 @@ func TestMSC4186SlidingSyncListFilters(t *testing.T) {
 	})
 
 	t.Run("is_invited filters invited-only rooms", func(t *testing.T) {
+		if lookupSlidingSyncEndpoint(t, alice).legacy {
+			t.Skip("legacy MSC3575 endpoints use is_invite instead of MSC4186's is_invited")
+		}
 		invitedRoom := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 		alice.MustInviteRoom(t, invitedRoom, bob.UserID)
 		joinedRoom := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
@@ -1389,6 +1429,9 @@ func TestMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
 			"all": slidingListWithRequiredState(1, 0, 0, requiredState),
 		},
 	})
+	if lookupSlidingSyncEndpoint(t, alice).legacy {
+		t.Skip("legacy MSC3575 endpoints do not support required_state.exclude")
+	}
 	room := requireRoom(t, res, roomID)
 
 	var sawName, sawMember bool
@@ -1540,6 +1583,9 @@ func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
 		ConnID: "unknown-pos",
 		Lists:  allRoomsList(1, 0, 0),
 	})
+	if lookupSlidingSyncEndpoint(t, alice).legacy {
+		t.Skip("legacy MSC3575 endpoints degrade an unknown pos into a fresh initial sync instead of a strict 400")
+	}
 
 	statusCode, body := doSlidingSyncExpectError(t, alice, slidingSyncReq{
 		ConnID: "unknown-pos",
@@ -1569,6 +1615,9 @@ func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
 		ConnID: "max-limits",
 		Lists:  allRoomsList(1, 0, 0),
 	})
+	if lookupSlidingSyncEndpoint(t, alice).legacy {
+		t.Skip("legacy MSC3575 endpoints do not enforce the MSC4186 100 lists/subscriptions limit")
+	}
 
 	t.Run("More than 100 lists is rejected", func(t *testing.T) {
 		lists := map[string]interface{}{}
