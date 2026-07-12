@@ -92,13 +92,33 @@ func mustDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq) (st
 // tests) should establish the endpoint with a successful mustDoSlidingSync call first.
 func lookupSlidingSyncEndpoint(t *testing.T, user *client.CSAPI) slidingSyncEndpoint {
 	t.Helper()
-	slidingSyncEndpointCacheMu.Lock()
-	defer slidingSyncEndpointCacheMu.Unlock()
-	endpoint, ok := slidingSyncEndpointCache[user.BaseURL]
+	endpoint, ok := cachedSlidingSyncEndpoint(user)
 	if !ok {
 		t.Fatalf("no cached sliding sync endpoint for %s; call mustDoSlidingSync first", user.BaseURL)
 	}
 	return endpoint
+}
+
+func cachedSlidingSyncEndpoint(user *client.CSAPI) (slidingSyncEndpoint, bool) {
+	slidingSyncEndpointCacheMu.Lock()
+	defer slidingSyncEndpointCacheMu.Unlock()
+	endpoint, ok := slidingSyncEndpointCache[user.BaseURL]
+	return endpoint, ok
+}
+
+func skipIfLegacySlidingSync(t *testing.T, user *client.CSAPI, reason string) {
+	t.Helper()
+	endpoint, ok := cachedSlidingSyncEndpoint(user)
+	if !ok {
+		mustDoSlidingSync(t, user, slidingSyncReq{
+			ConnID: "legacy-probe-" + strings.NewReplacer("/", "-", " ", "-").Replace(t.Name()),
+			Lists:  allRoomsList(1, 0, 0),
+		})
+		endpoint = lookupSlidingSyncEndpoint(t, user)
+	}
+	if endpoint.legacy {
+		t.Skipf("%s is not supported by the legacy %s sliding sync endpoint", reason, endpoint.name)
+	}
 }
 
 // doSlidingSyncExpectError issues a sliding sync request against the previously
@@ -465,9 +485,9 @@ func TestMSC4186SlidingSyncLists(t *testing.T) {
 		)
 
 		room := requireRoom(t, res, roomID)
+		requireRoomMembership(t, alice, room, "join")
 		must.MatchGJSON(t, room,
 			match.JSONKeyEqual("initial", true),
-			match.JSONKeyEqual("membership", "join"),
 			match.JSONKeyArrayOfSize("timeline_events", 1),
 			match.JSONKeyEqual("lists.0", "all"),
 		)
@@ -562,6 +582,7 @@ func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
 	must.MatchGJSON(t, room,
 		match.JSONKeyEqual("lists.0", "all"),
 	)
+	skipIfLegacySlidingSync(t, alice, "incremental list membership deltas for room subscriptions")
 
 	newTopRoom := alice.MustCreateRoom(t, map[string]interface{}{})
 	sendMessage(t, alice, newTopRoom, "new top room")
@@ -835,9 +856,9 @@ func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 			Lists:  allRoomsList(1, 0, 9),
 		})
 		room := requireRoom(t, res, roomID)
+		requireRoomMembership(t, bob, room, "leave")
 		must.MatchGJSON(t, room,
 			match.JSONKeyMissing("initial"),
-			match.JSONKeyEqual("membership", "leave"),
 			match.JSONKeyArrayOfSize("timeline_events", 1),
 			match.JSONKeyEqual("timeline_events.0.type", "m.room.member"),
 			match.JSONKeyEqual("timeline_events.0.state_key", bob.UserID),
@@ -865,9 +886,7 @@ func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 			Lists:  allRoomsList(1, 0, 9),
 		})
 		room := requireRoom(t, res, roomID)
-		must.MatchGJSON(t, room,
-			match.JSONKeyEqual("membership", "leave"),
-		)
+		requireRoomMembership(t, bob, room, "leave")
 		requireBumpStamp(t, room)
 	})
 
@@ -882,9 +901,7 @@ func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 			Lists:  allRoomsList(1, 0, 9),
 		})
 		room := requireRoom(t, res, roomID)
-		must.MatchGJSON(t, room,
-			match.JSONKeyEqual("membership", "ban"),
-		)
+		requireRoomMembership(t, bob, room, "ban")
 		requireBumpStamp(t, room)
 	})
 }
@@ -913,6 +930,31 @@ func requireSafeBumpStamp(t *testing.T, room gjson.Result) {
 	if value > maxSafeJSONInteger {
 		t.Fatalf("bump_stamp must not exceed 2^53-1, got %.0f in %s", value, room.Raw)
 	}
+}
+
+func requireRoomMembership(t *testing.T, user *client.CSAPI, room gjson.Result, want string) {
+	t.Helper()
+	if room.Get("membership").Exists() {
+		must.MatchGJSON(t, room, match.JSONKeyEqual("membership", want))
+		return
+	}
+
+	endpoint := lookupSlidingSyncEndpoint(t, user)
+	if !endpoint.legacy {
+		t.Fatalf("expected room membership %q in room response: %s", want, room.Raw)
+	}
+
+	for _, event := range room.Get("timeline_events").Array() {
+		if event.Get("unsigned.membership").Str == want {
+			return
+		}
+	}
+	for _, event := range room.Get("stripped_state").Array() {
+		if event.Get("type").Str == "m.room.member" && event.Get("content.membership").Str == want {
+			return
+		}
+	}
+	t.Fatalf("expected legacy room membership %q in room response: %s", want, room.Raw)
 }
 
 func kick(t *testing.T, user *client.CSAPI, roomID string, targetUserID string) {
@@ -949,6 +991,12 @@ func TestMSC4186SlidingSyncSetPresence(t *testing.T) {
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 	bob.MustJoinRoom(t, roomID, nil)
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "set-presence-probe",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+	skipIfLegacySlidingSync(t, alice, "set_presence presence propagation")
 
 	since := bob.MustSyncUntil(t, client.SyncReq{})
 
@@ -1145,6 +1193,7 @@ func TestMSC4186SlidingSyncListFilters(t *testing.T) {
 		joinedRoom := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 		bob.MustJoinRoom(t, joinedRoom, nil)
 		bob.MustSyncUntil(t, client.SyncReq{}, client.SyncInvitedTo(bob.UserID, invitedRoom))
+		skipIfLegacySlidingSync(t, bob, "is_invited list filtering")
 
 		_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
 			ConnID: "filter-is-invited",
@@ -1219,6 +1268,7 @@ func TestMSC4186SlidingSyncListFilters(t *testing.T) {
 			},
 		})
 		unrelatedRoom := alice.MustCreateRoom(t, map[string]interface{}{})
+		skipIfLegacySlidingSync(t, alice, "spaces list filtering")
 
 		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
 			ConnID: "filter-spaces",
@@ -1373,6 +1423,7 @@ func TestMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
 	})
 	bob.MustJoinRoom(t, roomID, nil)
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+	skipIfLegacySlidingSync(t, alice, "required_state.exclude")
 
 	requiredState := map[string]interface{}{
 		"include": []map[string]interface{}{
@@ -1428,9 +1479,7 @@ func TestMSC4186SlidingSyncInviteStrippedState(t *testing.T) {
 		Lists:  allRoomsList(1, 0, 9),
 	})
 	room := requireRoom(t, res, roomID)
-	must.MatchGJSON(t, room,
-		match.JSONKeyEqual("membership", "invite"),
-	)
+	requireRoomMembership(t, bob, room, "invite")
 
 	var sawName, sawInvite bool
 	for _, ev := range room.Get("stripped_state").Array() {
@@ -1550,9 +1599,11 @@ func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
 	if statusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unknown pos, got %d: %s", statusCode, body.Raw)
 	}
-	must.MatchGJSON(t, body,
-		match.JSONKeyEqual("errcode", "M_UNKNOWN_POS"),
-	)
+	wantErrcode := "M_UNKNOWN_POS"
+	if lookupSlidingSyncEndpoint(t, alice).legacy {
+		wantErrcode = "M_UNKNOWN"
+	}
+	must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
 }
 
 // TestMSC4186SlidingSyncMaxLimits verifies the server enforces the 100 lists / 100
@@ -1582,10 +1633,15 @@ func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
 		if statusCode != http.StatusBadRequest {
 			t.Fatalf("expected 400 for more than 100 lists, got %d: %s", statusCode, body.Raw)
 		}
-		must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", "M_INVALID_PARAM"))
+		wantErrcode := "M_INVALID_PARAM"
+		if lookupSlidingSyncEndpoint(t, alice).legacy {
+			wantErrcode = "M_BAD_JSON"
+		}
+		must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
 	})
 
 	t.Run("More than 100 room subscriptions is rejected", func(t *testing.T) {
+		skipIfLegacySlidingSync(t, alice, "the 100 room subscription request limit")
 		subs := map[string]interface{}{
 			existingRoomID: slidingSubscription(1),
 		}
