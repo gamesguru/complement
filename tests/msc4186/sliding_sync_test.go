@@ -313,9 +313,9 @@ func normalizeLegacySlidingSyncResponse(t *testing.T, res gjson.Result) gjson.Re
 	if rooms, ok := normalized["rooms"].(map[string]interface{}); ok {
 		for roomID, rawRoom := range rooms {
 			room, _ := rawRoom.(map[string]interface{})
-			if timeline, ok := room["timeline"]; ok {
-				room["timeline_events"] = timeline
-				delete(room, "timeline")
+			if timeline, ok := room["timeline_events"]; ok {
+				room["timeline"] = timeline
+				delete(room, "timeline_events")
 			}
 			if expandedTimeline, ok := room["unstable_expanded_timeline"]; ok {
 				room["expanded_timeline"] = expandedTimeline
@@ -488,7 +488,7 @@ func TestMSC4186SlidingSyncLists(t *testing.T) {
 		requireRoomMembership(t, alice, room, "join")
 		must.MatchGJSON(t, room,
 			match.JSONKeyEqual("initial", true),
-			match.JSONKeyArrayOfSize("timeline_events", 1),
+			match.JSONKeyArrayOfSize("timeline", 1),
 			match.JSONKeyEqual("lists.0", "all"),
 		)
 		requireBumpStamp(t, room)
@@ -518,8 +518,8 @@ func TestMSC4186SlidingSyncLists(t *testing.T) {
 		requireNoRoom(t, res, roomA)
 		room := requireRoom(t, res, roomB)
 		must.MatchGJSON(t, room,
-			match.JSONKeyArrayOfSize("timeline_events", 1),
-			match.JSONKeyEqual("timeline_events.0.event_id", eventID),
+			match.JSONKeyArrayOfSize("timeline", 1),
+			match.JSONKeyEqual("timeline.0.event_id", eventID),
 			match.JSONKeyEqual("num_live", float64(1)),
 		)
 		requireBumpStamp(t, room)
@@ -562,6 +562,13 @@ func TestMSC4186SlidingSyncSubscriptions(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncListDeltas verifies list membership deltas for subscribed rooms.
+//
+// NOTE: the current MSC4186 text says the `lists` field is simply omitted once a room
+// drops out of every list, which is indistinguishable from the general incremental-sync
+// rule that an omitted field means "unchanged" (see msc4186-comments.md, R465). This test
+// asserts the fixed behaviour proposed in that comment -- an explicit empty `lists: []`
+// -- so it will fail against any server implementing the literal current spec text until
+// that wording is amended.
 func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -621,7 +628,7 @@ func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 	})
 	room := requireRoom(t, res, roomID)
 	must.MatchGJSON(t, room,
-		match.JSONKeyArrayOfSize("timeline_events", 1),
+		match.JSONKeyArrayOfSize("timeline", 1),
 	)
 
 	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
@@ -632,7 +639,7 @@ func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 	room = requireRoom(t, res, roomID)
 	must.MatchGJSON(t, room,
 		match.JSONKeyEqual("expanded_timeline", true),
-		match.JSONKeyArrayOfSize("timeline_events", 4),
+		match.JSONKeyArrayOfSize("timeline", 4),
 	)
 }
 
@@ -677,7 +684,7 @@ func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
 		room := requireRoom(t, res, loaded.roomID)
 		requireBumpStamp(t, room)
 
-		timelineEvents := room.Get("timeline_events").Array()
+		timelineEvents := room.Get("timeline").Array()
 		if len(timelineEvents) != 7 {
 			t.Fatalf("room %s got %d timeline events, want 7: %s", loaded.roomID, len(timelineEvents), room.Raw)
 		}
@@ -729,8 +736,8 @@ func TestMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
 		must.MatchGJSON(t, room,
 			match.JSONKeyMissing("initial"),
 			match.JSONKeyMissing("name"),
-			match.JSONKeyArrayOfSize("timeline_events", 1),
-			match.JSONKeyEqual("timeline_events.0.event_id", eventID),
+			match.JSONKeyArrayOfSize("timeline", 1),
+			match.JSONKeyEqual("timeline.0.event_id", eventID),
 			match.JSONKeyEqual("num_live", float64(1)),
 		)
 	})
@@ -859,10 +866,10 @@ func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 		requireRoomMembership(t, bob, room, "leave")
 		must.MatchGJSON(t, room,
 			match.JSONKeyMissing("initial"),
-			match.JSONKeyArrayOfSize("timeline_events", 1),
-			match.JSONKeyEqual("timeline_events.0.type", "m.room.member"),
-			match.JSONKeyEqual("timeline_events.0.state_key", bob.UserID),
-			match.JSONKeyEqual("timeline_events.0.content.membership", "leave"),
+			match.JSONKeyArrayOfSize("timeline", 1),
+			match.JSONKeyEqual("timeline.0.type", "m.room.member"),
+			match.JSONKeyEqual("timeline.0.state_key", bob.UserID),
+			match.JSONKeyEqual("timeline.0.content.membership", "leave"),
 			match.JSONKeyEqual("num_live", float64(1)),
 		)
 		requireBumpStamp(t, room)
@@ -944,7 +951,7 @@ func requireRoomMembership(t *testing.T, user *client.CSAPI, room gjson.Result, 
 		t.Fatalf("expected room membership %q in room response: %s", want, room.Raw)
 	}
 
-	for _, event := range room.Get("timeline_events").Array() {
+	for _, event := range room.Get("timeline").Array() {
 		if event.Get("unsigned.membership").Str == want {
 			return
 		}
@@ -1070,7 +1077,7 @@ func TestMSC4186SlidingSyncLongPolling(t *testing.T) {
 	case res := <-responseChan:
 		room := requireRoom(t, res, roomID)
 		must.MatchGJSON(t, room,
-			match.JSONKeyEqual("timeline_events.0.event_id", eventID),
+			match.JSONKeyEqual("timeline.0.event_id", eventID),
 		)
 	case <-time.After(15 * time.Second):
 		t.Fatal("sliding sync long poll did not unblock within 15s of a new event")
@@ -1606,6 +1613,51 @@ func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
 	must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
 }
 
+// TestMSC4186SlidingSyncPosOwnership verifies that a pos issued to one user cannot be
+// used by a different user to resume that connection, per the Security considerations
+// requirement added in response to FCP review: "Servers MUST reject a pos that was not
+// issued to the requesting user and device, responding with M_UNKNOWN_POS."
+func TestMSC4186SlidingSyncPosOwnership(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	aliceConnID := "pos-ownership-alice"
+	alicePos, _ := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: aliceConnID,
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	// Prime bob's own endpoint cache under a distinct conn_id first, so the request
+	// below (which deliberately reuses alice's conn_id and pos) can't spuriously
+	// succeed by hitting a fresh connection of bob's own.
+	mustDoSlidingSync(t, bob, slidingSyncReq{
+		ConnID: "pos-ownership-bob-probe",
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	statusCode, body := doSlidingSyncExpectError(t, bob, slidingSyncReq{
+		ConnID: aliceConnID,
+		Pos:    alicePos,
+		Lists:  allRoomsList(1, 0, 0),
+	})
+
+	if statusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 when bob reuses alice's conn_id/pos, got %d: %s", statusCode, body.Raw)
+	}
+	wantErrcode := "M_UNKNOWN_POS"
+	if lookupSlidingSyncEndpoint(t, bob).legacy {
+		wantErrcode = "M_UNKNOWN"
+	}
+	must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
+}
+
 // TestMSC4186SlidingSyncMaxLimits verifies the server enforces the 100 lists / 100
 // room subscriptions per-request limit with 400 M_INVALID_PARAM.
 func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
@@ -1658,4 +1710,68 @@ func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
 		}
 		must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", "M_INVALID_PARAM"))
 	})
+}
+
+// TestMSC4186SlidingSyncCombiningRoomConfigs verifies that when a room matches multiple
+// lists with different room configs, the server serves the superset: the maximum
+// timeline_limit and the union of required_state across all matching configs.
+func TestMSC4186SlidingSyncCombiningRoomConfigs(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"name": "Combined config room",
+		"initial_state": []map[string]interface{}{
+			{
+				"type":      "m.room.topic",
+				"state_key": "",
+				"content":   map[string]interface{}{"topic": "Combined config topic"},
+			},
+		},
+	})
+	for i := 0; i < 3; i++ {
+		sendMessage(t, alice, roomID, fmt.Sprintf("message %d", i))
+	}
+
+	nameOnly := map[string]interface{}{
+		"include": []map[string]interface{}{
+			{"type": "m.room.name", "state_key": ""},
+		},
+	}
+	topicOnly := map[string]interface{}{
+		"include": []map[string]interface{}{
+			{"type": "m.room.topic", "state_key": ""},
+		},
+	}
+
+	_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+		ConnID: "combining-room-configs",
+		Lists: map[string]interface{}{
+			"narrow-timeline-name-only": slidingListWithRequiredState(1, 0, 0, nameOnly),
+			"wide-timeline-topic-only":  slidingListWithRequiredState(3, 0, 0, topicOnly),
+		},
+	})
+
+	room := requireRoom(t, res, roomID)
+	must.MatchGJSON(t, room,
+		match.JSONKeyArrayOfSize("timeline", 3),
+	)
+
+	var sawName, sawTopic bool
+	for _, ev := range room.Get("required_state").Array() {
+		switch ev.Get("type").Str {
+		case "m.room.name":
+			sawName = true
+		case "m.room.topic":
+			sawTopic = true
+		}
+	}
+	if !sawName {
+		t.Fatalf("expected combined required_state to include m.room.name from the narrow-timeline list: %s", room.Raw)
+	}
+	if !sawTopic {
+		t.Fatalf("expected combined required_state to include m.room.topic from the wide-timeline list: %s", room.Raw)
+	}
 }
