@@ -111,9 +111,10 @@ func TestMSC4500StateHashMismatch(t *testing.T) {
 		"origin":           srv.ServerName(),
 		"origin_server_ts": time.Now().UnixNano() / 1000000,
 		"pdus":             pdus,
-		"state_hashes": map[string]interface{}{
+		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
 			badEvent.EventID(): map[string]interface{}{
-				"after": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+				"algorithm": "lthash16",
+				"after":     "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 			},
 		},
 	}
