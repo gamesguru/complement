@@ -1222,6 +1222,9 @@ func TestMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 	signingKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_deep_signer")
 	nestedKeyID := "ed25519:msc4499_deep_dupe"
 
+	pubKeyBase64 := base64.RawStdEncoding.EncodeToString(pubKey)
+
+	// Construct the valid JSON first (without duplicates) so SignJSON computes a valid signature over it.
 	rawJSON := fmt.Sprintf(`{
 		"server_name": "%s",
 		"valid_until_ts": %d,
@@ -1233,21 +1236,25 @@ func TestMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 		"old_verify_keys": {
 			"%s": {
 				"key": "%s",
-				"key": "%s",
 				"expired_ts": %d
 			}
 		}
 	}`, originName, time.Now().Add(24*time.Hour).UnixMilli(),
-		signingKeyID, base64.RawStdEncoding.EncodeToString(pubKey),
+		signingKeyID, pubKeyBase64,
 		nestedKeyID,
-		base64.RawStdEncoding.EncodeToString(pubKey),
-		base64.RawStdEncoding.EncodeToString(pubKey),
+		pubKeyBase64,
 		time.Now().Add(-1*time.Hour).UnixMilli(),
 	)
 
-	signedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
-	must.NotError(t, "failed to sign nested-duplicate JSON", err)
+	validSignedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
+	must.NotError(t, "failed to sign JSON", err)
 
+	// Manually inject the duplicate key into the final bytes.
+	// Replacing all instances ensures the duplicate exists deeply in the payload,
+	// and since receiver canonicalization drops duplicates, the signature remains mathematically valid.
+	targetStr := fmt.Sprintf(`"key":"%s"`, pubKeyBase64)
+	duplicateStr := fmt.Sprintf(`"key":"%s","key":"%s"`, pubKeyBase64, pubKeyBase64)
+	signedJSON := []byte(strings.ReplaceAll(string(validSignedJSON), targetStr, duplicateStr))
 	var requestCount int
 	dupeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
