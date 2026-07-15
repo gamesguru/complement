@@ -1378,7 +1378,7 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
 	// Generate 3000 filler keys in old_verify_keys + 1 signing key in verify_keys
-	// = 3001 total, just over the suggested 3,000-key quota boundary.
+	// = 3001 total, just over the mandated 3,000-key quota boundary.
 	numFillerKeys := 3000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
