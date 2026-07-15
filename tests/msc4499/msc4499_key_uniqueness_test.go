@@ -1475,20 +1475,13 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 49 additional active keys in verify_keys plus 3000 retired keys in
-	// old_verify_keys. That gives us 50 active keys total, which is within the active
-	// ceiling while still exceeding the retired-key ceiling if active keys are counted
-	// incorrectly.
-	numActiveFillerKeys := 49
+	// Generate 3000 retired keys in old_verify_keys plus 1 signing key in
+	// verify_keys. This is far beyond the example per-server quota in MSC4499,
+	// so the oldest retired key should be evicted if the implementation enforces
+	// a ceiling.
 	numFillerKeys := 3000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
-	}
-	for i := 0; i < numActiveFillerKeys; i++ {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
-		must.NotError(t, fmt.Sprintf("failed to generate active filler key %d", i), err)
-		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_active_%04d", i))
-		verifyKeys[kid] = pub
 	}
 
 	oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
@@ -1532,12 +1525,14 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(firstKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(firstKey.Key))
 
-	// Verify the LAST filler key (oldest) is still available. If verify_keys are
-	// incorrectly counted against the retired-key ceiling, this key will be dropped.
+	// Verify the LAST filler key (oldest) has been evicted. The fixture
+	// intentionally overflows any reasonable retired-key ceiling, so the oldest
+	// retired binding should no longer be served.
 	oldestKey := oldVerifyKeys[oldestKeyID]
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestKeyID), 0)
-	must.Equal(t, foundKey, base64.RawStdEncoding.EncodeToString(oldestKey.Key),
-		"Expected oldest retired key to remain available when verify_keys are exempt from the retired-key ceiling")
+	must.Equal(t, foundKey, "",
+		fmt.Sprintf("Expected oldest retired key %s to be evicted under quota pressure, but found %q",
+			oldestKeyID, base64.RawStdEncoding.EncodeToString(oldestKey.Key)))
 }
 
 // Test that a binding observed active earlier is treated as corroborated and is
