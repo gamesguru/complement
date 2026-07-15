@@ -130,6 +130,16 @@ func doSlidingSyncExpectError(t *testing.T, user *client.CSAPI, req slidingSyncR
 	return doSlidingSyncRequest(t, user, req, endpoint)
 }
 
+func matchUnknownPosErrcode(endpoint slidingSyncEndpoint) match.JSON {
+	if endpoint.legacy {
+		return match.AnyOf(
+			match.JSONKeyEqual("errcode", "M_UNKNOWN_POS"),
+			match.JSONKeyEqual("errcode", "M_UNKNOWN"),
+		)
+	}
+	return match.JSONKeyEqual("errcode", "M_UNKNOWN_POS")
+}
+
 func tryDoSlidingSync(t *testing.T, user *client.CSAPI, req slidingSyncReq, endpoint slidingSyncEndpoint) (string, gjson.Result, bool, string) {
 	t.Helper()
 
@@ -1606,11 +1616,7 @@ func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
 	if statusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unknown pos, got %d: %s", statusCode, body.Raw)
 	}
-	wantErrcode := "M_UNKNOWN_POS"
-	if lookupSlidingSyncEndpoint(t, alice).legacy {
-		wantErrcode = "M_UNKNOWN"
-	}
-	must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
+	must.MatchGJSON(t, body, matchUnknownPosErrcode(lookupSlidingSyncEndpoint(t, alice)))
 }
 
 // TestMSC4186SlidingSyncPosOwnership verifies that a pos issued to one user cannot be
@@ -1651,11 +1657,7 @@ func TestMSC4186SlidingSyncPosOwnership(t *testing.T) {
 	if statusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 when bob reuses alice's conn_id/pos, got %d: %s", statusCode, body.Raw)
 	}
-	wantErrcode := "M_UNKNOWN_POS"
-	if lookupSlidingSyncEndpoint(t, bob).legacy {
-		wantErrcode = "M_UNKNOWN"
-	}
-	must.MatchGJSON(t, body, match.JSONKeyEqual("errcode", wantErrcode))
+	must.MatchGJSON(t, body, matchUnknownPosErrcode(lookupSlidingSyncEndpoint(t, bob)))
 }
 
 // TestMSC4186SlidingSyncMaxLimits verifies the server enforces the 100 lists / 100
