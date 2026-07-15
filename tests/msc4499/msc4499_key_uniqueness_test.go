@@ -214,6 +214,24 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 	return foundKey
 }
 
+func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
+	t.Helper()
+	return complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
+		Name: "msc4499_trusted_notary",
+		Homeservers: []b.Homeserver{
+			{
+				Name: "hs1",
+				Env: map[string]string{
+					"CONDUWUIT_TRUSTED_SERVERS": "hs2",
+				},
+			},
+			{
+				Name: "hs2",
+			},
+		},
+	}))
+}
+
 // Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
 func TestMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
@@ -1181,6 +1199,76 @@ func TestMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 	} // end for orderings
 }
 
+// Test that duplicate JSON keys are rejected even when they appear inside a
+// nested object rather than directly in verify_keys.
+func TestMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate signing key", err)
+	signingKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_deep_signer")
+	nestedKeyID := "ed25519:msc4499_deep_dupe"
+
+	rawJSON := fmt.Sprintf(`{
+		"server_name": "%s",
+		"valid_until_ts": %d,
+		"verify_keys": {
+			"%s": {
+				"key": "%s"
+			}
+		},
+		"old_verify_keys": {
+			"%s": {
+				"key": "%s",
+				"key": "%s",
+				"expired_ts": %d
+			}
+		}
+	}`, originName, time.Now().Add(24*time.Hour).UnixMilli(),
+		signingKeyID, base64.RawStdEncoding.EncodeToString(pubKey),
+		nestedKeyID,
+		base64.RawStdEncoding.EncodeToString(pubKey),
+		base64.RawStdEncoding.EncodeToString(pubKey),
+		time.Now().Add(-1*time.Hour).UnixMilli(),
+	)
+
+	signedJSON, err := gomatrixserverlib.SignJSON(string(originName), signingKeyID, privKey, []byte(rawJSON))
+	must.NotError(t, "failed to sign nested-duplicate JSON", err)
+
+	var requestCount int
+	dupeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(signedJSON)
+	})
+
+	srv.Mux().Handle("/_matrix/key/v2/server", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", dupeHandler).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", dupeHandler).Methods("GET")
+
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), nestedKeyID, 0)
+	if requestCount == 0 {
+		t.Fatalf("nested duplicate payload was never fetched — test did not exercise the duplicate parser path")
+	}
+	if foundKey != "" {
+		t.Fatalf("hs1 returned key %s from a payload with a nested duplicate key — deep duplicate detection is missing", foundKey)
+	}
+}
+
 // Test that once a key binding is confirmed via direct fetch, a subsequent direct fetch
 // presenting different key material for the same key ID is rejected (First Seen Wins
 // among direct observations).
@@ -1188,7 +1276,8 @@ func TestMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
 // Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
 func TestMSC4499KeyBindingPromotion(t *testing.T) {
-	deployment := complement.Deploy(t, 1)
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
 	srv := federation.NewServer(t, deployment,
@@ -1199,7 +1288,7 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	cancel := srv.Listen()
 	defer cancel()
 
-	// Generate key A — this will be the permanent binding via direct fetch
+	// Generate key A — this will be the first binding hs1 learns via hs2.
 	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate key A", err)
 
@@ -1209,7 +1298,7 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	srv.KeyID = keyID
 	srv.Priv = privKeyA
 
-	// Mock key server serves key A via direct fetch
+	// Mock key server serves key A.
 	mockKeyServer := &MockKeyServer{
 		serverName: srv.ServerName(),
 		keyID:      keyID,
@@ -1226,8 +1315,7 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
-	// Phase 1: Create room and join. This triggers a direct key fetch by hs1,
-	// which confirms key A as a permanent binding.
+	// Phase 1: Create room and join. This triggers hs1 to learn key A via hs2.
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 	ver := alice.GetDefaultRoomVersion(t)
 	charlie := srv.UserID("charlie")
@@ -1235,7 +1323,8 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 	roomAlias := srv.MakeAliasMapping("binding_test", serverRoom.RoomID)
 	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 
-	// Send a valid event signed by key A to confirm hs1 has pinned key A
+	// Send a valid event signed by key A. This should be accepted after hs1
+	// has learned the key through its trusted notary path.
 	eventValid := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
@@ -1355,7 +1444,8 @@ func TestMSC4499KeyBindingPromotion(t *testing.T) {
 //
 // Per MSC4499 L423-437: implementations SHOULD enforce a limit (e.g., 1,000 keys),
 // and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
-// keys. Keys in verify_keys MUST always be prioritized and exempt from eviction.
+// keys. Keys in verify_keys MUST always be prioritized and exempt from the retired-key
+// ceiling.
 func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
@@ -1378,14 +1468,24 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 3000 filler keys in old_verify_keys + 1 signing key in verify_keys
-	// = 3001 total, just over the suggested 3,000-key quota boundary.
+	// Generate 49 additional active keys in verify_keys plus 3000 retired keys in
+	// old_verify_keys. That gives us 50 active keys total, which is within the active
+	// ceiling while still exceeding the retired-key ceiling if active keys are counted
+	// incorrectly.
+	numActiveFillerKeys := 49
 	numFillerKeys := 3000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
 	}
+	for i := 0; i < numActiveFillerKeys; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, fmt.Sprintf("failed to generate active filler key %d", i), err)
+		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_active_%04d", i))
+		verifyKeys[kid] = pub
+	}
+
 	oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
-	var lastKeyID gomatrixserverlib.KeyID
+	var oldestKeyID gomatrixserverlib.KeyID
 	for i := 0; i < numFillerKeys; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		must.NotError(t, fmt.Sprintf("failed to generate filler key %d", i), err)
@@ -1396,7 +1496,7 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 			},
 			ExpiredTS: spec.AsTimestamp(time.Now().Add(-10 * time.Hour).Add(time.Duration(-i) * time.Second)),
 		}
-		lastKeyID = kid
+		oldestKeyID = kid
 	}
 
 	mockKeyServer := &MockKeyServer{
@@ -1414,21 +1514,124 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
 	// Query the signing key — this forces hs1 to fetch and process the entire
-	// 1001-key payload. If the server has a quota, it must silently evict or
-	// handle the overflow without error.
+	// payload. If the server has a quota, it must silently evict or handle the
+	// overflow without error.
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
 
-	// Verify hs1 can still resolve the FIRST filler key (newest)
+	// Verify hs1 can still resolve a retired key near the top of the retention set.
 	firstKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_filler_0000")
 	firstKey := oldVerifyKeys[firstKeyID]
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(firstKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(firstKey.Key))
 
-	// Verify the LAST filler key (oldest) has been evicted
-	// We use queryNotaryRaw to avoid the hard assertion in queryNotary
-	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(lastKeyID), 0)
-	must.Equal(t, foundKey, "", "Expected oldest filler key to be evicted")
+	// Verify the LAST filler key (oldest) is still available. If verify_keys are
+	// incorrectly counted against the retired-key ceiling, this key will be dropped.
+	oldestKey := oldVerifyKeys[oldestKeyID]
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestKeyID), 0)
+	must.Equal(t, foundKey, base64.RawStdEncoding.EncodeToString(oldestKey.Key),
+		"Expected oldest retired key to remain available when verify_keys are exempt from the retired-key ceiling")
+}
+
+// Test that a binding observed active earlier is treated as corroborated and is
+// retained ahead of uncorroborated retired keys when the retired-key ceiling is hit.
+//
+// Per MSC4499 L584-589: corroborated retired keys are retained before
+// uncorroborated retired keys, regardless of effective retirement timestamp.
+func TestMSC4499KeyCorroborationTierRetention(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	deployment := deployMSC4499TrustedNotary(t)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	// Phase 1: Learn key A while it is active. hs1 sees this via hs2, which
+	// should corroborate the binding for later retention decisions.
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate corroborated key A", err)
+	keyIDA := gomatrixserverlib.KeyID("ed25519:msc4499_corroborated_a")
+
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyIDA,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyIDA: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(2 * time.Second),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyIDA), 0, pubKeyABase64)
+
+	time.Sleep(3 * time.Second)
+
+	// Phase 2: Rotate the origin to a new active key and flood old_verify_keys
+	// with uncorroborated retired bindings. Key A should survive because hs1
+	// already saw it active before retirement.
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate active key B", err)
+	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_active_b")
+
+	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+		keyIDB: pubKeyB,
+	}
+	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3001)
+	oldVerifyKeys[keyIDA] = gomatrixserverlib.OldVerifyKey{
+		VerifyKey: gomatrixserverlib.VerifyKey{
+			Key: spec.Base64Bytes(pubKeyA),
+		},
+		ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
+	}
+
+	for i := 0; i < 3000; i++ {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, fmt.Sprintf("failed to generate uncorroborated key %d", i), err)
+		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_uncorroborated_%04d", i))
+		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
+			VerifyKey: gomatrixserverlib.VerifyKey{
+				Key: spec.Base64Bytes(pub),
+			},
+			ExpiredTS: spec.AsTimestamp(time.Now().Add(-1 * time.Hour).Add(-time.Duration(i) * time.Second)),
+		}
+	}
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.keyID = keyIDB
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys = verifyKeys
+	mockKeyServer.oldVerifyKeys = oldVerifyKeys
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.requestCount = 0
+	mockKeyServer.mu.Unlock()
+
+	minValidUntil := time.Now().Add(1 * time.Hour).UnixMilli()
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyIDA), minValidUntil)
+	must.Equal(t, foundKey, pubKeyABase64,
+		"Expected corroborated retired key A to survive the ceiling ahead of uncorroborated retired keys")
+
+	mockKeyServer.mu.Lock()
+	reqCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if reqCount == 0 {
+		t.Fatalf("Mock key server was not re-fetched in corroboration test — the ceiling path was not exercised")
+	}
 }
 
 // Test that a successful key fetch clears the backoff state for that server.
@@ -1573,20 +1776,7 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
-	deployment := complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
-		Name: "msc4499_provisional_override_freeze",
-		Homeservers: []b.Homeserver{
-			{
-				Name: "hs1",
-				Env: map[string]string{
-					"CONDUWUIT_TRUSTED_SERVERS": "hs2",
-				},
-			},
-			{
-				Name: "hs2",
-			},
-		},
-	}))
+	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
 	fedClient := &http.Client{

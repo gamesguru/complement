@@ -18,12 +18,10 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// TODO:
-// MSC4499 still needs coverage for:
-// - corroborated vs uncorroborated eviction tiers
-// - provisional vs permanent notary bindings
-// - active-key exemptions from the retired-key ceiling
-// - deep duplicate-key detection across the full response document
+// MSC4499 coverage now lives in tests/msc4499/msc4499_key_uniqueness_test.go,
+// including corroborated vs uncorroborated eviction tiers, provisional vs
+// permanent notary bindings, active-key exemptions from the retired-key
+// ceiling, and deep duplicate-key detection across the full response document.
 
 // Test that a server can receive /keys requests:
 // https://matrix.org/docs/spec/server_server/latest#get-matrix-key-v2-server-keyid
