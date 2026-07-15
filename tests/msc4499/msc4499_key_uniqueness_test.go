@@ -1283,7 +1283,7 @@ func TestMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 // Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
 // Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
 func TestMSC4499KeyBindingPromotion(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
@@ -1546,7 +1546,7 @@ func TestMSC4499KeyStorageQuotaResilience(t *testing.T) {
 // Per MSC4499 L584-589: corroborated retired keys are retained before
 // uncorroborated retired keys, regardless of effective retirement timestamp.
 func TestMSC4499KeyCorroborationTierRetention(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
@@ -1782,7 +1782,7 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  4. Query hs1 again with minimum_valid_until_ts forcing a re-fetch
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
