@@ -411,7 +411,7 @@ func (d *Builder) deployBaseImage(blueprintName string, hs b.Homeserver, context
 	return deployImage(
 		d.Docker, baseImageURI, fmt.Sprintf("complement_%s", contextStr),
 		d.Config.PackageNamespace, blueprintName, hs.Name, asIDToRegistrationMap, contextStr,
-		networkName, d.Config,
+		networkName, d.Config, hs.Env,
 	)
 }
 

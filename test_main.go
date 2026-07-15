@@ -104,6 +104,13 @@ func OldDeploy(t ct.TestLike, blueprint b.Blueprint) Deployment {
 	return testPackage.OldDeploy(t, blueprint)
 }
 
+// DeployBlueprint deploys an explicit blueprint, which allows tests to control
+// per-homeserver details such as extra environment variables or notary settings.
+func DeployBlueprint(t ct.TestLike, blueprint b.Blueprint) Deployment {
+	t.Helper()
+	return OldDeploy(t, blueprint)
+}
+
 // Deploy will deploy the given number of servers or terminate the test.
 // This function is the main setup function for all tests as it provides a deployment with
 // which tests can interact with.

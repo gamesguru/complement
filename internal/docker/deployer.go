@@ -97,7 +97,7 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 	hsDeployment, err := deployImage(
 		d.Docker, baseImageURI, containerName,
 		d.config.PackageNamespace, "", hsName, nil, "dirty",
-		networkName, d.config,
+		networkName, d.config, nil,
 	)
 	if err != nil {
 		if hsDeployment != nil && hsDeployment.ContainerID != "" {
@@ -176,6 +176,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 		deployment, err := deployImage(
 			d.Docker, img.ID, containerName,
 			d.config.PackageNamespace, blueprintName, hsName, asIDToRegistrationMap, contextStr, networkName, d.config,
+			nil,
 		)
 		if err != nil {
 			if deployment != nil && deployment.ContainerID != "" {
@@ -336,7 +337,7 @@ func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 // nolint
 func deployImage(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
-	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement,
+	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
 ) (*HomeserverDeployment, error) {
 	ctx := context.Background()
 	var extraHosts []string
@@ -373,6 +374,9 @@ func deployImage(
 			}
 		}
 		log.Printf("Sharing %v host environment variables with container", env)
+	}
+	for k, v := range extraEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	body, err := docker.ContainerCreate(ctx, &container.Config{

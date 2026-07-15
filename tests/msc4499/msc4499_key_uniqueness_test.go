@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
@@ -1565,14 +1566,27 @@ func TestMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 // that key ID MUST be rejected as a collision.
 //
 // Flow:
-//  1. Query notary → hs1 fetches key A with short valid_until_ts (provisional)
+//  1. hs1 queries hs2 as its trusted notary and learns key A with short valid_until_ts
 //  2. Wait for valid_until_ts to expire
-//  3. Switch mock to serve key B for the same key ID
-//  4. Query notary with minimum_valid_until_ts forcing a re-fetch
+//  3. Switch the origin mock to serve key B for the same key ID
+//  4. Query hs1 again with minimum_valid_until_ts forcing a re-fetch
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := complement.Deploy(t, 1)
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse, runtime.Conduit, runtime.Continuwuity, runtime.Tuwunel)
+	deployment := complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
+		Name: "msc4499_provisional_override_freeze",
+		Homeservers: []b.Homeserver{
+			{
+				Name: "hs1",
+				Env: map[string]string{
+					"CONDUWUIT_TRUSTED_SERVERS": "hs2",
+				},
+			},
+			{
+				Name: "hs2",
+			},
+		},
+	}))
 	defer deployment.Destroy(t)
 
 	fedClient := &http.Client{
@@ -1592,7 +1606,7 @@ func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_freeze")
 
 	// Phase 1: Serve key A with a short valid_until (2 seconds from now).
-	// The notary learns this as a provisional binding.
+	// hs2 learns this via direct fetch from the origin mock, and hs1 learns it via hs2.
 	mockKeyServer := &MockKeyServer{
 		serverName: originName,
 		keyID:      keyID,
@@ -1611,7 +1625,7 @@ func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
 
-	// Phase 1: Query notary → hs1 fetches and caches key A (provisional)
+	// Phase 1: Query hs1 → hs1 consults hs2 as its trusted notary and caches key A
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
 	// Phase 2: Wait for valid_until_ts to expire
@@ -1632,7 +1646,7 @@ func TestMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
 
 	// Phase 4: Query with minimum_valid_until_ts beyond the expired cached time,
-	// forcing hs1 to re-fetch. The mock now serves key B.
+	// forcing hs1 to re-fetch via hs2. The origin mock now serves key B.
 	minValidUntil := time.Now().Add(1 * time.Hour).UnixMilli()
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 
