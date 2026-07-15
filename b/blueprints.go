@@ -47,6 +47,9 @@ type Blueprint struct {
 type Homeserver struct {
 	// The name of this homeserver. Containers will use this name.
 	Name string
+	// Extra environment variables to pass to the homeserver container at startup.
+	// These are intended for test-only configuration knobs.
+	Env map[string]string
 	// The list of users to create on this homeserver.
 	Users []User
 	// The list of rooms to create on this homeserver
