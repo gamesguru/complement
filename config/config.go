@@ -191,6 +191,9 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	}
 
 	cfg.PackageNamespace = pkgNamespace
+	if namespacePrefix := os.Getenv("COMPLEMENT_PACKAGE_NAMESPACE_PREFIX"); namespacePrefix != "" {
+		cfg.PackageNamespace = namespacePrefix + "_" + cfg.PackageNamespace
+	}
 
 	// create CA certs and keys
 	if err := cfg.GenerateCA(); err != nil {
