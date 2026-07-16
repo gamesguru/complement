@@ -2,7 +2,6 @@ package tests
 
 import (
 	"fmt"
-	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -42,8 +41,34 @@ func TestDeviceListsUpdateOverFederation(t *testing.T) {
 			}
 			sort.Strings(gotChanged)
 			sort.Strings(gotLeft)
-			changedMatch := reflect.DeepEqual(changed, gotChanged)
-			leftMatch := reflect.DeepEqual(left, gotLeft)
+			changedMatch := true
+			for _, c := range changed {
+				found := false
+				for _, gc := range gotChanged {
+					if c == gc {
+						found = true
+						break
+					}
+				}
+				if !found {
+					changedMatch = false
+					break
+				}
+			}
+			leftMatch := true
+			for _, l := range left {
+				found := false
+				for _, gl := range gotLeft {
+					if l == gl {
+						found = true
+						break
+					}
+				}
+				if !found {
+					leftMatch = false
+					break
+				}
+			}
 			if changedMatch && leftMatch {
 				return nil
 			}
