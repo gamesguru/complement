@@ -20,6 +20,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
 )
 
@@ -488,6 +489,7 @@ func TestMSC4186SlidingSync(t *testing.T) {
 	t.Run("PosOwnership", testMSC4186SlidingSyncPosOwnership)
 	t.Run("MaxLimits", testMSC4186SlidingSyncMaxLimits)
 	t.Run("CombiningRoomConfigs", testMSC4186SlidingSyncCombiningRoomConfigs)
+	t.Run("BumpStampTieBreak", testMSC4186SlidingSyncBumpStampTieBreak)
 }
 
 // testMSC4186SlidingSyncLists verifies initial and incremental sliding sync list responses.
@@ -1793,4 +1795,69 @@ func testMSC4186SlidingSyncCombiningRoomConfigs(t *testing.T) {
 	if !sawTopic {
 		t.Fatalf("expected combined required_state to include m.room.topic from the wide-timeline list: %s", room.Raw)
 	}
+}
+
+// testMSC4186SlidingSyncBumpStampTieBreak verifies that when two rooms report an
+// identical bump_stamp, the tie is broken deterministically by ascending room_id, so
+// that a narrow range boundary doesn't non-deterministically flip which of the two
+// rooms is included.
+//
+// This is skipped on Synapse: Synapse's bump_stamp is the stream_ordering of the
+// room's last "bump" event (synapse/storage/databases/main/sliding_sync.go), and
+// stream_ordering is assigned from a single global MultiWriterIdGenerator sequence
+// shared by every event on the homeserver (synapse/storage/util/id_generators.go).
+// That makes it a total order across all rooms -- two different rooms can never be
+// assigned the same stream_ordering, so a genuine bump_stamp tie is structurally
+// impossible to produce against Synapse, not merely rare. The spec's "SHOULD aim for
+// this to be rare" language is written for the alternative the spec explicitly
+// permits -- a server using coarse wall-clock timestamps, where two events landing in
+// the same tick is a real possibility. This test is written to hold against such a
+// server, should one land in this suite.
+func testMSC4186SlidingSyncBumpStampTieBreak(t *testing.T) {
+	runtime.SkipIf(t, runtime.Synapse) // see doc comment above: stream_ordering-based bump_stamp can never tie
+
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	const attempts = 10
+	for attempt := 0; attempt < attempts; attempt++ {
+		roomA := alice.MustCreateRoom(t, map[string]interface{}{})
+		roomB := alice.MustCreateRoom(t, map[string]interface{}{})
+
+		// Best-effort attempt to land both rooms' bump events in the same tie window;
+		// whether this actually produces a tie is homeserver-dependent, hence the retry loop.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); sendMessage(t, alice, roomA, "tie-break race A") }()
+		go func() { defer wg.Done(); sendMessage(t, alice, roomB, "tie-break race B") }()
+		wg.Wait()
+
+		_, res := mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: fmt.Sprintf("bump-stamp-tie-break-%d", attempt),
+			Lists:  allRoomsList(0, 0, 1),
+		})
+
+		bumpA := requireRoom(t, res, roomA).Get("bump_stamp")
+		bumpB := requireRoom(t, res, roomB).Get("bump_stamp")
+		if !bumpA.Exists() || !bumpB.Exists() || bumpA.Num != bumpB.Num {
+			continue // no tie produced this attempt, try again with a fresh pair of rooms
+		}
+
+		first, second := roomA, roomB
+		if roomB < roomA {
+			first, second = roomB, roomA
+		}
+
+		_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
+			ConnID: fmt.Sprintf("bump-stamp-tie-break-boundary-%d", attempt),
+			Lists:  allRoomsList(0, 0, 0),
+		})
+		requireRoom(t, res, first)
+		requireNoRoom(t, res, second)
+		return
+	}
+
+	t.Skipf("could not produce a bump_stamp tie between two rooms after %d attempts; this homeserver may not be able to tie bump_stamp values", attempts)
 }
