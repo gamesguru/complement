@@ -22,13 +22,14 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-// TestMSC4500StateAccumulator verifies that the state_accumulator endpoint
-// returns a valid 2048-byte base64url encoded lattice and the matching BLAKE2b-256 digest.
+// TestMSC4500State exercises the MSC4500 state_accumulator endpoint.
 func TestMSC4500State(t *testing.T) {
 	t.Run("Accumulator", testMSC4500StateAccumulator)
 	t.Run("HashMismatch", testMSC4500StateHashMismatch)
 }
 
+// testMSC4500StateAccumulator verifies that the state_accumulator endpoint
+// returns a valid 2048-byte base64url encoded lattice and the matching BLAKE2b-256 digest.
 func testMSC4500StateAccumulator(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

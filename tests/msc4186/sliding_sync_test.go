@@ -463,7 +463,9 @@ func unsafeSendMessage(t *testing.T, user *client.CSAPI, roomID string, body str
 	})
 }
 
-// TestMSC4186SlidingSyncLists verifies initial and incremental sliding sync list responses.
+// TestMSC4186SlidingSync exercises MSC4186 sliding sync behaviour across many
+// scenarios, covering list responses, subscriptions, deltas, filters, presence,
+// long polling, extensions, lazy loading, and error handling.
 func TestMSC4186SlidingSync(t *testing.T) {
 	t.Run("Lists", testMSC4186SlidingSyncLists)
 	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
@@ -488,6 +490,7 @@ func TestMSC4186SlidingSync(t *testing.T) {
 	t.Run("CombiningRoomConfigs", testMSC4186SlidingSyncCombiningRoomConfigs)
 }
 
+// testMSC4186SlidingSyncLists verifies initial and incremental sliding sync list responses.
 func testMSC4186SlidingSyncLists(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

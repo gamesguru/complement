@@ -233,7 +233,10 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	}))
 }
 
-// Test that a homeserver strictly follows "First Seen Wins" for a unique (server_name, key_id).
+// TestMSC4499Key exercises MSC4499 server key uniqueness and verification
+// behaviour across many scenarios: first-seen-wins conflict resolution, key
+// rotation, rejection of duplicate/malformed payloads, caching/backoff, and
+// storage limits.
 func TestMSC4499Key(t *testing.T) {
 	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
 	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
@@ -254,6 +257,8 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTsSanityCheck)
 }
 
+// testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
+// "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)

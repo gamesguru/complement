@@ -20,8 +20,19 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
-// TestPaginationNoDuplicates is an adversarial test that stress-tests /messages
-// pagination with small page sizes to catch off-by-one errors in pagination
+// TestMessagesPaginationStress adversarially stress-tests /messages pagination
+// behaviour across several scenarios: duplicate-free paging with small page
+// sizes, forward paging combined with jumping back to the start, resuming from
+// a stale token, and token stability.
+func TestMessagesPaginationStress(t *testing.T) {
+	t.Run("NoDuplicates", testMessagesPaginationStressNoDuplicates)
+	t.Run("ForwardAndJumpToStart", testMessagesPaginationStressForwardAndJumpToStart)
+	t.Run("StaleTokenResume", testMessagesPaginationStressStaleTokenResume)
+	t.Run("TokenStability", testMessagesPaginationStressTokenStability)
+}
+
+// testMessagesPaginationStressNoDuplicates is an adversarial test that stress-tests
+// /messages pagination with small page sizes to catch off-by-one errors in pagination
 // token boundaries that only manifest when page boundaries fall mid-sequence.
 //
 // Background: A real-world bug was observed where the same conduwuit binary
@@ -35,13 +46,6 @@ import (
 // The test creates realistic room activity: topic changes, power level edits,
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
-func TestMessagesPaginationStress(t *testing.T) {
-	t.Run("NoDuplicates", testMessagesPaginationStressNoDuplicates)
-	t.Run("ForwardAndJumpToStart", testMessagesPaginationStressForwardAndJumpToStart)
-	t.Run("StaleTokenResume", testMessagesPaginationStressStaleTokenResume)
-	t.Run("TokenStability", testMessagesPaginationStressTokenStability)
-}
-
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
