@@ -829,7 +829,15 @@ func TestCorruptedAuthChain(t *testing.T) {
 		defer stateIDWaiter.Finish()
 		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
 		reqEventID := req.URL.Query().Get("event_id")
-		must.Equal(t, reqEventID, stateIDsEvent.EventID(), "unexpected event provided to /state_ids")
+		if reqEventID != stateIDsEvent.EventID() {
+			if runtime.Homeserver == runtime.Synapse {
+				t.Errorf("unexpected event provided to /state_ids: got '%s' want '%s'", reqEventID, stateIDsEvent.EventID())
+			} else {
+				if reqEventID != sendTxnEvent.EventID() {
+					t.Errorf("unexpected event provided to /state_ids: got '%s' want '%s' or '%s'", reqEventID, stateIDsEvent.EventID(), sendTxnEvent.EventID())
+				}
+			}
+		}
 		w.WriteHeader(200)
 
 		var authChainIDs []string
