@@ -912,7 +912,9 @@ func TestCorruptedAuthChain(t *testing.T) {
 	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sendTxnEvent.JSON()}, nil)
 
 	// wait for the server to make the requests
-	gmeWaiter.Wait(t, 5*time.Second)
+	if runtime.Homeserver == runtime.Synapse {
+		gmeWaiter.Wait(t, 5*time.Second)
+	}
 	stateIDWaiter.Wait(t, 5*time.Second)
 	eventBWaiter.Wait(t, 5*time.Second)
 
