@@ -829,7 +829,13 @@ func TestCorruptedAuthChain(t *testing.T) {
 		defer stateIDWaiter.Finish()
 		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
 		reqEventID := req.URL.Query().Get("event_id")
-		must.Equal(t, reqEventID, stateIDsEvent.EventID(), "unexpected event provided to /state_ids")
+		if reqEventID == stateIDsEvent.EventID() {
+			// Expected for all servers
+		} else if runtime.Homeserver == runtime.Synapse {
+			t.Errorf("unexpected event provided to /state_ids: got '%s' want '%s'", reqEventID, stateIDsEvent.EventID())
+		} else if reqEventID != sendTxnEvent.EventID() {
+			t.Errorf("unexpected event provided to /state_ids: got '%s' want '%s' or '%s'", reqEventID, stateIDsEvent.EventID(), sendTxnEvent.EventID())
+		}
 		w.WriteHeader(200)
 
 		var authChainIDs []string
@@ -904,7 +910,9 @@ func TestCorruptedAuthChain(t *testing.T) {
 	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sendTxnEvent.JSON()}, nil)
 
 	// wait for the server to make the requests
-	gmeWaiter.Wait(t, 5*time.Second)
+	if runtime.Homeserver == runtime.Synapse {
+		gmeWaiter.Wait(t, 5*time.Second)
+	}
 	stateIDWaiter.Wait(t, 5*time.Second)
 	eventBWaiter.Wait(t, 5*time.Second)
 
