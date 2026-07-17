@@ -257,6 +257,7 @@ func SyncStateAfterHas(roomID string, check func(gjson.Result) bool) SyncCheckOp
 	}
 }
 
+// SyncEphemeralHas asserts on the ephemeral section of a sync response for a room.
 func SyncEphemeralHas(roomID string, check func(gjson.Result) bool) SyncCheckOpt {
 	return func(clientUserID string, topLevelSyncJSON gjson.Result) error {
 		err := checkArrayElements(

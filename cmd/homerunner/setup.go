@@ -12,6 +12,7 @@ import (
 	"github.com/matrix-org/complement/internal/docker"
 )
 
+// Runtime tracks active homerunner deployments and their expiration timers.
 type Runtime struct {
 	Config                *Config
 	mu                    *sync.Mutex
@@ -29,6 +30,7 @@ func NewRuntime(cfg *Config) (*Runtime, error) {
 	}, nil
 }
 
+// CreateDeployment builds and starts a new deployment for the given blueprint.
 func (r *Runtime) CreateDeployment(imageURI string, blueprint *b.Blueprint) (*docker.Deployment, time.Time, error) {
 	duration := time.Duration(r.Config.HomeserverLifetimeMins) * time.Minute
 	var expires time.Time
@@ -75,6 +77,7 @@ func (r *Runtime) addDeployment(blueprintName string, d *docker.Deployment, dura
 	return nil
 }
 
+// DestroyDeployment tears down the deployment associated with the given blueprint name.
 func (r *Runtime) DestroyDeployment(blueprintName string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

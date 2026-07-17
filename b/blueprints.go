@@ -44,6 +44,7 @@ type Blueprint struct {
 	KeepAccessTokensForUsers []string
 }
 
+// Homeserver describes a single homeserver entry in a blueprint.
 type Homeserver struct {
 	// The name of this homeserver. Containers will use this name.
 	Name string
@@ -60,6 +61,7 @@ type Homeserver struct {
 	BaseImageURI *string
 }
 
+// User describes a user to create when a blueprint is deployed.
 type User struct {
 	Localpart   string
 	DisplayName string
@@ -68,11 +70,13 @@ type User struct {
 	DeviceID    *string
 }
 
+// AccountData describes one account data event to seed for a user.
 type AccountData struct {
 	Type  string
 	Value map[string]interface{}
 }
 
+// Room describes a room to create when a blueprint is deployed.
 type Room struct {
 	// The unique reference for this room. Used to link together rooms across homeservers.
 	Ref        string
@@ -81,6 +85,7 @@ type Room struct {
 	Events     []Event
 }
 
+// ApplicationService describes an application service to register in a blueprint.
 type ApplicationService struct {
 	ID               string
 	HSToken          string
@@ -92,6 +97,7 @@ type ApplicationService struct {
 	EnableEncryption bool
 }
 
+// Event describes a raw event to inject into a room during blueprint creation.
 type Event struct {
 	Type     string                 `json:"type"`
 	Sender   string                 `json:"sender,omitempty"`
@@ -99,6 +105,7 @@ type Event struct {
 	Content  map[string]interface{} `json:"content"`
 }
 
+// MustValidate validates a blueprint and panics if it is invalid.
 func MustValidate(bp Blueprint) Blueprint {
 	bp2, err := Validate(bp)
 	if err != nil {
@@ -107,6 +114,7 @@ func MustValidate(bp Blueprint) Blueprint {
 	return bp2
 }
 
+// Validate checks that a blueprint is structurally valid and normalizes a few fields.
 func Validate(bp Blueprint) (Blueprint, error) {
 	if bp.Name == "" {
 		return bp, fmt.Errorf("Blueprint must have a Name")

@@ -1,5 +1,6 @@
 package helpers
 
+// RegistrationOpts configures helper registration calls.
 type RegistrationOpts struct {
 	LocalpartSuffix string // default '' (don't care)
 	DeviceID        string // default '' (generate new)
@@ -7,6 +8,7 @@ type RegistrationOpts struct {
 	IsAdmin         bool   // default false
 }
 
+// LoginOpts configures helper login calls.
 type LoginOpts struct {
 	Password string // default 'complement_meets_min_password_requirement'
 	DeviceID string // default '' (generate new)

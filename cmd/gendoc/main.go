@@ -16,6 +16,7 @@ import (
 
 var configPath = flag.String("config", "internal/config/config.go", "The path to internal/config/config.go")
 
+// VarDoc describes one generated environment variable entry.
 type VarDoc struct {
 	Name        string
 	Description string
@@ -23,6 +24,7 @@ type VarDoc struct {
 	Type        string
 }
 
+// NewVarDoc parses a structured field comment into a VarDoc.
 func NewVarDoc(docstring string) (vd VarDoc) {
 	lines := strings.Split(docstring, "\n")
 	isDescription := false

@@ -14,7 +14,7 @@ import (
 	"gonum.org/v1/plot/vg"
 )
 
-// TODO: remove duplication
+// Output is the JSON structure written by the perf test runner.
 type Output struct {
 	Name      string
 	Snapshots []Snapshot
@@ -22,6 +22,7 @@ type Output struct {
 	BaseImage string
 }
 
+// Snapshot describes one point-in-time measurement collected during a run.
 type Snapshot struct {
 	Name        string
 	Description string
@@ -34,6 +35,7 @@ type Snapshot struct {
 	RxBytes     int64
 }
 
+// PerfRun groups a set of snapshots under a single run name.
 type PerfRun struct {
 	Snapshots []Snapshot
 	Name      string

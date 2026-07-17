@@ -105,6 +105,7 @@ type writeCounter struct {
 	total         int
 }
 
+// Write updates the progress counter and prints a status line.
 func (wc *writeCounter) Write(p []byte) (int, error) {
 	n := len(p)
 	wc.total += n

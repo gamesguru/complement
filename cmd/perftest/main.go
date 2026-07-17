@@ -17,6 +17,7 @@ var (
 	flagOutput = flag.String("output", "output.json", "Where to write the output data")
 )
 
+// Output is the JSON structure produced by the perf test binary.
 type Output struct {
 	Name      string
 	Snapshots []Snapshot
@@ -24,6 +25,7 @@ type Output struct {
 	BaseImage string
 }
 
+// Config captures the CLI flags for the perf test binary.
 type Config struct {
 	BaseImage string
 	Seed      int64

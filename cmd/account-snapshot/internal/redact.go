@@ -13,10 +13,10 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// NoEncryptedDevice is the device ID used when there are no E2E messages sent by this user
+// NoEncryptedDevice is the device ID used when there are no E2E messages sent by this user.
 const NoEncryptedDevice = "device-default"
 
-// Snapshot is the output produced by this script
+// Snapshot is the anonymised output produced by this script.
 type Snapshot struct {
 	Rooms          []AnonSnapshotRoom
 	Servers        []string
@@ -496,6 +496,7 @@ type AnonMappings struct {
 	SingleServerName  string                     // if set, all users get to live on this single server
 }
 
+// Device returns the anonymous device ID for a real user/device pair.
 func (a *AnonMappings) Device(userID, deviceID string) string {
 	anonDevice, ok := a.Devices[deviceID]
 	if ok {
@@ -517,6 +518,7 @@ func (a *AnonMappings) Device(userID, deviceID string) string {
 	return anonDevice
 }
 
+// User returns the anonymous user ID for a real user ID.
 func (a *AnonMappings) User(userID string) string {
 	if len(userID) == 0 || userID[0] != '@' {
 		return ""
@@ -536,6 +538,7 @@ func (a *AnonMappings) User(userID string) string {
 	return anonUser
 }
 
+// Server returns the anonymous server name for a real server name.
 func (a *AnonMappings) Server(realServer string) string {
 	if a.SingleServerName != "" {
 		return a.SingleServerName
@@ -551,10 +554,12 @@ func (a *AnonMappings) Server(realServer string) string {
 	return anonServer
 }
 
+// Room returns the anonymous room ID for a real room ID.
 func (a *AnonMappings) Room(roomID string) string {
 	return a.Rooms[roomID]
 }
 
+// SetRoom records the anonymous room ID for a real room ID.
 func (a *AnonMappings) SetRoom(roomID, anonRoomID string) {
 	a.Rooms[roomID] = anonRoomID
 }
@@ -570,6 +575,7 @@ func (a *AnonMappings) deviceMap() map[string][]string {
 	return result
 }
 
+// AnonSnapshotRoom stores the redacted contents of a single room.
 type AnonSnapshotRoom struct {
 	ID       string
 	Creator  string
