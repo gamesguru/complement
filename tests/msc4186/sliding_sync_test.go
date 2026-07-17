@@ -464,7 +464,31 @@ func unsafeSendMessage(t *testing.T, user *client.CSAPI, roomID string, body str
 }
 
 // TestMSC4186SlidingSyncLists verifies initial and incremental sliding sync list responses.
-func TestMSC4186SlidingSyncLists(t *testing.T) {
+func TestMSC4186SlidingSync(t *testing.T) {
+	t.Run("Lists", testMSC4186SlidingSyncLists)
+	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
+	t.Run("ListDeltas", testMSC4186SlidingSyncListDeltas)
+	t.Run("ExpandedTimeline", testMSC4186SlidingSyncExpandedTimeline)
+	t.Run("BulkLoad", testMSC4186SlidingSyncBulkLoad)
+	t.Run("IncrementalRoomDeltas", testMSC4186SlidingSyncIncrementalRoomDeltas)
+	t.Run("MembershipListSemantics", testMSC4186SlidingSyncMembershipListSemantics)
+	t.Run("SetPresence", testMSC4186SlidingSyncSetPresence)
+	t.Run("LongPolling", testMSC4186SlidingSyncLongPolling)
+	t.Run("ExtensionsToDevice", testMSC4186SlidingSyncExtensionsToDevice)
+	t.Run("ListFilters", testMSC4186SlidingSyncListFilters)
+	t.Run("RangeShifting", testMSC4186SlidingSyncRangeShifting)
+	t.Run("LazyLoading", testMSC4186SlidingSyncLazyLoading)
+	t.Run("RequiredStateExclude", testMSC4186SlidingSyncRequiredStateExclude)
+	t.Run("InviteStrippedState", testMSC4186SlidingSyncInviteStrippedState)
+	t.Run("Heroes", testMSC4186SlidingSyncHeroes)
+	t.Run("RoomMetadata", testMSC4186SlidingSyncRoomMetadata)
+	t.Run("UnknownPos", testMSC4186SlidingSyncUnknownPos)
+	t.Run("PosOwnership", testMSC4186SlidingSyncPosOwnership)
+	t.Run("MaxLimits", testMSC4186SlidingSyncMaxLimits)
+	t.Run("CombiningRoomConfigs", testMSC4186SlidingSyncCombiningRoomConfigs)
+}
+
+func testMSC4186SlidingSyncLists(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -535,7 +559,7 @@ func TestMSC4186SlidingSyncLists(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncSubscriptions verifies explicit room subscriptions outside the requested list range.
-func TestMSC4186SlidingSyncSubscriptions(t *testing.T) {
+func testMSC4186SlidingSyncSubscriptions(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -569,7 +593,7 @@ func TestMSC4186SlidingSyncSubscriptions(t *testing.T) {
 // asserts the fixed behaviour proposed in that comment -- an explicit empty `lists: []`
 // -- so it will fail against any server implementing the literal current spec text until
 // that wording is amended.
-func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
+func testMSC4186SlidingSyncListDeltas(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -611,7 +635,7 @@ func TestMSC4186SlidingSyncListDeltas(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncExpandedTimeline verifies timeline expansion on incremental requests.
-func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
+func testMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -644,7 +668,7 @@ func TestMSC4186SlidingSyncExpandedTimeline(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncBulkLoad verifies timeline truncation and bump stamps across many rooms.
-func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
+func testMSC4186SlidingSyncBulkLoad(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -704,7 +728,7 @@ func TestMSC4186SlidingSyncBulkLoad(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncIncrementalRoomDeltas verifies omitted unchanged fields and required state changes.
-func TestMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
+func testMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -824,7 +848,7 @@ func TestMSC4186SlidingSyncIncrementalRoomDeltas(t *testing.T) {
 }
 
 // TestMSC4186SlidingSyncMembershipListSemantics verifies leave, kick, and ban visibility in list responses.
-func TestMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
+func testMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -988,7 +1012,7 @@ func ban(t *testing.T, user *client.CSAPI, roomID string, targetUserID string) {
 
 // TestMSC4186SlidingSyncSetPresence verifies the top-level set_presence field updates
 // the requesting user's presence state, and that omitting it defaults to online.
-func TestMSC4186SlidingSyncSetPresence(t *testing.T) {
+func testMSC4186SlidingSyncSetPresence(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1036,7 +1060,7 @@ func TestMSC4186SlidingSyncSetPresence(t *testing.T) {
 
 // TestMSC4186SlidingSyncLongPolling verifies the server blocks on a non-zero timeout
 // and unblocks promptly once a new event arrives, rather than waiting out the timeout.
-func TestMSC4186SlidingSyncLongPolling(t *testing.T) {
+func testMSC4186SlidingSyncLongPolling(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1086,7 +1110,7 @@ func TestMSC4186SlidingSyncLongPolling(t *testing.T) {
 
 // TestMSC4186SlidingSyncExtensionsToDevice verifies basic parsing and passthrough of
 // the top-level extensions node, using the to_device extension as a concrete example.
-func TestMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
+func testMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1135,7 +1159,7 @@ func TestMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 
 // TestMSC4186SlidingSyncListFilters verifies SlidingRoomFilter fields narrow list
 // membership as expected.
-func TestMSC4186SlidingSyncListFilters(t *testing.T) {
+func testMSC4186SlidingSyncListFilters(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1292,7 +1316,7 @@ func TestMSC4186SlidingSyncListFilters(t *testing.T) {
 // TestMSC4186SlidingSyncRangeShifting verifies that growing a list's range across
 // requests (e.g. [0,1] then [0,4]) returns the newly-visible rooms as deltas without
 // re-sending rooms that were already visible and unchanged.
-func TestMSC4186SlidingSyncRangeShifting(t *testing.T) {
+func testMSC4186SlidingSyncRangeShifting(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1342,7 +1366,7 @@ func TestMSC4186SlidingSyncRangeShifting(t *testing.T) {
 // TestMSC4186SlidingSyncLazyLoading verifies lazy_members:true only returns member
 // state for senders relevant to the returned timeline, and expands as new senders
 // become relevant.
-func TestMSC4186SlidingSyncLazyLoading(t *testing.T) {
+func testMSC4186SlidingSyncLazyLoading(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1417,7 +1441,7 @@ func TestMSC4186SlidingSyncLazyLoading(t *testing.T) {
 
 // TestMSC4186SlidingSyncRequiredStateExclude verifies required_state.exclude omits
 // matching state events even when a broader include would otherwise return them.
-func TestMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
+func testMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1468,7 +1492,7 @@ func TestMSC4186SlidingSyncRequiredStateExclude(t *testing.T) {
 
 // TestMSC4186SlidingSyncInviteStrippedState verifies that a remote invite is
 // delivered with a stripped_state payload describing the room.
-func TestMSC4186SlidingSyncInviteStrippedState(t *testing.T) {
+func testMSC4186SlidingSyncInviteStrippedState(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1507,7 +1531,7 @@ func TestMSC4186SlidingSyncInviteStrippedState(t *testing.T) {
 
 // TestMSC4186SlidingSyncHeroes verifies that a room without an explicit m.room.name
 // returns a heroes payload describing other members.
-func TestMSC4186SlidingSyncHeroes(t *testing.T) {
+func testMSC4186SlidingSyncHeroes(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1544,7 +1568,7 @@ func TestMSC4186SlidingSyncHeroes(t *testing.T) {
 
 // TestMSC4186SlidingSyncRoomMetadata verifies joined_count, invited_count, avatar,
 // and prev_batch fields on RoomResult.
-func TestMSC4186SlidingSyncRoomMetadata(t *testing.T) {
+func testMSC4186SlidingSyncRoomMetadata(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1585,7 +1609,7 @@ func TestMSC4186SlidingSyncRoomMetadata(t *testing.T) {
 
 // TestMSC4186SlidingSyncUnknownPos verifies that an unrecognised or expired pos
 // token is rejected with 400 M_UNKNOWN_POS.
-func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
+func testMSC4186SlidingSyncUnknownPos(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1613,7 +1637,7 @@ func TestMSC4186SlidingSyncUnknownPos(t *testing.T) {
 // used by a different user to resume that connection, per the Security considerations
 // requirement added in response to FCP review: "Servers MUST reject a pos that was not
 // issued to the requesting user and device, responding with M_UNKNOWN_POS."
-func TestMSC4186SlidingSyncPosOwnership(t *testing.T) {
+func testMSC4186SlidingSyncPosOwnership(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1652,7 +1676,7 @@ func TestMSC4186SlidingSyncPosOwnership(t *testing.T) {
 
 // TestMSC4186SlidingSyncMaxLimits verifies the server enforces the 100 lists / 100
 // room subscriptions per-request limit with 400 M_INVALID_PARAM.
-func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
+func testMSC4186SlidingSyncMaxLimits(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1707,7 +1731,7 @@ func TestMSC4186SlidingSyncMaxLimits(t *testing.T) {
 // TestMSC4186SlidingSyncCombiningRoomConfigs verifies that when a room matches multiple
 // lists with different room configs, the server serves the superset: the maximum
 // timeline_limit and the union of required_state across all matching configs.
-func TestMSC4186SlidingSyncCombiningRoomConfigs(t *testing.T) {
+func testMSC4186SlidingSyncCombiningRoomConfigs(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

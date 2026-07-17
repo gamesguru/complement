@@ -35,7 +35,14 @@ import (
 // The test creates realistic room activity: topic changes, power level edits,
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
-func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
+func TestMessagesPaginationStress(t *testing.T) {
+	t.Run("NoDuplicates", testMessagesPaginationStressNoDuplicates)
+	t.Run("ForwardAndJumpToStart", testMessagesPaginationStressForwardAndJumpToStart)
+	t.Run("StaleTokenResume", testMessagesPaginationStressStaleTokenResume)
+	t.Run("TokenStability", testMessagesPaginationStressTokenStability)
+}
+
+func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 2)
@@ -290,7 +297,7 @@ func TestMessagesPaginationStressNoDuplicates(t *testing.T) {
 // and scrolling downward. This exercises different code paths than backward
 // pagination — forward tokens, forward ordering, and the interaction between
 // "find the oldest token" and "paginate forward from it".
-func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
+func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 2)
@@ -534,7 +541,7 @@ func TestMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 //   - Gaps appear between the "pre-away" and "post-away" pagination results
 //   - Duplicates appear at the token boundary
 //   - New membership/state events confuse the token position
-func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
+func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 2)
@@ -792,7 +799,7 @@ func TestMessagesPaginationStressStaleTokenResume(t *testing.T) {
 // different limit values always yields the same complete, ordered set of
 // events. This catches bugs where pagination tokens encode limit-dependent
 // state that breaks when clients retry with different parameters.
-func TestMessagesPaginationStressTokenStability(t *testing.T) {
+func testMessagesPaginationStressTokenStability(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 1)
