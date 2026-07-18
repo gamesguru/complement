@@ -1,0 +1,172 @@
+MSC4499 — PLAN
+===============
+Two workstreams, executed in this order:
+  A. MSC doc text edits (tests/msc4499/docs/4499-key-caching.md) — low risk, applying now.
+  B. continuwuity add_signing_keys rework — design/scope only in this pass, NOT
+     implementing yet, because it touches on-disk storage format for a live
+     rocksdb-backed service and needs a schema decision before code changes.
+
+
+A. MSC DOC EDITS
+-----------------
+File: /run/media/shane/shane4tb-ent/repos/complement/tests/msc4499/docs/4499-key-caching.md
+
+A1. L9-11 — stop implying Synapse does First Seen Wins.
+    Current: "existing implementations such as Synapse effectively enforce a
+    unique (server_name, key_id) constraint at the storage layer"
+    Problem: true only at rest (one row per key_id); Synapse's
+    store_server_keys_response() uses simple_upsert_many_txn, i.e.
+    last-write-wins on conflicting bodies — the opposite of FSW. Leaving this
+    unqualified hands a reviewer who reads the source an easy "you
+    mischaracterized the status quo" objection.
+    Fix: add a clause distinguishing "unique row" from "which body wins a
+    conflict" and state Synapse resolves conflicts by last-write-wins, not FSW.
+
+A2. L54-56 — bound the negative-caching escape valve.
+    Current: "SHOULD permit at most one immediate (rate-limited) fetch attempt
+    per remote server per backoff interval" — no numeric bound on the
+    rate-limit, so an implementation can set it arbitrarily loose and hollow
+    out the 60s floor.
+    Fix: give the escape valve its own explicit ceiling (e.g. tie it to the
+    same backoff floor value, not a separate free parameter) so it can't be
+    used to reconstruct unlimited fetch frequency.
+
+A3. Storage considerations — resolve the verify_keys-alone-exceeds-cap gap.
+    Problem (per detailed-feedback-003): current text exempts verify_keys from
+    the 3,000-entry eviction ceiling entirely, but also caps active keys at 50
+    per response — so verify_keys alone can never reach 3,000 by construction
+    within a *response*, but nothing stops accumulation *across* many
+    legitimate rotations over time if a server never retires old verify_keys
+    entries properly. Add a sentence clarifying: the 50-key active ceiling is
+    per-response, not a global cap on how many key IDs may ever sit in
+    verify_keys state; if that number legitimately exceeds a sane bound over
+    time it is itself a signal to treat the origin as hostile, matching the
+    "unambiguously hostile" language already in Storage considerations.
+    Fix: add an explicit sentence bridging the response-level 50-key cap to a
+    long-run ceiling recommendation, closing the unsatisfiable corner
+    StorageQuotaResilience currently tests around.
+
+A4. Add a conformance-testing knob for backoff.
+    Problem: the 60s MUST floor is untestable in CI without sleeping a full
+    minute; BackoffClearedOnSuccess needed a hypothetical config knob.
+    Fix: add one sentence to "Negative caching and backoff" blessing an
+    implementation-defined override for the backoff floor in test
+    configurations (already have similar language for the floor itself at
+    L71-72 — extend it to explicitly cover a fast-forward/override hook, not
+    just "shortened").
+
+A5. Reinforce the ed25519:auto framing at L266-273 with the historical fact.
+    Add a short clause noting this is empirically observed, not hypothetical:
+    Synapse defaulted every new install to the literal key ID "auto" before a
+    2016 fix, and any deployment that generated its key file before then (or
+    restored one from that era) still carries it — a real, non-trivial subset
+    of servers in the wild today.
+
+Execution: apply A1, A2, A3, A4, A5 via Edit tool against the doc now.
+
+
+B. continuwuity add_signing_keys REWORK — SCOPE
+-------------------------------------------------
+Files in scope: src/service/server_keys/mod.rs, get.rs, keypair.rs (unaffected).
+
+Current state (confirmed by reading the code):
+  - add_signing_keys() (mod.rs:94-112) does:
+        keys.verify_keys.extend(new_keys.verify_keys);
+        keys.old_verify_keys.extend(new_keys.old_verify_keys);
+    BTreeMap::extend silently overwrites on key collision — last-write-wins,
+    no first-seen tracking, no collision detection, no logging.
+  - Storage is one blob per server_name (server_signingkeys map, raw_put of
+    the whole ServerSigningKeys struct) — there is no per-key-id row, so there
+    is currently no place to record "first seen at T, from which source,
+    provisional or permanent."
+
+Required data model change:
+  Need a per-(server_name, algorithm, key_id) record, not just the current
+  per-server blob, to support: first-seen tracking, provisional/permanent
+  status, corroboration tier, effective retirement timestamp, and the
+  collision forensic log. Two options:
+    Option 1: New rocksdb map `server_signingkey_bindings`, keyed by
+      "{server_name}\xFF{key_id}", storing a small struct:
+        { key_body, first_seen_ts, source (direct|notary),
+          status (provisional|permanent), expired_ts: Option<first-assigned>,
+          corroborated: bool, last_observed_ts }
+      Keep the existing server_signingkeys blob as a read-through cache /
+      wire-format cache for serving /_matrix/key/v2/server responses, but treat
+      the new map as the source of truth for verification and collision
+      checks. This is the safer migration: additive, old map untouched.
+    Option 2: Replace server_signingkeys blob format entirely.
+      Higher risk (breaks anything else reading that map directly — need to
+      grep api/server/key.rs and admin/query/globals.rs, admin/debug/commands.rs
+      before considering this), no clear win over Option 1. Not recommended.
+  --> Recommend Option 1.
+
+New add_signing_keys() logic (replacing blind extend):
+  For each incoming (key_id, key_body, source) in verify_keys + old_verify_keys:
+    1. Look up existing binding for (server_name, key_id) in the new map.
+    2. If no existing binding:
+         - store it as first-seen (status = provisional if source == notary,
+           permanent if source == direct), record first_seen_ts = now.
+    3. If existing binding found and key_body matches:
+         - normal refresh: update valid_until_ts/expired_ts bookkeeping only
+           (never touch key_body or first_seen_ts).
+         - if source == direct and existing status == provisional: promote to
+           permanent (binding promotion clause).
+    4. If existing binding found and key_body differs (collision):
+         - if existing status == provisional AND source == direct AND
+           existing binding not expired/retired: override — store new body,
+           set status = permanent, log loudly (WARN) with both SHA-256
+           fingerprints, keep old body in a side forensic log (not the
+           active binding).
+         - else (direct-vs-direct, notary-vs-notary, or provisional past
+           expiry/retirement): REJECT — keep existing binding untouched,
+           log the collision at WARN with fingerprints, do NOT return the new
+           key from this fetch.
+    5. expired_ts handling: first-assignment-wins, independent of key_body
+       collision logic — once a binding has a first-observed expired_ts,
+       later differing expired_ts values are logged as suspicious and ignored
+       for eviction/verification purposes.
+
+  This function must run under the org.matrix.msc4499_strict_caching flag in
+  two modes:
+    - observation mode (default initially): step 4's "REJECT" branch instead
+      logs the collision at WARN and ALSO updates the served/verification
+      body to the newest observation (i.e. today's behavior), while the first-
+      seen body stays recorded in the new map for forensics and for the later
+      flip to strict mode. This is the only observation-mode design that
+      produces zero new message loss (verify-newest) while still gathering
+      the data needed to enable strict mode later.
+    - strict mode: step 4's "REJECT" branch actually rejects — subsequent
+      verification against the colliding new body fails, so events signed
+      under it get rejected too. This is the actual FSW behavior the MSC
+      requires.
+
+Other required work riding on the same map (not in this pass, listed for
+sequencing):
+  - get_verify_key_from_origin / get_verify_key_from_notaries (get.rs) need to
+    tag fetches with source (direct vs notary) when calling add_signing_keys —
+    currently no distinction is threaded through.
+  - Corroboration tier + 3,000-entry eviction ordering needs a scan/eviction
+    routine over the new map, run after each write once count(server_name) >
+    3000 retired entries.
+  - Duplicate-key raw-byte scanner and active/retired ceilings are payload
+    validation and belong in get.rs before add_signing_keys is ever called —
+    separate, independent piece of work, no dependency on the map redesign.
+  - Admin eviction CLI / startup guardrail are separate small features once
+    the map exists (delete-by-server_name, and a startup check comparing
+    configured key body against any persisted binding for the same key_id).
+
+Sequencing recommendation:
+  1. Payload validation (duplicate-key scanner, ceilings) — independent,
+     no schema change, safe to do first.
+  2. New server_signingkey_bindings map + rewritten add_signing_keys()
+     (observation mode only, flag defaults to observation).
+  3. Thread source (direct/notary) through get.rs call sites.
+  4. Admin eviction CLI + startup guardrail.
+  5. Corroboration tier + eviction ordering.
+  6. Flip default to strict mode only after (2)-(5) have run in observation
+     mode against real traffic and the eviction/admin tooling is confirmed
+     working.
+
+Not doing in this pass: actually writing the Rust code for B. This document is
+the scope; implementation should get its own review before touching the
+storage layer of a live service.
