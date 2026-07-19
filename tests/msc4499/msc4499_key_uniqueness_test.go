@@ -215,6 +215,43 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 	return foundKey
 }
 
+// queryNotaryRawEntry queries the notary and returns the raw JSON bytes of the
+// server_keys entry for the given server_name, or nil if the server was
+// omitted from the response entirely. Unlike queryNotaryRaw, this preserves
+// the full entry (including signatures) so callers can verify self-signature
+// integrity over the exact bytes served, rather than just extracting a key.
+func queryNotaryRawEntry(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64) []byte {
+	t.Helper()
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			serverName: map[string]interface{}{
+				keyID: map[string]interface{}{
+					"minimum_valid_until_ts": minValidTS,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := clientObj.Post(hsURL+"/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary query response", err)
+
+	must.Equal(t, resp.StatusCode, 200, "notary query status code mismatch")
+
+	result := gjson.ParseBytes(respBytes)
+	for _, sk := range result.Get("server_keys").Array() {
+		if sk.Get("server_name").Str == serverName {
+			return []byte(sk.Raw)
+		}
+	}
+	return nil
+}
+
 func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	t.Helper()
 	return complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
@@ -239,6 +276,7 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 // storage limits.
 func TestMSC4499Key(t *testing.T) {
 	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
+	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
 	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
 	t.Run("Rotation", testMSC4499KeyRotation)
 	t.Run("IntraPayloadRejection", testMSC4499KeyIntraPayloadRejection)
@@ -327,6 +365,133 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
 	// (i.e., the cache was not poisoned by the colliding key B).
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
+}
+
+// Test that a notary faced with a colliding key response does not locally
+// "patch" its served response to substitute the first-seen key body into an
+// otherwise-untouched (differently-signed) payload.
+//
+// /_matrix/key/v2/server and /_matrix/key/v2/query responses are self-signed
+// by the origin over the entire payload. Mutating verify_keys/old_verify_keys
+// after the fact invalidates the origin's signature over that payload, so a
+// patched response would fail signature verification for any downstream
+// client checking the origin's own signature — regardless of any additional
+// signature the notary itself appends.
+//
+// Per MSC4499 (Notary internal indexing): a compliant notary satisfies First
+// Seen Wins by declining to update its served cache entry when a fetch
+// contains a rejected collision, continuing to serve the last self-signed
+// payload consistent with the bindings it actually accepted. It MUST NOT
+// stitch together a hybrid document (fresh signature + old key body, or vice
+// versa).
+//
+// This test asserts that, whatever entry hs1 serves for the origin after
+// observing a collision, that entry's own embedded self-signature verifies
+// against the key body actually present in it. If hs1 patched the response,
+// the signature (computed by the origin over a different body) would fail to
+// verify against the mutated body, catching the violation deterministically.
+func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_patch_guard")
+
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	// Phase 1: hs1 fetches and caches key A as the first-seen binding.
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+
+	// Phase 2: origin now serves a colliding key B for the same key ID,
+	// self-signed by key B (a fully valid, independently-signed payload on
+	// its own — it just conflicts with the already-accepted binding for
+	// this key ID).
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch that will hit the collision.
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
+	rawEntry := queryNotaryRawEntry(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+
+	if rawEntry == nil {
+		// Declining to serve the entry at all (rather than a hybrid) is also
+		// a compliant way to satisfy "MUST NOT patch"; nothing further to
+		// check against a signature.
+		t.Logf("hs1 omitted the server_keys entry for %s rather than patching it — compliant", originName)
+		return
+	}
+
+	result := gjson.ParseBytes(rawEntry)
+	foundKeyBase64 := result.Get("verify_keys." + client.GjsonEscape(string(keyID)) + ".key").Str
+	if foundKeyBase64 == "" {
+		foundKeyBase64 = result.Get("old_verify_keys." + client.GjsonEscape(string(keyID)) + ".key").Str
+	}
+	if foundKeyBase64 == "" {
+		t.Fatalf("notary entry for %s contained neither verify_keys nor old_verify_keys for %s: %s", originName, keyID, rawEntry)
+	}
+
+	// First Seen Wins must still hold: the served body must reflect key A,
+	// never the colliding key B.
+	if foundKeyBase64 == base64.RawStdEncoding.EncodeToString(pubKeyB) {
+		t.Fatalf("hs1 served colliding Keypair B in the notary entry — First Seen Wins was not enforced: %s", rawEntry)
+	}
+
+	foundKeyRaw, err := base64.RawStdEncoding.DecodeString(foundKeyBase64)
+	must.NotError(t, "failed to decode key body from notary entry", err)
+
+	// The entry's self-signature MUST verify against the key body actually
+	// present in the entry. A notary that patched a colliding response
+	// (splicing the first-seen key body into a payload signed over different
+	// bytes) would fail this check, since the origin's signature only covers
+	// the exact bytes it originally signed.
+	verifyErr := gomatrixserverlib.VerifyJSON(string(originName), keyID, ed25519.PublicKey(foundKeyRaw), rawEntry)
+	if verifyErr != nil {
+		t.Fatalf("notary entry for %s failed self-signature verification against its own served key body — "+
+			"the notary appears to have locally patched a colliding response rather than declining to update its "+
+			"served cache entry (MSC4499 Notary internal indexing): %v\nentry: %s", originName, verifyErr, rawEntry)
+	}
+
+	// And that key body must be key A's, not some other stitched value.
+	if foundKeyBase64 != pubKeyABase64 {
+		t.Fatalf("notary entry for %s verified under an unexpected key body (neither A nor B) — got %s, expected %s",
+			originName, foundKeyBase64, pubKeyABase64)
+	}
 }
 
 // Test that First Seen Wins is enforced at the event verification level, not just the notary endpoint.
