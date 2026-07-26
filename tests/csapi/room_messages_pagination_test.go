@@ -29,6 +29,7 @@ func TestMessagesPaginationStress(t *testing.T) {
 	t.Run("NoDuplicates", testMessagesPaginationStressNoDuplicates)
 	t.Run("ForwardAndJumpToStart", testMessagesPaginationStressForwardAndJumpToStart)
 	t.Run("StaleTokenResume", testMessagesPaginationStressStaleTokenResume)
+	t.Run("ResumeRaceWindow", testMessagesPaginationStressResumeRaceWindow)
 	t.Run("TokenStability", testMessagesPaginationStressTokenStability)
 }
 
@@ -825,6 +826,267 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			t.Logf("Combined event type breakdown: %s", strings.Join(typeReport, ", "))
 		})
 	}
+}
+
+// testMessagesPaginationStressResumeRaceWindow intentionally overlaps the first
+// resume /messages request with a burst of timeline writes to provoke the
+// request/append interleaving that caused the stale-token flake.
+func testMessagesPaginationStressResumeRaceWindow(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Synapse)
+
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+		LocalpartSuffix: "alice",
+	})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
+		LocalpartSuffix: "bob",
+	})
+	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+		LocalpartSuffix: "charlie",
+	})
+	dana := deployment.Register(t, "hs2", helpers.RegistrationOpts{
+		LocalpartSuffix: "dana",
+	})
+
+	t.Run("limit=7", func(t *testing.T) {
+		roomID := alice.MustCreateRoom(t, map[string]interface{}{
+			"preset": "public_chat",
+		})
+
+		bob.MustJoinRoom(t, roomID, []spec.ServerName{
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+		})
+
+		var allTrackedEventIDs []string
+		preAwayEventIDs := sendNMessages(t, alice, roomID, 30)
+		allTrackedEventIDs = append(allTrackedEventIDs, preAwayEventIDs...)
+
+		bobPreAwayIDs := sendNMessages(t, bob, roomID, 10)
+		allTrackedEventIDs = append(allTrackedEventIDs, bobPreAwayIDs...)
+
+		morePreAway := sendNMessages(t, alice, roomID, 10)
+		allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
+
+		bob.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, morePreAway[len(morePreAway)-1]))
+
+		var preAwayCollected []string
+		var preAwayTypes []string
+		savedToken := ""
+		fromToken := ""
+		for page := 0; page < 4; page++ {
+			queryParams := url.Values{
+				"dir":   []string{"b"},
+				"limit": []string{"7"},
+			}
+			if fromToken != "" {
+				queryParams.Set("from", fromToken)
+			}
+
+			res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+				client.WithContentType("application/json"),
+				client.WithQueries(queryParams),
+			)
+			body := client.ParseJSON(t, res)
+
+			for _, event := range gjson.GetBytes(body, "chunk").Array() {
+				preAwayCollected = append(preAwayCollected, event.Get("event_id").Str)
+				preAwayTypes = append(preAwayTypes, event.Get("type").Str)
+			}
+
+			endToken := gjson.GetBytes(body, "end")
+			if !endToken.Exists() {
+				break
+			}
+			fromToken = endToken.Str
+		}
+
+		savedToken = fromToken
+		if savedToken == "" {
+			t.Fatal("no saved token — room too small to partially paginate")
+		}
+
+		preAwayMessageIDs := make([]string, len(allTrackedEventIDs))
+		copy(preAwayMessageIDs, allTrackedEventIDs)
+
+		type asyncMessagesResponse struct {
+			res *http.Response
+			err error
+		}
+
+		beginMessagesRequest := func() (<-chan struct{}, <-chan asyncMessagesResponse) {
+			started := make(chan struct{})
+			done := make(chan asyncMessagesResponse, 1)
+
+			go func() {
+				defer close(done)
+				close(started)
+
+				queryParams := url.Values{
+					"dir":   []string{"b"},
+					"limit": []string{"7"},
+					"from":  []string{savedToken},
+				}
+
+				req, err := http.NewRequest(http.MethodGet,
+					bob.BaseURL+"/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/messages",
+					nil,
+				)
+				if err != nil {
+					done <- asyncMessagesResponse{err: err}
+					return
+				}
+
+				req.URL.RawQuery = queryParams.Encode()
+				if bob.AccessToken != "" {
+					req.Header.Set("Authorization", "Bearer "+bob.AccessToken)
+				}
+				req.Header.Set("Content-Type", "application/json")
+
+				res, err := bob.Client.Do(req)
+				if err != nil {
+					done <- asyncMessagesResponse{err: err}
+					return
+				}
+
+				done <- asyncMessagesResponse{res: res}
+			}()
+
+			return started, done
+		}
+
+		started, done := beginMessagesRequest()
+		<-started
+
+		awayAliceMsgs := sendNMessages(t, alice, roomID, 15)
+
+		charlie.MustJoinRoom(t, roomID, nil)
+		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(charlie.UserID, roomID))
+
+		awayCharlieMsgs := sendNMessages(t, charlie, roomID, 5)
+
+		alice.SendEventSynced(t, roomID, b.Event{
+			Type:     "m.room.topic",
+			StateKey: b.Ptr(""),
+			Content: map[string]interface{}{
+				"topic": "Bob missed this while offline",
+			},
+		})
+
+		dana.MustJoinRoom(t, roomID, []spec.ServerName{
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+		})
+		dana.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
+		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
+		defer dana.MustLeaveRoom(t, roomID)
+
+		awayDanaMsgs := sendNMessages(t, dana, roomID, 5)
+
+		charlie.MustLeaveRoom(t, roomID)
+		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(charlie.UserID, roomID))
+
+		awayMoreAlice := sendNMessages(t, alice, roomID, 10)
+
+		t.Logf("Resume race window added %d messages while the first resume page was in flight",
+			len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
+
+		firstPage := <-done
+		if firstPage.err != nil {
+			t.Fatalf("resume pagination request failed: %v", firstPage.err)
+		}
+
+		body := client.ParseJSON(t, firstPage.res)
+		var resumeCollected []string
+		var resumeTypes []string
+		requestCount := 1
+
+		for _, event := range gjson.GetBytes(body, "chunk").Array() {
+			resumeCollected = append(resumeCollected, event.Get("event_id").Str)
+			resumeTypes = append(resumeTypes, event.Get("type").Str)
+		}
+
+		fromToken = gjson.GetBytes(body, "end").Str
+		for fromToken != "" {
+			queryParams := url.Values{
+				"dir":   []string{"b"},
+				"limit": []string{"7"},
+				"from":  []string{fromToken},
+			}
+
+			res := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"},
+				client.WithContentType("application/json"),
+				client.WithQueries(queryParams),
+			)
+			body = client.ParseJSON(t, res)
+			requestCount++
+
+			for _, event := range gjson.GetBytes(body, "chunk").Array() {
+				resumeCollected = append(resumeCollected, event.Get("event_id").Str)
+				resumeTypes = append(resumeTypes, event.Get("type").Str)
+			}
+
+			endToken := gjson.GetBytes(body, "end")
+			if !endToken.Exists() {
+				break
+			}
+			fromToken = endToken.Str
+
+			if requestCount > 500 {
+				t.Fatalf("resume pagination did not terminate after %d requests", requestCount)
+			}
+		}
+
+		allCollected := append(preAwayCollected, resumeCollected...)
+		allTypes := append(preAwayTypes, resumeTypes...)
+
+		seen := make(map[string]int)
+		var duplicates []string
+		for i, eventID := range allCollected {
+			if firstIdx, exists := seen[eventID]; exists {
+				duplicates = append(duplicates, fmt.Sprintf(
+					"  %s at positions %d and %d (type: %s) [%s]",
+					eventID, firstIdx, i, allTypes[i],
+					func() string {
+						if firstIdx < len(preAwayCollected) && i >= len(preAwayCollected) {
+							return "CROSS-BOUNDARY: appeared in pre-away AND resume"
+						}
+						if i < len(preAwayCollected) {
+							return "within pre-away"
+						}
+						return "within resume"
+					}(),
+				))
+			} else {
+				seen[eventID] = i
+			}
+		}
+		if len(duplicates) > 0 {
+			shown := duplicates
+			if len(shown) > 20 {
+				shown = shown[:20]
+				shown = append(shown, fmt.Sprintf("  ... and %d more", len(duplicates)-20))
+			}
+			t.Errorf("STALE TOKEN RESUME RACE WINDOW: DUPLICATES (%d) across pre-away + resume:\n%s",
+				len(duplicates), strings.Join(shown, "\n"))
+		}
+
+		var missingPreAway []string
+		for i, expectedID := range preAwayMessageIDs {
+			if _, exists := seen[expectedID]; !exists {
+				missingPreAway = append(missingPreAway, fmt.Sprintf("  pre-away message %d: %s", i, expectedID))
+			}
+		}
+		if len(missingPreAway) > 0 {
+			shown := missingPreAway
+			if len(shown) > 20 {
+				shown = shown[:20]
+				shown = append(shown, fmt.Sprintf("  ... and %d more", len(missingPreAway)-20))
+			}
+			t.Errorf("STALE TOKEN RESUME RACE WINDOW: MISSING PRE-AWAY EVENTS (%d of %d):\n%s",
+				len(missingPreAway), len(preAwayMessageIDs), strings.Join(shown, "\n"))
+		}
+	})
 }
 
 // TestPaginationTokenStability verifies that paginating the same room with
