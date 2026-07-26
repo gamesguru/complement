@@ -59,10 +59,13 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
 		LocalpartSuffix: "bob",
 	})
-	admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
-		IsAdmin:         true,
-		LocalpartSuffix: "admin",
-	})
+	// TODO: admin registration via IsAdmin skips the whole test on non-Synapse servers
+	// (RegisterSharedSecret calls t.Skipf on 404). Re-enable once we have a cross-homeserver
+	// way to register admins.
+	// admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+	// 	IsAdmin:         true,
+	// 	LocalpartSuffix: "admin",
+	// })
 
 	// Test with clean messages only (baseline)
 	t.Run("Clean messages only", func(t *testing.T) {
@@ -71,7 +74,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		eventIDs := sendNMessages(t, alice, roomID, 100)
-		assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
 
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
 			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
@@ -111,14 +114,14 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 10)...)
 
 		// Change topic
-		phase1TopicEventID := alice.SendEventSynced(t, roomID, b.Event{
+		alice.SendEventSynced(t, roomID, b.Event{
 			Type:     "m.room.topic",
 			StateKey: b.Ptr(""),
 			Content: map[string]interface{}{
 				"topic": "Phase 1: Getting started",
 			},
 		})
-		assertForwardExtremities(t, admin, roomID, phase1TopicEventID)
+		// assertForwardExtremities(t, admin, roomID, phase1TopicEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
 
@@ -143,7 +146,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, dana, roomID, 3)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 3: Power level changes ---
 		// Give charlie moderator power
@@ -159,7 +162,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, charlie, roomID, 5)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 4: User leaves and rejoins ---
 		dana.MustLeaveRoom(t, roomID)
@@ -172,7 +175,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, dana, roomID, 5)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 5: Kick a user ---
 		eve.MustJoinRoom(t, roomID, nil)
@@ -190,7 +193,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(eve.UserID, roomID))
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 6: More topic changes and messages to pad out ---
 		alice.SendEventSynced(t, roomID, b.Event{
@@ -218,9 +221,8 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		// --- Phase 7: Reactions (custom events) interleaved ---
 		// Send some reactions to earlier messages
-		var lastReactionEventID string
 		for i := 0; i < 5 && i < len(trackedEventIDs); i++ {
-			lastReactionEventID = alice.SendEventSynced(t, roomID, b.Event{
+			alice.SendEventSynced(t, roomID, b.Event{
 				Type: "m.reaction",
 				Content: map[string]interface{}{
 					"m.relates_to": map[string]interface{}{
@@ -231,10 +233,10 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				},
 			})
 		}
-		assertForwardExtremities(t, admin, roomID, lastReactionEventID)
+		// assertForwardExtremities(t, admin, roomID, lastReactionEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 9)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		t.Logf("Total tracked message events: %d", len(trackedEventIDs))
 		t.Logf("Room should also contain: ~5 creation events, 3 topic changes, " +
@@ -273,16 +275,16 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		// While bob is away: messages + state changes
 		var trackedEventIDs []string
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 30)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
-		firstTopicEventID := alice.SendEventSynced(t, roomID, b.Event{
+		alice.SendEventSynced(t, roomID, b.Event{
 			Type:     "m.room.topic",
 			StateKey: b.Ptr(""),
 			Content: map[string]interface{}{
 				"topic": "Bob missed this topic change",
 			},
 		})
-		assertForwardExtremities(t, admin, roomID, firstTopicEventID)
+		// assertForwardExtremities(t, admin, roomID, firstTopicEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 30)...)
 
@@ -295,7 +297,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 40)...)
-		assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
+		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// Bob re-joins
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
@@ -580,10 +582,13 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 	dana := deployment.Register(t, "hs2", helpers.RegistrationOpts{
 		LocalpartSuffix: "dana",
 	})
-	admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
-		IsAdmin:         true,
-		LocalpartSuffix: "admin",
-	})
+	// TODO: admin registration via IsAdmin skips the whole test on non-Synapse servers
+	// (RegisterSharedSecret calls t.Skipf on 404). Re-enable once we have a cross-homeserver
+	// way to register admins.
+	// admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+	// 	IsAdmin:         true,
+	// 	LocalpartSuffix: "admin",
+	// })
 
 	for _, limit := range []int{3, 7} {
 		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
@@ -609,7 +614,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			// More from alice
 			morePreAway := sendNMessages(t, alice, roomID, 10)
 			allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
-			assertForwardExtremities(t, admin, roomID, morePreAway[len(morePreAway)-1])
+			// assertForwardExtremities(t, admin, roomID, morePreAway[len(morePreAway)-1])
 
 			// The stale token should represent a client that has caught up to the
 			// pre-away timeline. Otherwise later federation delivery can make
@@ -709,7 +714,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// More alice messages after the churn
 			awayMoreAlice := sendNMessages(t, alice, roomID, 10)
-			assertForwardExtremities(t, admin, roomID, awayMoreAlice[len(awayMoreAlice)-1])
+			// assertForwardExtremities(t, admin, roomID, awayMoreAlice[len(awayMoreAlice)-1])
 
 			t.Logf("While-away phase: added %d more tracked messages + membership/state events",
 				len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
@@ -833,17 +838,20 @@ func testMessagesPaginationStressTokenStability(t *testing.T) {
 	defer deployment.Destroy(t)
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-	admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
-		IsAdmin:         true,
-		LocalpartSuffix: "admin",
-	})
+	// TODO: admin registration via IsAdmin skips the whole test on non-Synapse servers
+	// (RegisterSharedSecret calls t.Skipf on 404). Re-enable once we have a cross-homeserver
+	// way to register admins.
+	// admin := deployment.Register(t, "hs1", helpers.RegistrationOpts{
+	// 	IsAdmin:         true,
+	// 	LocalpartSuffix: "admin",
+	// })
 
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{
 		"preset": "public_chat",
 	})
 
 	eventIDs := sendNMessages(t, alice, roomID, 50)
-	assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
+	// assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
 
 	// Paginate with multiple limits and compare results
 	var referenceEventIDs []string
