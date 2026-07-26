@@ -36,9 +36,21 @@ func testMSC4500StateAccumulator(t *testing.T) {
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
+	// Create a remote homeserver to make authenticated federation requests
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	cancel := srv.Listen()
+	defer cancel()
+
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{
 		"preset": "public_chat",
 	})
+
+	charlie := srv.UserID("charlie")
+	_ = srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
 
 	token := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
 
@@ -53,10 +65,12 @@ func testMSC4500StateAccumulator(t *testing.T) {
 
 	must.NotEqual(t, eventID, "", "Failed to find event ID")
 
-	// Call the federation endpoint using alice's homeserver
-	fedRes := deployment.UnauthenticatedClient(t, "hs1").MustDo(t, "GET", []string{"_matrix", "federation", "unstable", "tk.nutra.msc4500", "state_accumulator", roomID}, client.WithQueries(url.Values{
-		"event_id": {eventID},
-	}))
+	// Call the federation endpoint using signed federation request from srv
+	reqURI := fmt.Sprintf("/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/%s?event_id=%s", roomID, eventID)
+	req := fclient.NewFederationRequest("GET", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
+
+	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
+	must.NotError(t, "do federation request", err)
 
 	fedBody := must.ParseJSON(t, fedRes.Body)
 
