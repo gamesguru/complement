@@ -9,9 +9,12 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 func TestThreadSubscriptions(t *testing.T) {
+	runtime.SkipIf(t, "Conduit")
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

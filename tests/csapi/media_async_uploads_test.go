@@ -20,6 +20,7 @@ const pngContentType = "image/png"
 
 func TestAsyncUpload(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite) // Dendrite doesn't support async uploads
+	runtime.SkipIf(t, "Conduit")
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

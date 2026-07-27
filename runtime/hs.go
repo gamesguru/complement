@@ -44,8 +44,8 @@ var parents = map[string][]string{
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
 var Exemptions = map[string][]string{
 	"TestPartialStateJoin":      {Tuwunel},
-	"TestTxnIdempotency":        {Conduwuit, Continuwuity, Tuwunel},
-	"TestTxnIdWithRefreshToken": {Conduwuit, Continuwuity, Tuwunel},
+	"TestTxnIdempotency":        {Continuwuity, Tuwunel},
+	"TestTxnIdWithRefreshToken": {},
 }
 
 func isParent(child, parent string) bool {

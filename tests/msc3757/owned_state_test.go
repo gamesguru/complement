@@ -9,6 +9,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 const hsName = "hs1"
@@ -18,6 +19,8 @@ const stateEventTestType = "com.example.test"
 const stateKeySuffix = "_state_key_suffix:!@#$123"
 
 func TestWithoutOwnedState(t *testing.T) {
+	runtime.SkipIf(t, "Conduit")
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
