@@ -9,6 +9,8 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
+
 	"github.com/tidwall/gjson"
 )
 
@@ -37,6 +39,8 @@ func MustDoSlidingSync(t *testing.T, user *client.CSAPI, pos string, thread_subs
 // Tests the thread subscriptions extension to sliding sync, introduced in MSC4308
 // but treated as the same unit as MSC4306.
 func TestMSC4308ThreadSubscriptionsSlidingSync(t *testing.T) {
+	runtime.SkipIf(t, runtime.Conduit)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
