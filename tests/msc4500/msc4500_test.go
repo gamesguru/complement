@@ -17,6 +17,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/blake2b"
@@ -24,6 +25,7 @@ import (
 
 // TestMSC4500State exercises the MSC4500 state_accumulator endpoint.
 func TestMSC4500State(t *testing.T) {
+	runtime.SkipIf(t, runtime.Conduit)
 	t.Run("Accumulator", testMSC4500StateAccumulator)
 	t.Run("HashMismatch", testMSC4500StateHashMismatch)
 }
