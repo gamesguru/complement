@@ -19,8 +19,6 @@ const stateEventTestType = "com.example.test"
 const stateKeySuffix = "_state_key_suffix:!@#$123"
 
 func TestWithoutOwnedState(t *testing.T) {
-	runtime.SkipIf(t, runtime.Conduit)
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -73,6 +71,8 @@ func TestWithoutOwnedState(t *testing.T) {
 }
 
 func TestMSC3757OwnedState(t *testing.T) {
+	runtime.SkipIf(t, runtime.Conduit)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
