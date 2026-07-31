@@ -158,7 +158,6 @@ func TestRoomCreate(t *testing.T) {
 		})
 		// sytest: POST /createRoom creates a room with the given version
 		t.Run("POST /createRoom creates a room with the given version", func(t *testing.T) {
-			runtime.SkipIf(t, runtime.Conduit)
 			t.Parallel()
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
 				"room_version": "2",
