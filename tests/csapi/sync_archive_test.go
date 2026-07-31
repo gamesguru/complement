@@ -290,7 +290,7 @@ func TestArchivedRoomsHistory(t *testing.T) {
 		})
 
 		t.Run("incremental sync", func(t *testing.T) {
-			t.Skip("Synapse doesn't return the room at all!")
+			runtime.SkipIf(t, runtime.Synapse)
 			sinceSyncRes, _ := bob.MustSync(t, client.SyncReq{Filter: filter, Since: bobSince})
 			check(t, sinceSyncRes)
 		})
