@@ -17,7 +17,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/blake2b"
