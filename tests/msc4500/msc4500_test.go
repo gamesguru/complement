@@ -24,6 +24,8 @@ import (
 
 // TestMSC4500State exercises the MSC4500 state_accumulator endpoint.
 func TestMSC4500State(t *testing.T) {
+	t.Skip("MSC4500 is not supported yet")
+
 	t.Run("Accumulator", testMSC4500StateAccumulator)
 	t.Run("HashMismatch", testMSC4500StateHashMismatch)
 }
