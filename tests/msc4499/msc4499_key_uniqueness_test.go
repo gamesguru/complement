@@ -522,6 +522,7 @@ func TestMSC4499Key(t *testing.T) {
 // "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2474,6 +2475,7 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 // exists to catch a regression if the behavior is ever added, not to enforce
 // it now.
 func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
+	runtime.SkipIf(t, runtime.Synapse)
 	if runtime.Homeserver != runtime.Synapse {
 		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
 	}
