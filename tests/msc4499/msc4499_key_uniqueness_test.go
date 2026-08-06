@@ -1936,10 +1936,20 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 // gracefully — it must not crash, reject the payload, or permanently ignore new keys
 // even after exceeding any reasonable per-server quota.
 //
-// Per MSC4499 L423-437: implementations SHOULD enforce a limit (e.g., 1,000 keys),
-// and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
-// keys. Keys in verify_keys MUST always be prioritized and exempt from the retired-key
-// ceiling.
+// Per MSC4499's storage considerations, implementations MUST enforce a 3,000-entry
+// retired-key ceiling per remote server, matching the per-response ceiling, and MUST
+// NOT ignore new key IDs permanently once at that ceiling — they MUST evict the
+// oldest/least-recently-retired keys. Keys in verify_keys MUST always be prioritized
+// and exempt from the retired-key ceiling.
+//
+// A single response can never itself carry more than 3,000 old_verify_keys entries
+// (the same 3,000 figure is also the hard per-response ceiling — a bigger payload
+// MUST be rejected outright), so a single request can never push a previously-empty
+// store past the ceiling; it can only ever bring it exactly to the ceiling, which
+// isn't an overflow. Genuinely exercising eviction needs two fetches: one that
+// leaves the store one binding short of the ceiling, then a second, small fetch
+// that supplies one more previously-unseen retired key and pushes the cumulative
+// total over it.
 func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
 		Timeout:   30 * time.Second, // larger timeout for bulk payload
@@ -1958,11 +1968,9 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.De
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 3000 retired keys in old_verify_keys plus 1 signing key in
-	// verify_keys. This is far beyond the example per-server quota in MSC4499,
-	// so the oldest retired key should be evicted if the implementation enforces
-	// a ceiling.
-	numFillerKeys := 3000
+	// Phase 1: publish 2,999 retired keys plus the signing key — one binding
+	// short of the 3,000-entry ceiling, so nothing is evicted yet.
+	const numFillerKeys = 2999
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
 	}
@@ -1997,8 +2005,8 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.De
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
 	// Query the signing key — this forces hs1 to fetch and process the entire
-	// payload. If the server has a quota, it must silently evict or handle the
-	// overflow without error.
+	// phase 1 payload. If the server has a quota, it must silently evict or
+	// handle the overflow without error once it's actually exceeded.
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
 
@@ -2008,9 +2016,50 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.De
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(firstKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(firstKey.Key))
 
-	// Verify the LAST filler key (oldest) has been evicted. The fixture
-	// intentionally overflows any reasonable retired-key ceiling, so the oldest
-	// retired binding should no longer be served.
+	// Phase 2: publish two more, newly-retired keys the store hasn't seen
+	// before (well within the per-response ceiling on their own, and far more
+	// recently retired than any filler key, so neither is itself an eviction
+	// candidate). The store is already one binding short of the 3,000-entry
+	// ceiling, so learning these two pushes the cumulative retained set to
+	// 3,001 — genuinely over the ceiling — forcing eviction of the single
+	// oldest binding.
+	extraKeyIDs := make([]gomatrixserverlib.KeyID, 2)
+	for i := range extraKeyIDs {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, fmt.Sprintf("failed to generate extra key %d", i), err)
+		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_extra_%04d", i))
+		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
+			VerifyKey: gomatrixserverlib.VerifyKey{
+				Key: spec.Base64Bytes(pub),
+			},
+			ExpiredTS: spec.AsTimestamp(time.Now().Add(-1 * time.Hour).Add(time.Duration(-i) * time.Second)),
+		}
+		extraKeyIDs[i] = kid
+	}
+
+	// The mock server's phase 2 response carries only the two new entries, not
+	// a replay of the 2,999 fillers: repeating all of them here would itself
+	// exceed the 3,000-entry per-response ceiling, and a real origin isn't
+	// expected to re-publish its full retired-key history on every response —
+	// receiving servers accumulate that history themselves across fetches.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.oldVerifyKeys = map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+		extraKeyIDs[0]: oldVerifyKeys[extraKeyIDs[0]],
+		extraKeyIDs[1]: oldVerifyKeys[extraKeyIDs[1]],
+	}
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch that will observe the two new retired keys.
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(extraKeyIDs[0]), minValidUntil,
+		base64.RawStdEncoding.EncodeToString(oldVerifyKeys[extraKeyIDs[0]].Key))
+
+	// The newly learned retired key must be retained...
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(extraKeyIDs[1]), 0,
+		base64.RawStdEncoding.EncodeToString(oldVerifyKeys[extraKeyIDs[1]].Key))
+
+	// ...and the oldest filler key must now have been evicted to make room for it.
 	oldestKey := oldVerifyKeys[oldestKeyID]
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestKeyID), 0)
 	must.Equal(t, foundKey, "",
