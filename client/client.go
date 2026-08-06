@@ -562,11 +562,13 @@ func (c *CSAPI) MustGenerateOneTimeKeys(t ct.TestLike, otkCount uint) (deviceKey
 		ct.Fatalf(t, "failed to generate ed25519 key: %s", err)
 	}
 
-	curveKey := make([]byte, 32)
-	_, err = prng.Read(curveKey)
+	var privateKey [32]byte
+	_, err = prng.Read(privateKey[:])
 	if err != nil {
 		ct.Fatalf(t, "failed to read from prng: %s", err)
 	}
+	var publicKey [32]byte
+	curve25519.ScalarBaseMult(&publicKey, &privateKey)
 
 	ed25519KeyID := fmt.Sprintf("ed25519:%s", c.DeviceID)
 	curveKeyID := fmt.Sprintf("curve25519:%s", c.DeviceID)
@@ -577,7 +579,7 @@ func (c *CSAPI) MustGenerateOneTimeKeys(t ct.TestLike, otkCount uint) (deviceKey
 		"algorithms": []interface{}{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
 		"keys": map[string]interface{}{
 			ed25519KeyID: base64.RawStdEncoding.EncodeToString(ed25519PubKey),
-			curveKeyID:   base64.RawStdEncoding.EncodeToString(curveKey),
+			curveKeyID:   base64.RawStdEncoding.EncodeToString(publicKey[:]),
 		},
 	}
 
