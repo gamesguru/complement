@@ -506,12 +506,44 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
 	t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
 	t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
-	t.Run("BindingPromotion", testMSC4499KeyBindingPromotion)
-	t.Run("StorageQuotaResilience", testMSC4499KeyStorageQuotaResilience)
-	t.Run("CorroborationTierRetention", testMSC4499KeyCorroborationTierRetention)
+
+	// BindingPromotion and CorroborationTierRetention both need the two-homeserver
+	// trusted-notary topology and use disjoint key IDs, so they can share one
+	// deployment instead of each provisioning their own, saving a container startup.
+	t.Run("TrustedNotaryGroup", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		deployment := deployMSC4499TrustedNotary(t)
+		defer deployment.Destroy(t)
+
+		t.Run("BindingPromotion", func(t *testing.T) {
+			testMSC4499KeyBindingPromotion(t, deployment)
+		})
+		t.Run("CorroborationTierRetention", func(t *testing.T) {
+			testMSC4499KeyCorroborationTierRetention(t, deployment)
+		})
+	})
+
+	// StorageQuotaResilience and VerifyKeysCeiling are kept on separate
+	// deployments: both deliberately push a homeserver's key store to (and past)
+	// its retention ceiling, so sharing one deployment between them risks one
+	// test's saturation silently changing the other's pass/fail reason.
+	t.Run("StorageQuotaResilience", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		runtime.SkipIf(t, runtime.Synapse)
+		deployment := complement.Deploy(t, 1)
+		defer deployment.Destroy(t)
+		testMSC4499KeyStorageQuotaResilience(t, deployment)
+	})
+
 	t.Run("BackoffClearedOnSuccess", testMSC4499KeyBackoffClearedOnSuccess)
 	t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
-	t.Run("VerifyKeysCeiling", testMSC4499KeyVerifyKeysCeiling)
+	t.Run("VerifyKeysCeiling", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		runtime.SkipIf(t, runtime.Synapse)
+		deployment := complement.Deploy(t, 1)
+		defer deployment.Destroy(t)
+		testMSC4499KeyVerifyKeysCeiling(t, deployment)
+	})
 	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTsSanityCheck)
 	t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 	t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
@@ -1702,11 +1734,7 @@ func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 //
 // Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
 // Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
-func testMSC4499KeyBindingPromotion(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := deployMSC4499TrustedNotary(t)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployment) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
@@ -1873,12 +1901,7 @@ func testMSC4499KeyBindingPromotion(t *testing.T) {
 // and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
 // keys. Keys in verify_keys MUST always be prioritized and exempt from the retired-key
 // ceiling.
-func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	runtime.SkipIf(t, runtime.Synapse)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
 		Timeout:   30 * time.Second, // larger timeout for bulk payload
 		Transport: deployment.RoundTripper(),
@@ -1961,11 +1984,7 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 //
 // Per MSC4499 L584-589: corroborated retired keys are retained before
 // uncorroborated retired keys, regardless of effective retirement timestamp.
-func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := deployMSC4499TrustedNotary(t)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
 		Timeout:   30 * time.Second,
 		Transport: deployment.RoundTripper(),
@@ -2293,12 +2312,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 //  1. Serve a payload with 51 keys in verify_keys
 //  2. Query notary for the signing key
 //  3. Assert: the entire payload is rejected — signing key should NOT be found
-func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	runtime.SkipIf(t, runtime.Synapse)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyVerifyKeysCeiling(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: deployment.RoundTripper(),
