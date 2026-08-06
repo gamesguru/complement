@@ -2637,6 +2637,7 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 				},
 			},
 		)
+		serverRoom.AddEvent(historicalEvent)
 
 		currentEvent := srv.MustCreateEvent(t, serverRoom, federation.Event{
 			Sender: charlie,
