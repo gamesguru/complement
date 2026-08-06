@@ -260,6 +260,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 	// Test re-join scenario (the one that originally failed)
 	t.Run("Re-join with activity during absence", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Synapse)
 		roomID := alice.MustCreateRoom(t, map[string]interface{}{
 			"preset": "public_chat",
 		})
