@@ -137,6 +137,8 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Write(k.Raw)
 }
 
+// queryNotary requests a specific server key via the homeserver-under-test's
+// notary endpoint and asserts the returned key body matches the expected value.
 func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64, expectedKeyBase64 string) {
 	reqBody := map[string]interface{}{
 		"server_keys": map[string]interface{}{
@@ -256,6 +258,8 @@ func queryNotaryRawEntry(t *testing.T, clientObj *http.Client, hsURL string, ser
 	return nil
 }
 
+// deployMSC4499TrustedNotary creates a two-homeserver deployment where hs1 is
+// configured to trust hs2 as its notary for MSC4499-specific test cases.
 func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	t.Helper()
 	return complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
@@ -274,6 +278,8 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	}))
 }
 
+// readFileFromContainer copies a single file out of a Docker-backed homeserver
+// container and returns its raw contents.
 func readFileFromContainer(t *testing.T, deployment complement.Deployment, hsName, path string) []byte {
 	t.Helper()
 
@@ -296,6 +302,8 @@ func readFileFromContainer(t *testing.T, deployment complement.Deployment, hsNam
 	return data
 }
 
+// writeFileToContainer overwrites a single file inside a Docker-backed
+// homeserver container with the provided contents.
 func writeFileToContainer(t *testing.T, deployment complement.Deployment, hsName, path string, data []byte) {
 	t.Helper()
 
@@ -327,6 +335,8 @@ func writeFileToContainer(t *testing.T, deployment complement.Deployment, hsName
 	must.NotError(t, "failed to copy file into container", err)
 }
 
+// mutateSynapseSigningKeyPreservingKeyID rewrites a Synapse signing key file so
+// the key body changes while the key ID remains the same.
 func mutateSynapseSigningKeyPreservingKeyID(t *testing.T, signingKeyFile []byte) []byte {
 	t.Helper()
 
@@ -373,6 +383,8 @@ func mutateSynapseSigningKeyPreservingKeyID(t *testing.T, signingKeyFile []byte)
 	return nil
 }
 
+// readContainerLogs returns the current stdout/stderr log stream for a
+// Docker-backed homeserver container.
 func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName string) string {
 	t.Helper()
 
@@ -397,6 +409,8 @@ func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName st
 	return stdout.String() + stderr.String()
 }
 
+// logTail returns the suffix of fullLogs that was appended after priorLogs was
+// captured, falling back to the full log stream if no prefix match exists.
 func logTail(fullLogs, priorLogs string) string {
 	if strings.HasPrefix(fullLogs, priorLogs) {
 		return fullLogs[len(priorLogs):]
@@ -404,6 +418,8 @@ func logTail(fullLogs, priorLogs string) string {
 	return fullLogs
 }
 
+// looksLikeSigningKeyRemediationLog reports whether a log chunk appears to be a
+// signing-key startup-guardrail message with remediation guidance.
 func looksLikeSigningKeyRemediationLog(logs string) bool {
 	logs = strings.ToLower(logs)
 	hasSigningKeyContext := strings.Contains(logs, "signing key")
@@ -2386,6 +2402,9 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 	t.Logf("Key B (future expired_ts) correctly ignored; key A (valid) correctly served")
 }
 
+// testMSC4499KeyAdminStartupGuardrails probes the Synapse startup guardrail by
+// mutating the configured signing key body while preserving the key ID and
+// asserting the homeserver does not come up cleanly afterward.
 func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	if runtime.Homeserver != runtime.Synapse {
 		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
@@ -2468,6 +2487,9 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	}
 }
 
+// testMSC4499KeyLostKeyPublicationHistoricalVerification covers the remote
+// historical-verification consequences of publishing, or failing to publish, a
+// lost key in old_verify_keys.
 func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 
@@ -2626,6 +2648,8 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	})
 }
 
+// testMSC4499KeyLocalRecoveryFromKeyLoss is a named placeholder for the still
+// missing homeserver-local key-loss injection and operator-recovery coverage.
 func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
 	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
 }
