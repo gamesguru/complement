@@ -2462,10 +2462,15 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 	t.Logf("Key B (future expired_ts) correctly ignored; key A (valid) correctly served")
 }
 
-// testMSC4499KeyAdminStartupGuardrails probes the optional Synapse startup
-// guardrail by mutating the configured signing key body while preserving the
-// key ID. MSC4499 recommends this detection with SHOULD, so lack of the
-// guardrail is not itself a conformance failure.
+// testMSC4499KeyAdminStartupGuardrails is an optional-implementation probe,
+// not conformance coverage. MSC4499 recommends (SHOULD, not MUST) detecting a
+// mutated persisted signing key at startup and refusing to boot; neither
+// reference implementation does this today (confirmed against Synapse
+// 1.154.0, which starts cleanly post-mutation with no operator-facing
+// refusal path). The test mutates the configured signing key body while
+// preserving the key ID and skips cleanly when no guardrail fires, so it
+// exists to catch a regression if the behavior is ever added, not to enforce
+// it now.
 func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	if runtime.Homeserver != runtime.Synapse {
 		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
