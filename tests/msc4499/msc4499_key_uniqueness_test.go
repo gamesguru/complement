@@ -2572,7 +2572,6 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 // lost key in old_verify_keys.
 func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
-	runtime.SkipIf(t, runtime.Synapse)
 
 	runCase := func(t *testing.T, publishLostKey bool) {
 		deployment := complement.Deploy(t, 1)
@@ -2723,6 +2722,7 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	}
 
 	t.Run("PublishedLostKeyPreservesHistoricalVerification", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Synapse)
 		runCase(t, true)
 	})
 	t.Run("FullyLostKeyRemainsUnverifiableToColdPeers", func(t *testing.T) {
