@@ -507,28 +507,37 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
 	t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
 
-	// BindingPromotion and CorroborationTierRetention both need the two-homeserver
-	// trusted-notary topology and use disjoint key IDs, so they can share one
-	// deployment instead of each provisioning their own, saving a container startup.
-	t.Run("TrustedNotaryGroup", func(t *testing.T) {
+	// BindingPromotion is the only trusted-notary test that doesn't push hs1's
+	// key store toward its retention ceiling, so it's the only one safe to
+	// share a deployment with. CorroborationTierRetention floods old_verify_keys
+	// with 3001 entries (same saturation pattern as StorageQuotaResilience /
+	// VerifyKeysCeiling below), so it gets its own deployment rather than being
+	// grouped here — pairing it would make its pass/fail depend on run order
+	// and on no earlier subtest in the group having partially mutated hs1.
+	t.Run("BindingPromotion", func(t *testing.T) {
 		runtime.SkipIf(t, runtime.Dendrite)
 		deployment := deployMSC4499TrustedNotary(t)
 		defer deployment.Destroy(t)
-
-		t.Run("BindingPromotion", func(t *testing.T) {
-			testMSC4499KeyBindingPromotion(t, deployment)
-		})
-		t.Run("CorroborationTierRetention", func(t *testing.T) {
-			testMSC4499KeyCorroborationTierRetention(t, deployment)
-		})
+		testMSC4499KeyBindingPromotion(t, deployment)
 	})
 
-	// StorageQuotaResilience and VerifyKeysCeiling are kept on separate
-	// deployments: both deliberately push a homeserver's key store to (and past)
-	// its retention ceiling, so sharing one deployment between them risks one
-	// test's saturation silently changing the other's pass/fail reason.
+	// CorroborationTierRetention, StorageQuotaResilience, and VerifyKeysCeiling
+	// each get their own deployment: all three deliberately push a homeserver's
+	// key store to (and past) its retention ceiling, so sharing a deployment
+	// between any of them risks one test's saturation silently changing
+	// another's pass/fail reason.
+	t.Run("CorroborationTierRetention", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		deployment := deployMSC4499TrustedNotary(t)
+		defer deployment.Destroy(t)
+		testMSC4499KeyCorroborationTierRetention(t, deployment)
+	})
 	t.Run("StorageQuotaResilience", func(t *testing.T) {
 		runtime.SkipIf(t, runtime.Dendrite)
+		// Synapse never evicts the oldest filler key under quota pressure:
+		// "Expected oldest filler key to be evicted: got '...' want ''" (last
+		// verified on a pre-MSC4499 Synapse build; see note on
+		// testMSC4499KeyIDFirstSeenWinsDirect).
 		runtime.SkipIf(t, runtime.Synapse)
 		deployment := complement.Deploy(t, 1)
 		defer deployment.Destroy(t)
@@ -539,6 +548,10 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
 	t.Run("VerifyKeysCeiling", func(t *testing.T) {
 		runtime.SkipIf(t, runtime.Dendrite)
+		// Synapse accepts a verify_keys payload past the 50-key ceiling instead
+		// of rejecting it wholesale: "hs1 accepted a payload with 51 verify_keys
+		// (ceiling is 50)" (last verified on a pre-MSC4499 Synapse build; see
+		// note on testMSC4499KeyIDFirstSeenWinsDirect).
 		runtime.SkipIf(t, runtime.Synapse)
 		deployment := complement.Deploy(t, 1)
 		defer deployment.Destroy(t)
@@ -554,6 +567,11 @@ func TestMSC4499Key(t *testing.T) {
 // "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse returns a colliding key on re-fetch instead of keeping the
+	// first-seen binding: "hs1 returned colliding Keypair B after re-fetch —
+	// First Seen Wins was not enforced" (last verified on a pre-MSC4499
+	// Synapse build; this branch's Synapse image has no MSC4499 support since
+	// element-hq/synapse has no msc4499-edge-cases branch for CI to build).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -648,6 +666,11 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 // verify against the mutated body, catching the violation deterministically.
 func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// No specific failure recorded for this one from a past Synapse run — skipped
+	// on the general basis that this branch's Synapse image has no MSC4499
+	// support at all (element-hq/synapse has no msc4499-edge-cases branch for
+	// CI to build from, so it falls back to develop). Needs a fresh Synapse run
+	// to confirm/replace this with the actual failure mode.
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -963,6 +986,10 @@ func testMSC4499KeyRotation(t *testing.T) {
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse returns the colliding key in server_keys instead of rejecting the
+	// malformed payload: "hs1 returned the colliding key ... in server_keys —
+	// malformed payload was not rejected" (last verified on a pre-MSC4499
+	// Synapse build; see note on testMSC4499KeyIDFirstSeenWinsDirect).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1240,6 +1267,10 @@ func testMSC4499KeyFetchCoalescing(t *testing.T) {
 // Test that failed key fetches are cached and subject to negative caching / backoff.
 func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse doesn't implement MSC4499 negative caching/backoff: "hs1 did not
+	// implement negative caching / backoff: it made a network request on
+	// consecutive failure query" (last verified on a pre-MSC4499 Synapse build;
+	// see note on testMSC4499KeyIDFirstSeenWinsDirect).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1339,6 +1370,10 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse can't verify the backdated event: it 401s with "Failed to find
+	// any key to satisfy" the retired key ID, i.e. it doesn't retain/serve the
+	// retired key MSC4499 requires for historical verification (last verified
+	// on a pre-MSC4499 Synapse build; see note on testMSC4499KeyIDFirstSeenWinsDirect).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1654,6 +1689,10 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // nested object rather than directly in verify_keys.
 func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// No specific failure recorded for this one from a past Synapse run — skipped
+	// on the general basis that this branch's Synapse image has no MSC4499
+	// support (see note on testMSC4499KeyIDFirstSeenWinsDirect). Needs a fresh
+	// Synapse run to confirm/replace this with the actual failure mode.
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -2218,6 +2257,10 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse lets a direct fetch override an expired provisional binding:
+	// "hs1 returned colliding key B after provisional binding expired —
+	// Provisional Override Freeze not enforced" (last verified on a
+	// pre-MSC4499 Synapse build; see note on testMSC4499KeyIDFirstSeenWinsDirect).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
@@ -2384,6 +2427,11 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T, deployment complement.Deploym
 //  3. Query for key B → should be absent (malformed entry ignored)
 func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Synapse serves a future-dated expired_ts from old_verify_keys instead of
+	// treating it as malformed: "hs1 served key B (expired_ts in the future) in
+	// old_verify_keys — future expired_ts MUST be treated as malformed" (last
+	// verified on a pre-MSC4499 Synapse build; see note on
+	// testMSC4499KeyIDFirstSeenWinsDirect).
 	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -2736,6 +2784,9 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	}
 
 	t.Run("PublishedLostKeyPreservesHistoricalVerification", func(t *testing.T) {
+		// Same root cause as testMSC4499KeyHistoricalEventVerification: Synapse
+		// doesn't retain/serve the retired key needed for MSC4499 historical
+		// verification (see note on testMSC4499KeyIDFirstSeenWinsDirect).
 		runtime.SkipIf(t, runtime.Synapse)
 		runCase(t, true)
 	})
