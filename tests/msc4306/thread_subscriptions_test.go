@@ -12,6 +12,7 @@ import (
 )
 
 func TestThreadSubscriptions(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

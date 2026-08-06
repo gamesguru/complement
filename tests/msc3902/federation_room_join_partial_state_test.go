@@ -1,3 +1,6 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 // This file contains tests for joining rooms over federation, with the
 // features introduced in msc3902.
 
@@ -183,6 +186,7 @@ func (s *server) WaitForEvent(
 }
 
 func TestPartialStateJoin(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
 
 	// createMemberEvent creates a membership event for the given user

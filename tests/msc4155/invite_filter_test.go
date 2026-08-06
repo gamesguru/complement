@@ -1,7 +1,13 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 package tests
 
 import (
 	"encoding/json"
+	"io"
+	"testing"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
@@ -9,8 +15,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/gomatrixserverlib/spec"
-	"io"
-	"testing"
 )
 
 const hs1Name = "hs1"
@@ -19,21 +23,22 @@ const inviteFilterAccountData = "org.matrix.msc4155.invite_permission_config"
 
 // As described in https://github.com/Johennes/matrix-spec-proposals/blob/johannes/invite-filtering/proposals/4155-invite-filtering.md#proposal
 type InviteFilterConfig struct {
-	AllowedUsers []string `json:"allowed_users,omitempty"`
-	IgnoredUsers []string `json:"ignored_users,omitempty"`
-	BlockedUsers []string `json:"blocked_users,omitempty"`
+	AllowedUsers   []string `json:"allowed_users,omitempty"`
+	IgnoredUsers   []string `json:"ignored_users,omitempty"`
+	BlockedUsers   []string `json:"blocked_users,omitempty"`
 	AllowedServers []string `json:"allowed_servers,omitempty"`
 	IgnoredServers []string `json:"ignored_servers,omitempty"`
 	BlockedServers []string `json:"blocked_servers,omitempty"`
 }
 
 func TestInviteFiltering(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
 	// Invitee
 	evil_alice := deployment.Register(t, hs1Name, helpers.RegistrationOpts{})
-	
+
 	bob := deployment.Register(t, hs2Name, helpers.RegistrationOpts{})
 	evil_bob := deployment.Register(t, hs2Name, helpers.RegistrationOpts{})
 
@@ -125,7 +130,7 @@ func TestInviteFiltering(t *testing.T) {
 	t.Run("Can allow a user from a blocked server", func(t *testing.T) {
 		alice := deployment.Register(t, hs1Name, helpers.RegistrationOpts{})
 		mustSetInviteConfig(t, alice, InviteFilterConfig{
-			AllowedUsers: []string{bob.UserID},
+			AllowedUsers:   []string{bob.UserID},
 			BlockedServers: []string{hs2Name},
 		})
 
@@ -142,7 +147,7 @@ func TestInviteFiltering(t *testing.T) {
 	t.Run("Can block a user from an allowed server", func(t *testing.T) {
 		alice := deployment.Register(t, hs1Name, helpers.RegistrationOpts{})
 		mustSetInviteConfig(t, alice, InviteFilterConfig{
-			BlockedUsers: []string{evil_bob.UserID},
+			BlockedUsers:   []string{evil_bob.UserID},
 			AllowedServers: []string{hs2Name},
 		})
 
@@ -159,9 +164,9 @@ func TestInviteFiltering(t *testing.T) {
 	t.Run("Will ignore null fields", func(t *testing.T) {
 		alice := deployment.Register(t, hs1Name, helpers.RegistrationOpts{})
 		alice.MustSetGlobalAccountData(t, inviteFilterAccountData, map[string]interface{}{
-			"allowed_users": nil,
-			"ignored_users": nil,
-			"blocked_users": nil,
+			"allowed_users":   nil,
+			"ignored_users":   nil,
+			"blocked_users":   nil,
 			"allowed_servers": nil,
 			"ignored_servers": nil,
 			"blocked_servers": nil,
@@ -215,7 +220,7 @@ func mustSetInviteConfig(t *testing.T, c *client.CSAPI, cfg InviteFilterConfig) 
 	c.MustSetGlobalAccountData(t, inviteFilterAccountData, m)
 }
 
-// Tests that a room is created and appears down the creators sync 
+// Tests that a room is created and appears down the creators sync
 func mustCreateRoomAndSync(t *testing.T, c *client.CSAPI) string {
 	t.Helper()
 	roomID := c.MustCreateRoom(t, map[string]interface{}{
@@ -226,7 +231,7 @@ func mustCreateRoomAndSync(t *testing.T, c *client.CSAPI) string {
 }
 
 // Test that requests to invite a given user fail with a 403 response
-func mustInviteRoomAndFail(t *testing.T, c *client.CSAPI,roomID string, userID string) {
+func mustInviteRoomAndFail(t *testing.T, c *client.CSAPI, roomID string, userID string) {
 	t.Helper()
 	res := c.InviteRoom(t, roomID, userID)
 	if res.StatusCode == 403 {
