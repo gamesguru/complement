@@ -20,6 +20,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
 )
 
@@ -1613,6 +1614,8 @@ func testMSC4186SlidingSyncRoomMetadata(t *testing.T) {
 // TestMSC4186SlidingSyncUnknownPos verifies that an unrecognised or expired pos
 // token is rejected with 400 M_UNKNOWN_POS.
 func testMSC4186SlidingSyncUnknownPos(t *testing.T) {
+	runtime.SkipIf(t, runtime.Synapse) // Synapse currently returns M_UNKNOWN / "Invalid stream token" instead.
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
