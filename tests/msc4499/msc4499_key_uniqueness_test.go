@@ -2088,8 +2088,11 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 
 	originName := srv.ServerName()
 
-	// Phase 1: Learn key A while it is active. hs1 sees this via hs2, which
-	// should corroborate the binding for later retention decisions.
+	// Phase 1: Learn key A while it is active via a direct fetch. This is
+	// what should corroborate the binding for later retention decisions --
+	// hs2 isn't involved in this test despite the shared trusted-notary
+	// deployment; only hs1's own direct-fetch retirement/eviction logic is
+	// under test here.
 	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate corroborated key A", err)
 	keyIDA := gomatrixserverlib.KeyID("ed25519:msc4499_corroborated_a")
@@ -2116,8 +2119,17 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	time.Sleep(3 * time.Second)
 
 	// Phase 2: Rotate the origin to a new active key and flood old_verify_keys
-	// with uncorroborated retired bindings. Key A should survive because hs1
-	// already saw it active before retirement.
+	// with 3,000 uncorroborated retired bindings -- exactly at, not over, the
+	// per-response ceiling (a bigger single response would be rejected
+	// outright as malformed; see StorageQuotaResilience). Key A is
+	// deliberately NOT included as an explicit old_verify_keys entry here:
+	// dropping it from verify_keys is enough on its own for hs1 to retire it
+	// locally (real origins aren't expected to keep re-publishing their full
+	// retired-key history in every response either -- receiving servers
+	// accumulate that themselves). That local retirement is what pushes the
+	// cumulative retained set to 3,001 -- one over the ceiling -- and key A
+	// should survive that eviction pass because hs1 already saw it active
+	// before this retirement happened.
 	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate active key B", err)
 	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_active_b")
@@ -2125,13 +2137,7 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		keyIDB: pubKeyB,
 	}
-	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3001)
-	oldVerifyKeys[keyIDA] = gomatrixserverlib.OldVerifyKey{
-		VerifyKey: gomatrixserverlib.VerifyKey{
-			Key: spec.Base64Bytes(pubKeyA),
-		},
-		ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
-	}
+	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3000)
 
 	for i := 0; i < 3000; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
