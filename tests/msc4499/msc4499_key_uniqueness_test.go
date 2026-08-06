@@ -21,6 +21,7 @@ import (
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 
@@ -282,6 +283,14 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 // container and returns its raw contents.
 func readFileFromContainer(t *testing.T, deployment complement.Deployment, hsName, path string) []byte {
 	t.Helper()
+	_, data := readFileFromContainerWithHeader(t, deployment, hsName, path)
+	return data
+}
+
+// readFileFromContainerWithHeader copies a single file out of a Docker-backed
+// homeserver container and returns both its tar header metadata and contents.
+func readFileFromContainerWithHeader(t *testing.T, deployment complement.Deployment, hsName, path string) (*tar.Header, []byte) {
+	t.Helper()
 
 	dockerDeployment, ok := deployment.(*docker.Deployment)
 	if !ok {
@@ -289,17 +298,20 @@ func readFileFromContainer(t *testing.T, deployment complement.Deployment, hsNam
 	}
 
 	containerID := deployment.ContainerID(t, hsName)
-	reader, _, err := dockerDeployment.Deployer.Docker.CopyFromContainer(context.Background(), containerID, path)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	reader, _, err := dockerDeployment.Deployer.Docker.CopyFromContainer(ctx, containerID, path)
 	must.NotError(t, "failed to copy file from container", err)
 	defer reader.Close()
 
 	tr := tar.NewReader(reader)
-	_, err = tr.Next()
+	header, err := tr.Next()
 	must.NotError(t, "failed to read tar header from copied file", err)
 
 	data, err := io.ReadAll(tr)
 	must.NotError(t, "failed to read copied file contents", err)
-	return data
+	headerCopy := *header
+	return &headerCopy, data
 }
 
 // writeFileToContainer overwrites a single file inside a Docker-backed
@@ -311,13 +323,17 @@ func writeFileToContainer(t *testing.T, deployment complement.Deployment, hsName
 	if !ok {
 		t.Fatalf("container file helpers require Docker-backed deployments, got %T", deployment)
 	}
+	header, _ := readFileFromContainerWithHeader(t, deployment, hsName, path)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	err := tw.WriteHeader(&tar.Header{
-		Name: path,
-		Mode: 0600,
-		Size: int64(len(data)),
+		Name:    path,
+		Mode:    header.Mode,
+		Uid:     header.Uid,
+		Gid:     header.Gid,
+		ModTime: header.ModTime,
+		Size:    int64(len(data)),
 	})
 	must.NotError(t, "failed to build tar header for container copy", err)
 	_, err = tw.Write(data)
@@ -325,8 +341,10 @@ func writeFileToContainer(t *testing.T, deployment complement.Deployment, hsName
 	must.NotError(t, "failed to finalize tar payload for container copy", tw.Close())
 
 	containerID := deployment.ContainerID(t, hsName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	err = dockerDeployment.Deployer.Docker.CopyToContainer(
-		context.Background(),
+		ctx,
 		containerID,
 		"/",
 		&buf,
@@ -385,7 +403,7 @@ func mutateSynapseSigningKeyPreservingKeyID(t *testing.T, signingKeyFile []byte)
 
 // readContainerLogs returns the current stdout/stderr log stream for a
 // Docker-backed homeserver container.
-func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName string) string {
+func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName string, since time.Time) string {
 	t.Helper()
 
 	dockerDeployment, ok := deployment.(*docker.Deployment)
@@ -394,11 +412,17 @@ func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName st
 	}
 
 	containerID := deployment.ContainerID(t, hsName)
-	reader, err := dockerDeployment.Deployer.Docker.ContainerLogs(context.Background(), containerID, dockercontainer.LogsOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	opts := dockercontainer.LogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     false,
-	})
+	}
+	if !since.IsZero() {
+		opts.Since = since.Format(time.RFC3339Nano)
+	}
+	reader, err := dockerDeployment.Deployer.Docker.ContainerLogs(ctx, containerID, opts)
 	must.NotError(t, "failed to read container logs", err)
 	defer reader.Close()
 
@@ -409,25 +433,59 @@ func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName st
 	return stdout.String() + stderr.String()
 }
 
-// logTail returns the suffix of fullLogs that was appended after priorLogs was
-// captured, falling back to the full log stream if no prefix match exists.
-func logTail(fullLogs, priorLogs string) string {
-	if strings.HasPrefix(fullLogs, priorLogs) {
-		return fullLogs[len(priorLogs):]
-	}
-	return fullLogs
-}
-
 // looksLikeSigningKeyRemediationLog reports whether a log chunk appears to be a
 // signing-key startup-guardrail message with remediation guidance.
 func looksLikeSigningKeyRemediationLog(logs string) bool {
 	logs = strings.ToLower(logs)
 	hasSigningKeyContext := strings.Contains(logs, "signing key")
-	hasRemediationHint := strings.Contains(logs, "restore") ||
-		strings.Contains(logs, "original key") ||
-		strings.Contains(logs, "new key id") ||
-		strings.Contains(logs, "key id")
-	return hasSigningKeyContext && hasRemediationHint
+	hasErrorIndicator := strings.Contains(logs, "error") ||
+		strings.Contains(logs, "fatal") ||
+		strings.Contains(logs, "failed")
+	hasRestoreInstruction := strings.Contains(logs, "restore the original key")
+	hasAssignInstruction := strings.Contains(logs, "assign a new key id") ||
+		(strings.Contains(logs, "assign") && strings.Contains(logs, "new key id"))
+	return hasSigningKeyContext && hasErrorIndicator && (hasRestoreInstruction || hasAssignInstruction)
+}
+
+// buildEventWithSigningKey creates and signs an event for the given room using
+// the provided signing identity instead of the server's mutable defaults.
+func buildEventWithSigningKey(
+	t *testing.T,
+	room *federation.ServerRoom,
+	origin spec.ServerName,
+	keyID gomatrixserverlib.KeyID,
+	privKey ed25519.PrivateKey,
+	at time.Time,
+	ev federation.Event,
+) gomatrixserverlib.PDU {
+	t.Helper()
+
+	proto, err := room.ProtoEventCreator(room, ev)
+	must.NotError(t, "failed to create proto event", err)
+	verImpl := gomatrixserverlib.MustGetRoomVersion(room.Version)
+	builder := verImpl.NewEventBuilderFromProtoEvent(proto)
+	pdu, err := builder.Build(at, origin, keyID, privKey)
+	must.NotError(t, "failed to build signed event", err)
+	return pdu
+}
+
+// federationClientWithSigningKey returns a federation client that signs requests
+// using the supplied identity rather than the server's default key material.
+func federationClientWithSigningKey(
+	deployment complement.Deployment,
+	origin spec.ServerName,
+	keyID gomatrixserverlib.KeyID,
+	privKey ed25519.PrivateKey,
+) fclient.FederationClient {
+	identity := fclient.SigningIdentity{
+		ServerName: origin,
+		KeyID:      keyID,
+		PrivateKey: privKey,
+	}
+	return fclient.NewFederationClient(
+		[]*fclient.SigningIdentity{&identity},
+		fclient.WithTransport(deployment.RoundTripper()),
+	)
 }
 
 // TestMSC4499Key exercises MSC4499 server key uniqueness and verification
@@ -2435,10 +2493,22 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	const signingKeyPath = "/data/hs1.signing.key"
 	originalSigningKey := readFileFromContainer(t, deployment, "hs1", signingKeyPath)
 	mutatedSigningKey := mutateSynapseSigningKeyPreservingKeyID(t, originalSigningKey)
-	priorLogs := readContainerLogs(t, deployment, "hs1")
+	mutationTS := time.Now()
 
 	deployment.StopServer(t, "hs1")
 	writeFileToContainer(t, deployment, "hs1", signingKeyPath, mutatedSigningKey)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		inspect, err := dockerDeployment.Deployer.Docker.ContainerInspect(ctx, hsDep.ContainerID)
+		if err == nil && inspect.State != nil && inspect.State.Running {
+			_ = dockerDeployment.Deployer.StopServer(hsDep)
+		}
+		writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
+		if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
+			t.Fatalf("failed to restore hs1 after startup-guardrail assertion: %v", err)
+		}
+	}()
 
 	startErr := dockerDeployment.Deployer.StartServer(hsDep)
 	if startErr == nil {
@@ -2450,40 +2520,31 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 		// the MSC predicate. The assertion here is that the homeserver MUST NOT
 		// come up cleanly with the mutated key, whether that manifests as an API-
 		// level start failure or a start-then-exit guardrail.
-		time.Sleep(500 * time.Millisecond)
-		inspect, inspectErr := dockerDeployment.Deployer.Docker.ContainerInspect(context.Background(), hsDep.ContainerID)
-		logs := logTail(readContainerLogs(t, deployment, "hs1"), priorLogs)
-		guardrailLogs := looksLikeSigningKeyRemediationLog(logs)
-
-		crashedAfterStart := inspectErr == nil && inspect.State != nil && !inspect.State.Running
-		if crashedAfterStart && guardrailLogs {
-			writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
-			if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
-				t.Fatalf("guardrail test failed to restore original signing key after start-then-crash guardrail: %v", err)
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			inspect, inspectErr := dockerDeployment.Deployer.Docker.ContainerInspect(ctx, hsDep.ContainerID)
+			cancel()
+			if inspectErr != nil {
+				t.Fatalf("failed to inspect hs1 during startup-guardrail polling: %v", inspectErr)
 			}
-			return
+			if inspect.State != nil && !inspect.State.Running {
+				logs := readContainerLogs(t, deployment, "hs1", mutationTS)
+				if looksLikeSigningKeyRemediationLog(logs) {
+					return
+				}
+				t.Fatalf("hs1 exited after mutated-key start attempt, but post-mutation logs did not clearly indicate signing-key remediation")
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("hs1 remained running for 3s after mutated-key start attempt; startup guardrail did not stop clean startup")
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
-
-		_ = dockerDeployment.Deployer.StopServer(hsDep)
-		writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
-		if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
-			t.Fatalf("guardrail test failed to restore original signing key after unexpected successful start: %v", err)
-		}
-		t.Fatalf("hs1 started successfully after its signing key body changed under the same key ID; startup guardrails did not refuse startup")
 	}
 
-	logs := logTail(readContainerLogs(t, deployment, "hs1"), priorLogs)
+	logs := readContainerLogs(t, deployment, "hs1", mutationTS)
 	if !looksLikeSigningKeyRemediationLog(logs) {
-		writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
-		if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
-			t.Fatalf("failed to restore hs1 after startup-guardrail log assertion: %v", err)
-		}
 		t.Fatalf("hs1 failed to start after key mutation, but restart-attempt logs did not clearly implicate signing-key mismatch and remediation: %v", startErr)
-	}
-
-	writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
-	if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
-		t.Fatalf("failed to restore hs1 after startup-guardrail assertion: %v", err)
 	}
 }
 
@@ -2497,16 +2558,6 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		deployment := complement.Deploy(t, 1)
 		defer deployment.Destroy(t)
 
-		srv := federation.NewServer(t, deployment,
-			federation.HandleMakeSendJoinRequests(),
-			federation.HandleTransactionRequests(nil, nil),
-		)
-		srv.UnexpectedRequestsAreErrors = false
-		cancel := srv.Listen()
-		defer cancel()
-
-		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-
 		pubKeyCurrent, privKeyCurrent, err := ed25519.GenerateKey(rand.Reader)
 		must.NotError(t, "failed to generate current key", err)
 		pubKeyLost, privKeyLost, err := ed25519.GenerateKey(rand.Reader)
@@ -2515,8 +2566,17 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		keyIDCurrent := gomatrixserverlib.KeyID("ed25519:msc4499_recovery_current")
 		keyIDLost := gomatrixserverlib.KeyID("ed25519:msc4499_recovery_lost")
 
+		srv := federation.NewServer(t, deployment,
+			federation.HandleMakeSendJoinRequests(),
+			federation.HandleTransactionRequests(nil, nil),
+		)
 		srv.KeyID = keyIDCurrent
 		srv.Priv = privKeyCurrent
+		srv.UnexpectedRequestsAreErrors = false
+		cancel := srv.Listen()
+		defer cancel()
+
+		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
 		lossTime := time.Now().Add(-1 * time.Hour)
 		oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
@@ -2551,33 +2611,58 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 		_, since := alice.MustSync(t, client.SyncReq{})
 
-		srv.KeyID = keyIDLost
-		srv.Priv = privKeyLost
-		historicalProto, err := serverRoom.ProtoEventCreator(serverRoom, federation.Event{
+		historicalEvent := buildEventWithSigningKey(
+			t,
+			serverRoom,
+			spec.ServerName(srv.ServerName()),
+			keyIDLost,
+			privKeyLost,
+			lossTime.Add(-2*time.Hour),
+			federation.Event{
+				Sender: charlie,
+				Type:   "m.room.message",
+				Content: map[string]interface{}{
+					"msgtype": "m.text",
+					"body":    "Historical event signed by the lost key",
+				},
+			},
+		)
+
+		currentEvent := srv.MustCreateEvent(t, serverRoom, federation.Event{
 			Sender: charlie,
 			Type:   "m.room.message",
 			Content: map[string]interface{}{
 				"msgtype": "m.text",
-				"body":    "Historical event signed by the lost key",
+				"body":    "Current event signed by the recovery key",
 			},
 		})
-		must.NotError(t, "failed to create historical proto event", err)
-
-		verImpl := gomatrixserverlib.MustGetRoomVersion(serverRoom.Version)
-		historicalBuilder := verImpl.NewEventBuilderFromProtoEvent(historicalProto)
-		historicalEvent, err := historicalBuilder.Build(
-			lossTime.Add(-2*time.Hour),
-			spec.ServerName(srv.ServerName()),
-			srv.KeyID,
-			srv.Priv,
-		)
-		must.NotError(t, "failed to build historical event", err)
-		serverRoom.AddEvent(historicalEvent)
+		serverRoom.AddEvent(currentEvent)
 
 		fedClient := srv.FederationClient(deployment)
+		ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx2()
+		currentResp, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-current-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{currentEvent.JSON()},
+		})
+		must.NotError(t, "failed to send current event after recovery rotation", err)
+		for eventID, pduResp := range currentResp.PDUs {
+			if pduResp.Error != "" {
+				t.Fatalf("hs1 rejected current event %s signed by the replacement key: %s", eventID, pduResp.Error)
+			}
+		}
+
+		lostKeyFedClient := federationClientWithSigningKey(
+			deployment,
+			spec.ServerName(srv.ServerName()),
+			keyIDLost,
+			privKeyLost,
+		)
 		ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCtx()
-		historicalResp, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+		historicalResp, err := lostKeyFedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
 			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-historical-%d", time.Now().UnixNano())),
 			Origin:        spec.ServerName(srv.ServerName()),
 			Destination:   "hs1",
@@ -2602,40 +2687,16 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		}
 
 		if !publishLostKey {
-			time.Sleep(500 * time.Millisecond)
-			syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
-			events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
-			for _, ev := range events {
-				if ev.Get("event_id").Str == historicalEvent.EventID() {
-					t.Fatalf("hs1 delivered a historical event for a fully lost key that should have failed verification")
+			deadline := time.Now().Add(1500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+				events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
+				for _, ev := range events {
+					if ev.Get("event_id").Str == historicalEvent.EventID() {
+						t.Fatalf("hs1 delivered a historical event for a fully lost key that should have failed verification")
+					}
 				}
-			}
-		}
-
-		srv.KeyID = keyIDCurrent
-		srv.Priv = privKeyCurrent
-		currentEvent := srv.MustCreateEvent(t, serverRoom, federation.Event{
-			Sender: charlie,
-			Type:   "m.room.message",
-			Content: map[string]interface{}{
-				"msgtype": "m.text",
-				"body":    "Current event signed by the recovery key",
-			},
-		})
-		serverRoom.AddEvent(currentEvent)
-
-		ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancelCtx2()
-		currentResp, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
-			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-current-%d", time.Now().UnixNano())),
-			Origin:        spec.ServerName(srv.ServerName()),
-			Destination:   "hs1",
-			PDUs:          []json.RawMessage{currentEvent.JSON()},
-		})
-		must.NotError(t, "failed to send current event after recovery rotation", err)
-		for eventID, pduResp := range currentResp.PDUs {
-			if pduResp.Error != "" {
-				t.Fatalf("hs1 rejected current event %s signed by the replacement key: %s", eventID, pduResp.Error)
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
@@ -2651,5 +2712,7 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 // testMSC4499KeyLocalRecoveryFromKeyLoss is a named placeholder for the still
 // missing homeserver-local key-loss injection and operator-recovery coverage.
 func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
+	// Tracking reference: this needs a homeserver-local fault-injection hook for
+	// signing-key loss plus an operator-facing recovery mechanism under test.
 	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
 }

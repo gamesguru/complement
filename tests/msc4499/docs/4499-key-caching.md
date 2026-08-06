@@ -54,7 +54,10 @@ proactively refresh cached keys before their clamped `valid_until_ts` expiry
 (restricted to _at most_ 7 days from fetch) to avoid verification failures
 during key rotation windows. When a server re-fetches a key and receives the
 exact same key body it already has, this is a normal refresh; the server MUST
-simply update its cached `valid_until_ts` and `expired_ts` timestamps.
+simply update its cached `valid_until_ts`. It MUST NOT replace `expired_ts`
+during an unchanged-body refresh: `expired_ts` is assigned only on its first
+observation for that binding, as described under [Historical event
+verification](#historical-event-verification).
 Furthermore, servers MUST rely on their cache. They MUST NOT fetch origin keys
 for every inbound message or request if a valid key is already cached locally.
 
@@ -71,9 +74,11 @@ the backoff schedule already allows); all further demand arriving within that
 interval MUST fail fast against the negative cache rather than triggering its
 own probe. Without this per-interval limit, an attacker can relay junk
 purportedly signed by a dead server's name to induce one outbound probe per
-inbound request, defeating the backoff entirely. Implementations SHOULD coalesce
+inbound request, defeating the backoff entirely. Implementations MUST coalesce
 concurrent outgoing key fetch requests for the same remote domain into a single
-active HTTP request to prevent network saturation. If that fetch succeeds and
+active HTTP request to prevent network saturation, except where a stronger
+local trust source already satisfies the request without any outbound fetch. If
+that fetch succeeds and
 the request authenticates, servers SHOULD clear the backoff state.
 
 Implementations SHOULD allow the minimum backoff floor to be shortened or
@@ -81,9 +86,13 @@ otherwise overridden (e.g. via a test-only configuration hook) in test
 configurations, so conformance tests do not need to sleep for a full minute in
 order to observe backoff being enforced and later cleared.
 
-**Cache persistence.** Key caches SHOULD be persisted to durable storage (e.g.,
-database) rather than held only in memory. A server restart should not require
-re-fetching every remote server's keys from the network.
+**Cache persistence.** Permanent key-ID-to-key-body bindings MUST be persisted
+to durable storage (e.g., database) or an equivalent crash-recovery journal;
+memory-only storage is insufficient for First Seen Wins. Freshness metadata
+such as `valid_until_ts`, retry state, and other cache-management fields may be
+stored separately, but a server restart MUST NOT discard the immutable
+identity-binding record or require re-fetching every remote server's keys from
+the network before it can continue enforcing existing bindings.
 
 **Active key ceiling.** A single server-key response MUST NOT contain more than
 50 active keys in `verify_keys`. Such a payload MUST be rejected as malformed.
@@ -119,9 +128,12 @@ inescapable future where key _bodies_ (values as opposed to IDs) become close to
 ~1 KB (prohibitively large for a "unique identifier" in a relational database).
 This forensic index is an implementation-private log of rejected material; it is
 not part of the notary's served binding set and is therefore outside the scope
-of, and not bounded by, the 3,000-key retention ceiling described under
-[Storage considerations](#storage-considerations), which governs only the
-bindings a notary actively serves.
+of the 3,000-key retention ceiling described under [Storage
+considerations](#storage-considerations), which governs only the bindings a
+notary actively serves. However, the forensic index MUST still be bounded:
+implementations MUST either retain only bounded digest metadata (origin, key
+ID, digest, timestamps, and reason for rejection), or enforce explicit
+per-origin and global limits if they retain full rejected key bodies.
 
 **Notary fallback (two-tier binding).** When a required signing key is not
 present in the local cache, servers typically query a configured notary server
@@ -212,8 +224,9 @@ The same key body appearing under one key ID in both `verify_keys` and
 within a single HTTP response, the entire response MUST be rejected as
 malformed.
 
-If a notary rejects an upstream key response as malformed, it MUST omit that
-response from the `server_keys` array but MAY continue serving other valid
+If a notary rejects an upstream key response as malformed, it MUST still return
+HTTP 200 for the enclosing `/_matrix/key/v2/query` response, omit that
+response from the `server_keys` array, and MAY continue serving other valid
 entries in the batch. Furthermore, implementations MUST reject key response
 payloads containing duplicate keys within a single JSON object, at any depth,
 anywhere in the response document (not only within `verify_keys` or
@@ -291,11 +304,14 @@ by the paragraph below, this is a largely unnecessary precaution).
 Because local startup guardrails cannot detect collisions if the server's
 database has been entirely wiped (the most common cause of key ID reuse),
 homeserver implementations SHOULD ensure that default key ID generation
-incorporates a timestamp or high-entropy component (e.g., `ed25519:a7B_93k`
-rather than the default `ed25519:auto` or `ed25519:1`). This ensures that if an
-administrator regenerates keys after a total state loss, a novel key ID is
-structurally guaranteed. It also protects against a new server owner unwittingly
-re-registering under a domain which formerly ran a Conduit server.
+incorporates a collision-resistant random component or a persisted uniqueness
+mechanism alongside any timestamp (e.g., `ed25519:a7B_93k` rather than the
+default `ed25519:auto` or `ed25519:1`). A timestamp alone provides only
+probabilistic separation; a structurally guaranteed fresh key ID requires
+persisted uniqueness state in addition to any time component. This protects
+against an administrator regenerating keys after a total state loss, and against
+a new server owner unwittingly re-registering under a domain which formerly ran
+a Conduit server.
 
 This is the most effective mitigation because it eliminates the root cause: it
 all but certainly stops the bad key from ever being published and sidesteps the
@@ -358,8 +374,13 @@ Cached keys, including keys retired to `old_verify_keys`, MUST be retained for
 historical PDU verification. An event signed by `algorithm:key_id` at time `T`
 (where `T` is the event's `origin_server_ts`) is valid if and only if: (1) `T`
 falls within the key's validity window (i.e., `T` is less than the key's
-`expired_ts` if present, and `T` is less than the `valid_until_ts` asserted when
-the key was active), and (2) the event signature cryptographically validates.
+`expired_ts` if present, and for room versions whose signature rules consult
+`valid_until_ts` it is also less than the `valid_until_ts` asserted when the
+key was active), and (2) the event signature cryptographically validates. Room
+version 5 and later, and any later room version retaining the same
+signing-validity rule, MUST apply the `valid_until_ts` check; earlier room
+versions remain compatible by relying on key retention plus cryptographic
+signature verification without introducing a new `valid_until_ts` requirement.
 The 7-day cache validity clamp restricts the window in which the key is
 authorized to sign new events, but does not invalidate historically signed
 events when verifying them years later.
@@ -555,8 +576,8 @@ to the deterministic ordering defined below — not by recency or
 least-recently-used heuristics, which would make eviction
 implementation-dependent rather than the deterministic behavior this MSC
 requires. When multiple local codepaths concurrently need key material for the
-same remote server, implementations SHOULD coalesce them into a single active
-fetch attempt for that server: at any given time, there SHOULD be at most one
+same remote server, implementations MUST coalesce them into a single active
+fetch attempt for that server: at any given time, there MUST be at most one
 in-flight outbound key-fetch HTTP transaction per remote `server_name`, and all
 concurrent waiters for that same fetch SHOULD observe the same terminal result
 (success, malformed response rejection, or transport/notary failure) rather than
@@ -666,7 +687,13 @@ by this rule may be evicted. Eviction of a _corroborated_ binding SHOULD be
 logged at warning level: reaching the ceiling deeply enough to displace
 corroborated history is itself the anomaly signal for the flood scenario in
 [Other considerations](#other-considerations), and costs nothing beyond the
-logging this MSC already requires elsewhere for collisions. Because both the
+logging this MSC already requires elsewhere for collisions. This ceiling applies
+only to the retained verification material and retirement metadata for retired
+keys. The immutable key-ID-to-key-body digest binding itself MUST remain
+preserved independently, so that if verification material for a retired key is
+later pruned, a future body reusing that evicted key ID is still checked
+against the original digest and rejected if it conflicts, rather than being
+treated as first seen again. Because both the
 corroboration tier (which may rely on local observation history) and the
 effective retirement timestamp for vanished keys are local determinations rather
 than origin-asserted values, this part of the ordering is local to each
