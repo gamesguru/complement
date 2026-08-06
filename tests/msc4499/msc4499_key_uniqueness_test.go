@@ -435,6 +435,8 @@ func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName st
 
 // looksLikeSigningKeyRemediationLog reports whether a log chunk appears to be a
 // signing-key startup-guardrail message with remediation guidance.
+// TODO: Replace this heuristic with a structured startup-failure signal or an
+// implementation-specific exact error contract once the harness exposes one.
 func looksLikeSigningKeyRemediationLog(logs string) bool {
 	logs = strings.ToLower(logs)
 	hasSigningKeyContext := strings.Contains(logs, "signing key")
@@ -2712,6 +2714,8 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 // testMSC4499KeyLocalRecoveryFromKeyLoss is a named placeholder for the still
 // missing homeserver-local key-loss injection and operator-recovery coverage.
 func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
+	// TODO: Add a homeserver-local fault-injection hook plus an operator-facing
+	// recovery path so this can become a real conformance test.
 	// Tracking reference: this needs a homeserver-local fault-injection hook for
 	// signing-key loss plus an operator-facing recovery mechanism under test.
 	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
