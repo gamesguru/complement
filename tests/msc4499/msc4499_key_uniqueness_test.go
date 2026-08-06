@@ -2649,6 +2649,21 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		})
 		serverRoom.AddEvent(currentEvent)
 
+		lostKeyFedClient := federationClientWithSigningKey(
+			deployment,
+			spec.ServerName(srv.ServerName()),
+			keyIDLost,
+			privKeyLost,
+		)
+		ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx()
+		historicalResp, historicalErr := lostKeyFedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-historical-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{historicalEvent.JSON()},
+		})
+
 		fedClient := srv.FederationClient(deployment)
 		ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCtx2()
@@ -2665,22 +2680,7 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 			}
 		}
 
-		lostKeyFedClient := federationClientWithSigningKey(
-			deployment,
-			spec.ServerName(srv.ServerName()),
-			keyIDLost,
-			privKeyLost,
-		)
-		ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancelCtx()
-		historicalResp, err := lostKeyFedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
-			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-historical-%d", time.Now().UnixNano())),
-			Origin:        spec.ServerName(srv.ServerName()),
-			Destination:   "hs1",
-			PDUs:          []json.RawMessage{historicalEvent.JSON()},
-		})
-
-		acceptedHistorical := err == nil
+		acceptedHistorical := historicalErr == nil
 		if acceptedHistorical {
 			for _, pduResp := range historicalResp.PDUs {
 				if pduResp.Error != "" {
