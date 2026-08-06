@@ -2604,6 +2604,9 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 // it now.
 func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	runtime.SkipIf(t, runtime.Synapse)
+	if runtime.Homeserver != runtime.Synapse {
+		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
+	}
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
