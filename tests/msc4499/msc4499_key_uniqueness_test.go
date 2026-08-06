@@ -392,6 +392,7 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 // verify against the mutated body, catching the violation deterministically.
 func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -706,6 +707,7 @@ func testMSC4499KeyRotation(t *testing.T) {
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -982,6 +984,7 @@ func testMSC4499KeyFetchCoalescing(t *testing.T) {
 // Test that failed key fetches are cached and subject to negative caching / backoff.
 func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1080,6 +1083,7 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1394,6 +1398,7 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // nested object rather than directly in verify_keys.
 func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2064,6 +2069,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 //  3. Assert: the entire payload is rejected — signing key should NOT be found
 func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2138,6 +2144,7 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 //  3. Query for key B → should be absent (malformed entry ignored)
 func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
