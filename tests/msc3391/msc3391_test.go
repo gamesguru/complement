@@ -1,3 +1,6 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 // This file contains tests for deleting account data as
 // defined by MSC3391, which you can read here:
 // https://github.com/matrix-org/matrix-doc/pull/3391
@@ -22,6 +25,7 @@ const testAccountDataType = "org.example.test"
 var testAccountDataContent = map[string]interface{}{"test_data": 1}
 
 func TestRemovingAccountData(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

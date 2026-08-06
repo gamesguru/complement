@@ -1,3 +1,6 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 package tests
 
 import (
@@ -34,6 +37,7 @@ const (
 // it is implemented in a homeserver.
 
 func TestDelayedEvents(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
