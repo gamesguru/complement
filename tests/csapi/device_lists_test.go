@@ -1,6 +1,7 @@
 package csapi_tests
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	"golang.org/x/crypto/curve25519"
 
 	"github.com/tidwall/gjson"
 )
@@ -29,15 +31,16 @@ func TestDeviceListUpdates(t *testing.T) {
 		t.Helper()
 		ed25519KeyID := fmt.Sprintf("ed25519:%s", user.DeviceID)
 		curve25519KeyID := fmt.Sprintf("curve25519:%s", user.DeviceID)
-		// generate key-like looking values
-		ed25519KeyBytes := make([]byte, 32)
-		_, err := prng.Read(ed25519KeyBytes)
+		pub, _, err := ed25519.GenerateKey(prng)
+		must.NotError(t, "failed to generate ed25519 key", err)
+		ed25519Key := base64.RawStdEncoding.EncodeToString(pub)
+
+		var privateKey [32]byte
+		_, err = prng.Read(privateKey[:])
 		must.NotError(t, "failed to read from prng", err)
-		ed25519Key := base64.RawStdEncoding.EncodeToString(ed25519KeyBytes)
-		curve25519KeyBytes := make([]byte, 32)
-		_, err = prng.Read(curve25519KeyBytes)
-		must.NotError(t, "failed to read from prng", err)
-		curve25519Key := base64.RawStdEncoding.EncodeToString(curve25519KeyBytes)
+		var publicKey [32]byte
+		curve25519.ScalarBaseMult(&publicKey, &privateKey)
+		curve25519Key := base64.RawStdEncoding.EncodeToString(publicKey[:])
 
 		user.MustDo(t, "POST", []string{"_matrix", "client", "v3", "keys", "upload"},
 			client.WithJSONBody(t, map[string]interface{}{
