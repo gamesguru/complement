@@ -2759,6 +2759,41 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 		_, since := alice.MustSync(t, client.SyncReq{})
 
+		// hs1 is expected to reject historicalEvent's own delivery (it's
+		// signed by a key the origin never published) and fall back to
+		// /state_ids when resolving currentEvent's prev_event (historicalEvent
+		// itself, which hs1 never accepted into its DAG). Without this
+		// handler, that fallback 404s and currentEvent -- which is signed by
+		// a perfectly valid, current key and has nothing to do with the lost
+		// key -- can never be resolved either, independent of anything under
+		// test here. The room's state never changes across this test, so a
+		// static snapshot of current state/auth-chain answers any event_id.
+		srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+			state := serverRoom.AllCurrentState()
+			authChain := serverRoom.AuthChainForEvents(state)
+
+			var pduIDs, authChainIDs []string
+			for _, ev := range state {
+				pduIDs = append(pduIDs, ev.EventID())
+			}
+			for _, ev := range authChain {
+				authChainIDs = append(authChainIDs, ev.EventID())
+			}
+
+			res := struct {
+				AuthChainIDs []string `json:"auth_chain_ids"`
+				PDUIDs       []string `json:"pdu_ids"`
+			}{
+				AuthChainIDs: authChainIDs,
+				PDUIDs:       pduIDs,
+			}
+			responseBytes, err := json.Marshal(&res)
+			must.NotError(t, "failed to marshal /state_ids response", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write(responseBytes)
+		}).Methods("GET")
+
 		historicalEvent := buildEventWithSigningKey(
 			t,
 			serverRoom,
