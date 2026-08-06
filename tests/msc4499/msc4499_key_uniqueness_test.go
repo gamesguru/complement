@@ -404,6 +404,16 @@ func logTail(fullLogs, priorLogs string) string {
 	return fullLogs
 }
 
+func looksLikeSigningKeyRemediationLog(logs string) bool {
+	logs = strings.ToLower(logs)
+	hasSigningKeyContext := strings.Contains(logs, "signing key")
+	hasRemediationHint := strings.Contains(logs, "restore") ||
+		strings.Contains(logs, "original key") ||
+		strings.Contains(logs, "new key id") ||
+		strings.Contains(logs, "key id")
+	return hasSigningKeyContext && hasRemediationHint
+}
+
 // TestMSC4499Key exercises MSC4499 server key uniqueness and verification
 // behaviour across many scenarios: first-seen-wins conflict resolution, key
 // rotation, rejection of duplicate/malformed payloads, caching/backoff, and
@@ -429,6 +439,7 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTsSanityCheck)
 	t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 	t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
+	t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
 }
 
 // testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
@@ -2417,16 +2428,13 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 		// that configured key body against independently persisted prior local
 		// state on the next startup. If Synapse ever changes that storage model,
 		// this test becomes an implementation probe rather than a clean proof of
-		// the MSC predicate.
+		// the MSC predicate. The assertion here is that the homeserver MUST NOT
+		// come up cleanly with the mutated key, whether that manifests as an API-
+		// level start failure or a start-then-exit guardrail.
 		time.Sleep(500 * time.Millisecond)
 		inspect, inspectErr := dockerDeployment.Deployer.Docker.ContainerInspect(context.Background(), hsDep.ContainerID)
-		logs := strings.ToLower(logTail(readContainerLogs(t, deployment, "hs1"), priorLogs))
-		hasSigningKeyContext := strings.Contains(logs, "signing key")
-		hasRemediationHint := strings.Contains(logs, "restore") ||
-			strings.Contains(logs, "original key") ||
-			strings.Contains(logs, "new key id") ||
-			strings.Contains(logs, "key id")
-		guardrailLogs := hasSigningKeyContext && hasRemediationHint
+		logs := logTail(readContainerLogs(t, deployment, "hs1"), priorLogs)
+		guardrailLogs := looksLikeSigningKeyRemediationLog(logs)
 
 		crashedAfterStart := inspectErr == nil && inspect.State != nil && !inspect.State.Running
 		if crashedAfterStart && guardrailLogs {
@@ -2445,13 +2453,8 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 		t.Fatalf("hs1 started successfully after its signing key body changed under the same key ID; startup guardrails did not refuse startup")
 	}
 
-	logs := strings.ToLower(logTail(readContainerLogs(t, deployment, "hs1"), priorLogs))
-	hasSigningKeyContext := strings.Contains(logs, "signing key")
-	hasRemediationHint := strings.Contains(logs, "restore") ||
-		strings.Contains(logs, "original key") ||
-		strings.Contains(logs, "new key id") ||
-		strings.Contains(logs, "key id")
-	if !hasSigningKeyContext || !hasRemediationHint {
+	logs := logTail(readContainerLogs(t, deployment, "hs1"), priorLogs)
+	if !looksLikeSigningKeyRemediationLog(logs) {
 		writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
 		if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
 			t.Fatalf("failed to restore hs1 after startup-guardrail log assertion: %v", err)
@@ -2621,4 +2624,8 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	t.Run("FullyLostKeyRemainsUnverifiableToColdPeers", func(t *testing.T) {
 		runCase(t, false)
 	})
+}
+
+func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
+	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
 }
