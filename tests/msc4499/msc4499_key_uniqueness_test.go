@@ -2604,9 +2604,6 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 // it now.
 func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 	runtime.SkipIf(t, runtime.Synapse)
-	if runtime.Homeserver != runtime.Synapse {
-		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
-	}
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -2709,6 +2706,14 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		srv := federation.NewServer(t, deployment,
 			federation.HandleMakeSendJoinRequests(),
 			federation.HandleTransactionRequests(nil, nil),
+			// historicalEvent's own delivery is correctly rejected (it's signed
+			// by a key the origin never published), but it's still added to
+			// serverRoom's local timeline below. currentEvent's prev_events
+			// then points at it, so hs1 needs to be able to fetch it back via
+			// GET /event/{id} while resolving currentEvent -- without this
+			// handler that fetch 404s and currentEvent can never be resolved,
+			// independent of anything under test here.
+			federation.HandleEventRequests(),
 		)
 		srv.KeyID = keyIDCurrent
 		srv.Priv = privKeyCurrent
