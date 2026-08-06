@@ -54,7 +54,7 @@ func TestTyping(t *testing.T) {
 				}
 
 				// Exit the /sync loop.
-				return true;
+				return true
 			}),
 		)
 	})
