@@ -28,8 +28,6 @@ verification behavior.
 
 ## Proposal
 
-<!-- TODO: indicate Synapse-derived subset of spec via comment fences. -->
-
 ### Relationship to existing specification
 
 This MSC strengthens and supersedes the existing key caching and verification
@@ -46,8 +44,6 @@ Servers MUST cache federated server signing keys procured from
 `/_matrix/key/v2/server` responses and `/_matrix/key/v2/query` notary responses.
 The following requirements apply to all signing algorithm types (`ed25519`, and
 any potential future signing algorithms defined by later proposals).
-
-<!-- Read marker. -->
 
 **Cache refresh lifetime.** Servers MUST cache key responses and SHOULD
 proactively refresh cached keys before their clamped `valid_until_ts` expiry
