@@ -269,7 +269,11 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 			{
 				Name: "hs1",
 				Env: map[string]string{
-					"CONDUWUIT_TRUSTED_SERVERS": "hs2",
+					// figment's Env provider only recognizes bracket-delimited
+					// array syntax (`VAR=[a, b]`); a bare "hs2" deserializes as
+					// a plain string and fails config validation for this
+					// Vec<OwnedServerName>-typed field, crashing hs1 on boot.
+					"CONDUWUIT_TRUSTED_SERVERS": "[\"hs2\"]",
 				},
 			},
 			{
