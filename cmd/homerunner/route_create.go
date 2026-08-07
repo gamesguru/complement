@@ -10,12 +10,14 @@ import (
 	"github.com/matrix-org/util"
 )
 
+// ReqCreate is the request body accepted by the create endpoint.
 type ReqCreate struct {
 	BaseImageURI  string       `json:"base_image_uri"`
 	BlueprintName string       `json:"blueprint_name"`
 	Blueprint     *b.Blueprint `json:"blueprint"`
 }
 
+// ResCreate is the response body returned by the create endpoint.
 type ResCreate struct {
 	Homeservers map[string]*docker.HomeserverDeployment `json:"homeservers"`
 	Expires     time.Time                               `json:"expires"`

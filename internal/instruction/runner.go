@@ -21,7 +21,7 @@ import (
 	"github.com/matrix-org/complement/internal"
 )
 
-// An instruction for the runner to run.
+// Instr describes one HTTP instruction executed by the runner.
 type Instr struct {
 	UserID  string
 	Method  string
@@ -31,23 +31,27 @@ type Instr struct {
 	Store   map[string]string
 }
 
+// ConcurrencyType controls how the runner schedules requests.
 type ConcurrencyType int
 
+// Runner concurrency modes.
 const (
-	// No concurrency: instructions execute in serial.
+	// ConcurrencyTypeNone runs all instructions serially.
 	ConcurrencyTypeNone ConcurrencyType = iota
-	// Per-user concurrency: User requests execute in serial but multiple users can have concurrent requests.
+	// ConcurrencyTypePerUser runs each user's instructions serially, but allows users to overlap.
 	ConcurrencyTypePerUser
-	// All concurrency: All requests are executed at the same time.
+	// ConcurrencyTypeAll runs all instructions at once.
 	ConcurrencyTypeAll
 )
 
+// RunOpts configures a runner invocation.
 type RunOpts struct {
 	Concurrency    ConcurrencyType
 	HSURL          string
 	StoreNamespace string
 }
 
+// Runner executes scripted HTTP instructions against a homeserver.
 type Runner struct {
 	blueprintName string
 	lookup        *sync.Map // string -> string
@@ -64,6 +68,7 @@ type Runner struct {
 	terminate atomic.Value
 }
 
+// NewRunner constructs a runner for the given blueprint name.
 func NewRunner(blueprintName string, bestEffort, debugLogging bool) *Runner {
 	var v atomic.Value
 	v.Store(false)

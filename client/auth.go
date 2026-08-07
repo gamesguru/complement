@@ -10,12 +10,13 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const (
-	SharedSecret = "complement"
-)
+// SharedSecret is the default shared secret used by the test helpers.
+const SharedSecret = "complement"
 
+// LoginOpt customizes a login request body.
 type LoginOpt func(map[string]interface{})
 
+// WithDeviceID sets the device ID used when logging in.
 func WithDeviceID(deviceID string) LoginOpt {
 	return func(loginBody map[string]interface{}) {
 		loginBody["device_id"] = deviceID

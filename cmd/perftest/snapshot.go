@@ -9,6 +9,7 @@ import (
 	"github.com/matrix-org/complement/internal/docker"
 )
 
+// Snapshot describes a single sampled metric point.
 type Snapshot struct {
 	Name             string
 	Description      string

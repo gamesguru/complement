@@ -17,6 +17,7 @@ import (
 	"time"
 )
 
+// HostMount describes a host path mounted into each homeserver container.
 type HostMount struct {
 	HostPath      string
 	ContainerPath string
@@ -146,6 +147,7 @@ type Complement struct {
 
 var hsRegex = regexp.MustCompile(`COMPLEMENT_BASE_IMAGE_(.+)=(.+)$`)
 
+// NewConfigFromEnvVars builds a Complement config from environment variables.
 func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg := &Complement{BaseImageURIs: map[string]string{}}
 	cfg.BaseImageURI = os.Getenv("COMPLEMENT_BASE_IMAGE")
@@ -215,6 +217,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	return cfg
 }
 
+// GenerateCA creates a fresh CA certificate and private key for this run.
 func (c *Complement) GenerateCA() error {
 	cert, key, err := generateCAValues()
 	if err != nil {
@@ -225,12 +228,14 @@ func (c *Complement) GenerateCA() error {
 	return nil
 }
 
+// CACertificateBytes returns the PEM-encoded CA certificate.
 func (c *Complement) CACertificateBytes() ([]byte, error) {
 	cert := bytes.NewBuffer(nil)
 	err := pem.Encode(cert, &pem.Block{Type: "CERTIFICATE", Bytes: c.CACertificate.Raw})
 	return cert.Bytes(), err
 }
 
+// CAPrivateKeyBytes returns the PEM-encoded CA private key.
 func (c *Complement) CAPrivateKeyBytes() ([]byte, error) {
 	caKey := bytes.NewBuffer(nil)
 	err := pem.Encode(caKey, &pem.Block{

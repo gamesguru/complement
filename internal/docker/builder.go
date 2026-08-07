@@ -34,11 +34,13 @@ import (
 
 const complementLabel = "complement_context"
 
+// Builder creates and cleans up Complement Docker artifacts.
 type Builder struct {
 	Config *config.Complement
 	Docker *client.Client
 }
 
+// NewBuilder constructs a Docker-backed blueprint builder.
 func NewBuilder(cfg *config.Complement) (*Builder, error) {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
@@ -60,6 +62,7 @@ func (d *Builder) log(str string, args ...interface{}) {
 	log.Printf(str, args...)
 }
 
+// Cleanup removes containers, images, and networks created by Complement.
 func (d *Builder) Cleanup() {
 	err := d.removeContainers()
 	if err != nil {
@@ -167,6 +170,7 @@ func (d *Builder) removeContainers() error {
 	return nil
 }
 
+// ConstructBlueprintIfNotExist builds the blueprint if its images are not already cached.
 func (d *Builder) ConstructBlueprintIfNotExist(bprint b.Blueprint) error {
 	images, err := d.Docker.ImageList(context.Background(), image.ListOptions{
 		Filters: label(
@@ -186,6 +190,7 @@ func (d *Builder) ConstructBlueprintIfNotExist(bprint b.Blueprint) error {
 	return nil
 }
 
+// ConstructBlueprint builds the provided blueprint into Docker images.
 func (d *Builder) ConstructBlueprint(bprint b.Blueprint) error {
 	errs := d.construct(bprint)
 	if len(errs) > 0 {

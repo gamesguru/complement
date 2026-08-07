@@ -17,7 +17,7 @@ import (
 // allowed_room_ids for rooms with restricted join rules, and omits the field
 // for rooms that do not use restricted join rules.
 func TestRoomSummaryAllowedRoomIDs(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Dendrite) // Dendrite does not support GET /_matrix/client/v1/room_summary/... (MSC3266)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
