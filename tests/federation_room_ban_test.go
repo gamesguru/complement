@@ -37,6 +37,7 @@ func TestUnbanViaInvite(t *testing.T) {
 		"user_id": alice.UserID,
 	}))
 	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(alice.UserID, roomID))
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(alice.UserID, roomID))
 
 	// Re-invite Alice
 	bob.MustInviteRoom(t, roomID, alice.UserID)
