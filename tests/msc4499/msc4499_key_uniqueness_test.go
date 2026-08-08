@@ -2093,10 +2093,15 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	// what should corroborate the binding for later retention decisions --
 	// hs2 isn't involved in this test despite the shared trusted-notary
 	// deployment; only hs1's own direct-fetch retirement/eviction logic is
-	// under test here.
+	// under test here. The same response also seeds one uncorroborated retired
+	// filler key so phase 2 can deterministically push the cumulative retained
+	// retired set to 3,001 using served data alone.
 	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate corroborated key A", err)
 	keyIDA := gomatrixserverlib.KeyID("ed25519:msc4499_corroborated_a")
+	oldestFillerPub, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate oldest filler key", err)
+	oldestFillerKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_oldest_uncorroborated")
 
 	mockKeyServer := &MockKeyServer{
 		serverName: originName,
@@ -2106,7 +2111,14 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 			keyIDA: pubKeyA,
 		},
-		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			oldestFillerKeyID: {
+				VerifyKey: gomatrixserverlib.VerifyKey{
+					Key: spec.Base64Bytes(oldestFillerPub),
+				},
+				ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
+			},
+		},
 		validUntil:    time.Now().Add(2 * time.Second),
 	}
 
@@ -2119,18 +2131,15 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 
 	time.Sleep(3 * time.Second)
 
-	// Phase 2: Rotate the origin to a new active key and flood old_verify_keys
-	// with 3,000 uncorroborated retired bindings -- exactly at, not over, the
-	// per-response ceiling (a bigger single response would be rejected
-	// outright as malformed; see StorageQuotaResilience). Key A is
-	// deliberately NOT included as an explicit old_verify_keys entry here:
-	// dropping it from verify_keys is enough on its own for hs1 to retire it
-	// locally (real origins aren't expected to keep re-publishing their full
-	// retired-key history in every response either -- receiving servers
-	// accumulate that themselves). That local retirement is what pushes the
-	// cumulative retained set to 3,001 -- one over the ceiling -- and key A
-	// should survive that eviction pass because hs1 already saw it active
-	// before this retirement happened.
+	// Phase 2: Rotate the origin to a new active key and publish a full
+	// 3,000-entry old_verify_keys payload: corroborated retired key A plus
+	// 2,999 new uncorroborated retired fillers. Combined with the single
+	// filler learned in phase 1, that deterministically brings the cumulative
+	// retained retired set to 3,001 -- one over the ceiling -- without
+	// depending on the implementation to locally materialize any extra retired
+	// entry that is absent from the served response. Key A should survive that
+	// eviction pass because hs1 already saw it active before this retirement
+	// happened, while the oldest uncorroborated filler should be evicted.
 	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate active key B", err)
 	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_active_b")
@@ -2139,8 +2148,14 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 		keyIDB: pubKeyB,
 	}
 	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3000)
+	oldVerifyKeys[keyIDA] = gomatrixserverlib.OldVerifyKey{
+		VerifyKey: gomatrixserverlib.VerifyKey{
+			Key: spec.Base64Bytes(pubKeyA),
+		},
+		ExpiredTS: spec.AsTimestamp(time.Now().Add(-2 * time.Hour)),
+	}
 
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < 2999; i++ {
 		pub, _, err := ed25519.GenerateKey(rand.Reader)
 		must.NotError(t, fmt.Sprintf("failed to generate uncorroborated key %d", i), err)
 		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_uncorroborated_%04d", i))
@@ -2166,6 +2181,18 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyIDA), minValidUntil)
 	must.Equal(t, foundKey, pubKeyABase64,
 		"Expected corroborated retired key A to survive the ceiling ahead of uncorroborated retired keys")
+
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestFillerKeyID), 0)
+	must.Equal(t, foundKey, "",
+		fmt.Sprintf("Expected oldest uncorroborated filler key %s to be evicted once the retained set reached 3001 entries", oldestFillerKeyID))
+
+	// Sanity-check that a newer uncorroborated filler from the 3,000-entry
+	// phase-2 response was retained, so the empty result above is specifically
+	// evidence of quota eviction rather than a failed fetch.
+	newerFillerKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_uncorroborated_0000")
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(newerFillerKeyID), 0)
+	must.Equal(t, foundKey, base64.RawStdEncoding.EncodeToString(oldVerifyKeys[newerFillerKeyID].Key),
+		fmt.Sprintf("Expected newer uncorroborated filler key %s to remain after the oldest filler was evicted", newerFillerKeyID))
 
 	mockKeyServer.mu.Lock()
 	reqCount := mockKeyServer.requestCount
