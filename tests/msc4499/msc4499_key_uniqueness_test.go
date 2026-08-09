@@ -544,12 +544,6 @@ func federationClientWithSigningKey(
 // rotation, rejection of duplicate/malformed payloads, caching/backoff, and
 // storage limits.
 func TestMSC4499Key(t *testing.T) {
-	t.Skip("Ignoring for now")
-	// Restart-persistence coverage is intentionally kept out of this skipped
-	// umbrella for now; see TestMSC4499KeyPersistentFirstSeenWinsAcrossRestart
-	// below. If this suite is ever unskipped, either move that coverage back in
-	// here and delete the standalone wrapper, or keep it standalone, but do not
-	// run both.
 	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
 	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
 	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
