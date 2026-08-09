@@ -222,6 +222,51 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 	return foundKey
 }
 
+// queryNotaryStatusAndKey queries the notary and returns the raw HTTP status
+// code alongside the found key (if any), without fatally asserting on the
+// status code itself. This lets callers that expect a locally-persisted
+// answer (i.e. no origin fetch should be needed) produce a targeted failure
+// message when the notary instead returns a non-200 status, rather than
+// failing on the generic "notary query status code mismatch" assertion
+// shared by queryNotary/queryNotaryRaw.
+func queryNotaryStatusAndKey(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64) (int, string) {
+	t.Helper()
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			serverName: map[string]interface{}{
+				keyID: map[string]interface{}{
+					"minimum_valid_until_ts": minValidTS,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := clientObj.Post(hsURL+"/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary query response", err)
+
+	if resp.StatusCode != 200 {
+		return resp.StatusCode, ""
+	}
+
+	result := gjson.ParseBytes(respBytes)
+	var foundKey string
+	for _, sk := range result.Get("server_keys").Array() {
+		if sk.Get("server_name").Str == serverName {
+			foundKey = sk.Get("verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			if foundKey == "" {
+				foundKey = sk.Get("old_verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			}
+		}
+	}
+	return resp.StatusCode, foundKey
+}
+
 // queryNotaryRawEntry queries the notary and returns the raw JSON bytes of the
 // server_keys entry for the given server_name, or nil if the server was
 // omitted from the response entirely. Unlike queryNotaryRaw, this preserves
@@ -726,7 +771,13 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	mockKeyServer.shouldFail = true
 	mockKeyServer.mu.Unlock()
 
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+	status, foundKey := queryNotaryStatusAndKey(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
+	if status != 200 {
+		t.Fatalf("hs1 did not serve the persisted binding after restart — notary returned status %d instead of falling back to local state while the origin was unreachable", status)
+	}
+	if foundKey != pubKeyABase64 {
+		t.Fatalf("hs1 did not serve the persisted binding after restart — expected key %s, got %s", pubKeyABase64, foundKey)
+	}
 
 	mockKeyServer.mu.Lock()
 	postRestartReqCount := mockKeyServer.requestCount
@@ -753,7 +804,7 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	// the entry because A no longer satisfies the freshness bound. What MUST NOT
 	// happen is learning or serving colliding key B after restart.
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
-	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 	if foundKey == pubKeyBBase64 {
 		t.Fatalf("hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
 	}
