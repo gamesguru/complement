@@ -602,11 +602,10 @@ func TestMSC4499Key(t *testing.T) {
 	t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
 }
 
-// Kept as a standalone top-level test while the broader MSC4499 suite remains
-// globally skipped. This isolates the restart-persistence coverage without
-// implicitly turning on every other in-progress MSC4499 subtest. If
-// TestMSC4499Key is later unskipped, remove this wrapper or keep the restart
-// case out of the umbrella suite so the coverage does not run twice.
+// Kept as a standalone top-level test, not a TestMSC4499Key subtest: downstream
+// CI (e.g. continuwuity's) tracks/filters this coverage by its flat top-level
+// name, so nesting it would silently break anything keyed on that name even
+// though the test itself would still run.
 func TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t)
 }
