@@ -607,7 +607,7 @@ func TestMSC4499Key(t *testing.T) {
 // implicitly turning on every other in-progress MSC4499 subtest. If
 // TestMSC4499Key is later unskipped, remove this wrapper or keep the restart
 // case out of the umbrella suite so the coverage does not run twice.
-func TestMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
+func TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t)
 }
 
