@@ -500,6 +500,11 @@ func federationClientWithSigningKey(
 // storage limits.
 func TestMSC4499Key(t *testing.T) {
 	t.Skip("Ignoring for now")
+	// Restart-persistence coverage is intentionally kept out of this skipped
+	// umbrella for now; see TestMSC4499KeyPersistentFirstSeenWinsAcrossRestart
+	// below. If this suite is ever unskipped, either move that coverage back in
+	// here and delete the standalone wrapper, or keep it standalone, but do not
+	// run both.
 	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
 	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
 	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
@@ -569,8 +574,10 @@ func TestMSC4499Key(t *testing.T) {
 }
 
 // Kept as a standalone top-level test while the broader MSC4499 suite remains
-// globally skipped. This isolates the new restart-persistence coverage without
-// implicitly turning on every other in-progress MSC4499 subtest.
+// globally skipped. This isolates the restart-persistence coverage without
+// implicitly turning on every other in-progress MSC4499 subtest. If
+// TestMSC4499Key is later unskipped, remove this wrapper or keep the restart
+// case out of the umbrella suite so the coverage does not run twice.
 func TestMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t)
 }
