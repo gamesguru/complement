@@ -499,8 +499,8 @@ func federationClientWithSigningKey(
 // rotation, rejection of duplicate/malformed payloads, caching/backoff, and
 // storage limits.
 func TestMSC4499Key(t *testing.T) {
-	t.Skip("Ignoring for now")
 	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
+	t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
 	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
 	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
 	t.Run("Rotation", testMSC4499KeyRotation)
@@ -644,6 +644,98 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
 	// (i.e., the cache was not poisoned by the colliding key B).
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
+}
+
+// Test that a permanent key-ID binding learned via direct fetch survives a
+// homeserver restart.
+//
+// Per MSC4499 cache persistence, permanent bindings MUST be persisted durably
+// enough that a restart does not allow the same `(server_name, algorithm,
+// key_id)` to be rebound to a different key body.
+func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	// This builds directly on the direct-fetch collision behavior above. A
+	// homeserver that already fails First Seen Wins on re-fetch cannot tell us
+	// anything meaningful about whether that binding also survives restart.
+	runtime.SkipIf(t, runtime.Synapse)
+
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_restart_persistence")
+
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+
+	// Phase 1: learn permanent binding A via direct fetch.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+
+	// Restart hs1 before introducing the collision. A compliant implementation
+	// must retain the immutable key-ID binding across this restart.
+	err = deployment.Restart(t)
+	must.NotError(t, "failed to restart homeserver deployment", err)
+
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.requestCount = 0
+	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch after restart. Two compliant outcomes are allowed for the
+	// minimum_valid_until_ts query itself: hs1 may either keep serving A or omit
+	// the entry because A no longer satisfies the freshness bound. What MUST NOT
+	// happen is learning or serving colliding key B after restart.
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+	if foundKey == pubKeyBBase64 {
+		t.Fatalf("hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
+	}
+
+	mockKeyServer.mu.Lock()
+	reqCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if reqCount == 0 {
+		t.Fatalf("Mock key server was not re-fetched after restart — persistence path was not exercised")
+	}
+
+	// Follow up with an unconstrained lookup to prove the restart did not poison
+	// or forget the first-seen binding.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 }
 
 // Test that a notary faced with a colliding key response does not locally
