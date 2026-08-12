@@ -474,7 +474,7 @@ func TestMSC4186SlidingSync(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	t.Run("Lists", testMSC4186SlidingSyncLists)
 	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
-	t.Run("SubscriptionsIgnoredAfterLeave", testMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave)
+	t.Run("SubscriptionsKeepLeftRooms", testMSC4186SlidingSyncSubscriptionsKeepLeftRooms)
 	t.Run("ListDeltas", testMSC4186SlidingSyncListDeltas)
 	t.Run("ExpandedTimeline", testMSC4186SlidingSyncExpandedTimeline)
 	t.Run("BulkLoad", testMSC4186SlidingSyncBulkLoad)
@@ -594,9 +594,9 @@ func testMSC4186SlidingSyncSubscriptions(t *testing.T) {
 	requireRoom(t, res, newRoom)
 }
 
-// TestMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave verifies that stale room
-// subscriptions are ignored once the user is no longer joined, invited, or knocking.
-func testMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave(t *testing.T) {
+// TestMSC4186SlidingSyncSubscriptionsKeepLeftRooms verifies that a left room can
+// still be returned via room subscriptions.
+func testMSC4186SlidingSyncSubscriptionsKeepLeftRooms(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -628,7 +628,8 @@ func testMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave(t *testing.T) {
 		},
 	})
 
-	requireNoRoom(t, res, roomID)
+	room := requireRoom(t, res, roomID)
+	requireRoomMembership(t, bob, room, "leave")
 }
 
 // TestMSC4186SlidingSyncListDeltas verifies list membership deltas for subscribed rooms.
