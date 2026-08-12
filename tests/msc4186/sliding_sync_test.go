@@ -474,6 +474,7 @@ func TestMSC4186SlidingSync(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	t.Run("Lists", testMSC4186SlidingSyncLists)
 	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
+	t.Run("SubscriptionsIgnoredAfterLeave", testMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave)
 	t.Run("ListDeltas", testMSC4186SlidingSyncListDeltas)
 	t.Run("ExpandedTimeline", testMSC4186SlidingSyncExpandedTimeline)
 	t.Run("BulkLoad", testMSC4186SlidingSyncBulkLoad)
@@ -591,6 +592,43 @@ func testMSC4186SlidingSyncSubscriptions(t *testing.T) {
 	)
 	requireRoom(t, res, oldRoom)
 	requireRoom(t, res, newRoom)
+}
+
+// TestMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave verifies that stale room
+// subscriptions are ignored once the user is no longer joined, invited, or knocking.
+func testMSC4186SlidingSyncSubscriptionsIgnoredAfterLeave(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+	})
+	bob.MustJoinRoom(t, roomID, nil)
+	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+
+	mustDoSlidingSync(t, bob, slidingSyncReq{
+		ConnID: "stale-subscription-prime",
+		Lists:  allRoomsList(1, 0, 0),
+		RoomSubscriptions: map[string]interface{}{
+			roomID: slidingSubscription(1),
+		},
+	})
+
+	bob.MustLeaveRoom(t, roomID)
+	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
+
+	_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
+		ConnID: "stale-subscription-after-leave",
+		Lists:  allRoomsList(1, 0, 0),
+		RoomSubscriptions: map[string]interface{}{
+			roomID: slidingSubscription(1),
+		},
+	})
+
+	requireNoRoom(t, res, roomID)
 }
 
 // TestMSC4186SlidingSyncListDeltas verifies list membership deltas for subscribed rooms.
