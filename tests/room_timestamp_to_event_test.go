@@ -301,6 +301,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 					}),
 				)
 				contextResResBody := client.ParseJSON(t, contextRes)
+				t.Logf("context response room=%s event=%s status=%d body=%s", roomID, eventB.EventID, contextRes.StatusCode, string(contextResResBody))
 				// Remember: Tokens are positions between events. Normally, you would use the
 				// `start` token to paginate backwards with but for the sake of the test we want
 				// to paginate `/messages` and want see both A and B in the response; so we use
@@ -312,6 +313,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 				//
 				// "end" is the token that represents the position just *after* eventB
 				paginationToken := client.GetJSONFieldStr(t, contextResResBody, "end")
+				t.Logf("pagination token room=%s event=%s token=%s", roomID, eventB.EventID, paginationToken)
 
 				// Paginate backwards seamlessly from the `/context` request (end, point after
 				// eventB)
@@ -323,6 +325,13 @@ func TestJumpToDateEndpoint(t *testing.T) {
 						"from":  []string{paginationToken},
 					}),
 				)
+				messagesResBody := client.ParseJSON(t, messagesRes)
+				chunk := gjson.GetBytes(messagesResBody, "chunk").Array()
+				chunkIDs := make([]string, 0, len(chunk))
+				for _, ev := range chunk {
+					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+				}
+				t.Logf("messages response room=%s from=%s status=%d chunk_ids=%v", roomID, paginationToken, messagesRes.StatusCode, chunkIDs)
 
 				// Make sure both messages are visible
 				must.MatchResponse(t, messagesRes, match.HTTPResponse{
@@ -424,6 +433,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 
 	givenTimestamp := makeTimestampFromTime(givenTime)
 	timestampString := strconv.FormatInt(givenTimestamp, 10)
+	t.Logf("timestamp_to_event request room=%s ts=%s dir=%s expected=%s", roomID, timestampString, direction, expectedEventId)
 	timestampToEventRes := c.Do(t, "GET", []string{"_matrix", "client", "v1", "rooms", roomID, "timestamp_to_event"}, client.WithContentType("application/json"), client.WithQueries(url.Values{
 		"ts":  []string{timestampString},
 		"dir": []string{direction},
@@ -439,6 +449,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 	} else if timestampToEventRes.StatusCode != 404 || (timestampToEventRes.StatusCode == 404 && expectedEventId != "") {
 		t.Fatalf("mustCheckEventisReturnedForTime: /timestamp_to_event request failed with status=%d body=%s", timestampToEventRes.StatusCode, string(timestampToEventResBody))
 	}
+	t.Logf("timestamp_to_event response room=%s ts=%s dir=%s status=%d actual=%s", roomID, timestampString, direction, timestampToEventRes.StatusCode, actualEventId)
 
 	if actualEventId != expectedEventId {
 		debugMessageList := getDebugMessageListFromMessagesResponse(t, c, roomID, expectedEventId, actualEventId, givenTimestamp)
@@ -470,9 +481,15 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 	if !keyRes.IsArray() {
 		t.Fatalf("key '%s' is not an array (was %s)", wantKey, keyRes.Type)
 	}
+	chunk := keyRes.Array()
+	chunkIDs := make([]string, 0, len(chunk))
+	for _, ev := range chunk {
+		chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+	}
+	t.Logf("debug /messages room=%s status=%d chunk_len=%d event_ids=%v expected=%s actual=%s ts=%d", roomID, messagesRes.StatusCode, len(chunkIDs), chunkIDs, expectedEventId, actualEventId, givenTimestamp)
 
 	// Make the events go from oldest-in-time -> newest-in-time
-	events := keyRes.Array()
+	events := chunk
 	slices.Reverse(events)
 	if len(events) == 0 {
 		t.Fatalf(
