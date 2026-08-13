@@ -325,22 +325,20 @@ func TestJumpToDateEndpoint(t *testing.T) {
 						"from":  []string{paginationToken},
 					}),
 				)
-				messagesResBody := client.ParseJSON(t, messagesRes)
-				chunk := gjson.GetBytes(messagesResBody, "chunk").Array()
-				chunkIDs := make([]string, 0, len(chunk))
-				for _, ev := range chunk {
-					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
-				}
-				t.Logf("messages response room=%s from=%s status=%d chunk_ids=%v", roomID, paginationToken, messagesRes.StatusCode, chunkIDs)
-
 				// Make sure both messages are visible
-				must.MatchResponse(t, messagesRes, match.HTTPResponse{
+				messagesResBody := must.MatchResponse(t, messagesRes, match.HTTPResponse{
 					JSON: []match.JSON{
 						match.JSONCheckOff("chunk", []interface{}{eventA.EventID, eventB.EventID}, match.CheckOffMapper(func(r gjson.Result) interface{} {
 							return r.Get("event_id").Str
 						}), match.CheckOffAllowUnwanted()),
 					},
 				})
+				chunk := gjson.GetBytes(messagesResBody, "chunk").Array()
+				chunkIDs := make([]string, 0, len(chunk))
+				for _, ev := range chunk {
+					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+				}
+				t.Logf("messages response room=%s from=%s status=%d chunk_ids=%v", roomID, paginationToken, messagesRes.StatusCode, chunkIDs)
 			})
 		})
 	})
