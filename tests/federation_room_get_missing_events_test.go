@@ -657,6 +657,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
+		federation.HandleEventAuthRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 		federation.HandleInviteRequests(nil),
 	)
@@ -721,6 +722,9 @@ func TestCorruptedAuthChain(t *testing.T) {
 		PrevEvents: []string{eventA.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
 	})
+	srvRoom.TimelineMutex.Lock()
+	srvRoom.Timeline = append(srvRoom.Timeline, eventB)
+	srvRoom.TimelineMutex.Unlock()
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
