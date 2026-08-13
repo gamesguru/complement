@@ -649,8 +649,7 @@ func TestOutboundFederationEventSizeGetMissingEvents(t *testing.T) {
 // crucially D and E ARE PERSISTED because C exists in-memory.
 // This breaks the auth chain for the room, which matters when doing state resolution.
 func TestCorruptedAuthChain(t *testing.T) {
-	// Dendrite doesn't make exactly the same requests as it seems to fallback to /event_auth.
-	// As this is intended for a synapse bugfix, we'll skip dendrite for now.
+	// This test should exercise the /state_ids path, not the /event_auth fallback.
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -658,7 +657,6 @@ func TestCorruptedAuthChain(t *testing.T) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
-		federation.HandleEventAuthRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 		federation.HandleInviteRequests(nil),
 	)
@@ -956,7 +954,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
-		federation.HandleEventAuthRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 		federation.HandleInviteRequests(nil),
 	)
