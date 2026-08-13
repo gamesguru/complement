@@ -301,7 +301,6 @@ func TestJumpToDateEndpoint(t *testing.T) {
 					}),
 				)
 				contextResResBody := client.ParseJSON(t, contextRes)
-				t.Logf("context response room=%s event=%s status=%d body=%s", roomID, eventB.EventID, contextRes.StatusCode, string(contextResResBody))
 				// Remember: Tokens are positions between events. Normally, you would use the
 				// `start` token to paginate backwards with but for the sake of the test we want
 				// to paginate `/messages` and want see both A and B in the response; so we use
@@ -313,7 +312,6 @@ func TestJumpToDateEndpoint(t *testing.T) {
 				//
 				// "end" is the token that represents the position just *after* eventB
 				paginationToken := client.GetJSONFieldStr(t, contextResResBody, "end")
-				t.Logf("pagination token room=%s event=%s token=%s", roomID, eventB.EventID, paginationToken)
 
 				// Paginate backwards seamlessly from the `/context` request (end, point after
 				// eventB)
@@ -338,7 +336,6 @@ func TestJumpToDateEndpoint(t *testing.T) {
 				for _, ev := range chunk {
 					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
 				}
-				t.Logf("messages response room=%s from=%s status=%d chunk_ids=%v", roomID, paginationToken, messagesRes.StatusCode, chunkIDs)
 			})
 		})
 	})
