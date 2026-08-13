@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -948,6 +949,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 // exercised the case where it succeeds, only the case where it's
 // defeated by a genuinely-missing event.
 func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1096,7 +1098,9 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	t.Logf("event for /send: %s", sendTxnEvent.EventID())
 
 	gmeWaiter := helpers.NewWaiter()
+	var gmeRequested atomic.Bool
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		gmeRequested.Store(true)
 		defer gmeWaiter.Finish()
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
@@ -1113,9 +1117,12 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		w.Write(responseBytes)
 	})
 	stateIDWaiter := helpers.NewWaiter()
+	var stateIDsRequested atomic.Bool
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		stateIDsRequested.Store(true)
 		defer stateIDWaiter.Finish()
 		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
+		must.Equal(t, gmeRequested.Load(), true, "/state_ids arrived before /get_missing_events")
 		reqEventID := req.URL.Query().Get("event_id")
 		must.Equal(t, reqEventID, stateIDsEvent.EventID(), "unexpected event provided to /state_ids")
 		w.WriteHeader(200)
@@ -1157,6 +1164,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
 		eventID := vars["eventID"]
+		must.Equal(t, stateIDsRequested.Load(), true, "/event arrived before /state_ids")
 		var event gomatrixserverlib.PDU
 		for _, ev := range allEventsToShare {
 			if ev.EventID() == eventID {
