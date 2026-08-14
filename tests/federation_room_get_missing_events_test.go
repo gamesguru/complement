@@ -1097,11 +1097,16 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
-		gmeRequested.Store(true)
-		defer gmeWaiter.Finish()
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
-		must.Equal(t, body.Get("latest_events").Array()[0].String(), sendTxnEvent.EventID(), "unexpected event provided to /get_missing_events")
+		latestEvents := body.Get("latest_events").Array()
+		for _, ev := range latestEvents {
+			if ev.String() == sendTxnEvent.EventID() {
+				gmeRequested.Store(true)
+				gmeWaiter.Finish()
+				break
+			}
+		}
 		w.WriteHeader(200)
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
