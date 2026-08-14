@@ -1102,8 +1102,9 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		latestEvents := body.Get("latest_events").Array()
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
-				gmeRequested.Store(true)
-				gmeWaiter.Finish()
+				if !gmeRequested.Swap(true) {
+					gmeWaiter.Finish()
+				}
 				break
 			}
 		}
