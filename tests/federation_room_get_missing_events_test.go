@@ -1100,27 +1100,19 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
 		latestEvents := body.Get("latest_events").Array()
-		respondWithMissingEvent := false
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
 				if !gmeRequested.Swap(true) {
 					gmeWaiter.Finish()
 				}
-				respondWithMissingEvent = true
 				break
 			}
 		}
 		w.WriteHeader(200)
-		events := []gomatrixserverlib.PDU{}
-		if respondWithMissingEvent {
-			events = []gomatrixserverlib.PDU{gmeEvent}
-		} else {
-			t.Logf("/get_missing_events ignored non-target request with latest_events=%v", latestEvents)
-		}
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
-			Events: events,
+			Events: []gomatrixserverlib.PDU{gmeEvent},
 		}
 		var responseBytes []byte
 		responseBytes, err := json.Marshal(&res)
