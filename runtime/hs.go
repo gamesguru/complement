@@ -41,11 +41,11 @@ var parents = map[string][]string{
 	Tuwunel:      {Conduwuit, Conduit},
 }
 
-// Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
-var Exemptions = map[string][]string{
-	"TestPartialStateJoin":      {Tuwunel},
-	"TestTxnIdempotency":        {Continuwuity, Tuwunel},
-	"TestTxnIdWithRefreshToken": {},
+// SkipInheritanceExceptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
+var SkipInheritanceExceptions = map[string][]string{
+	"TestPartialStateJoin":      {Continuwuity, Tuwunel},
+	"TestTxnIdempotency":        {Conduwuit, Continuwuity, Tuwunel},
+	"TestTxnIdWithRefreshToken": {Conduwuit, Continuwuity, Tuwunel},
 }
 
 func isParent(child, parent string) bool {
@@ -57,8 +57,8 @@ func isParent(child, parent string) bool {
 	return false
 }
 
-func isExempt(testName string, hs string) bool {
-	for name, exemptHSes := range Exemptions {
+func isSkipInheritanceException(testName string, hs string) bool {
+	for name, exemptHSes := range SkipInheritanceExceptions {
 		// check if testName matches or has prefix of name (since subtests can have names like TestPartialStateJoin/Subtest)
 		if testName == name || (len(testName) > len(name) && testName[:len(name)] == name && testName[len(name)] == '/') {
 			for _, exempt := range exemptHSes {
@@ -82,8 +82,8 @@ func SkipIf(t ct.TestLike, hses ...string) {
 	// Check inheritance
 	for _, hs := range hses {
 		if isParent(Homeserver, hs) {
-			// Check if the current homeserver is exempt for this test
-			if isExempt(t.Name(), Homeserver) {
+			// Check whether this homeserver is exempt from the inherited skip for this test.
+			if isSkipInheritanceException(t.Name(), Homeserver) {
 				continue
 			}
 			t.Skipf("skipped on %s (inherited from %s)", Homeserver, hs)
