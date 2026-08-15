@@ -3041,6 +3041,33 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		})
 		serverRoom.AddEvent(currentEvent)
 
+		// The homeserver under test now probes /state_ids during recovery when
+		// resolving the current event's ancestry, so serve the room's current
+		// state snapshot here as well.
+		srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+			vars := mux.Vars(req)
+			if vars["roomID"] != serverRoom.RoomID {
+				t.Fatalf("unexpected /state_ids request for room %s", vars["roomID"])
+			}
+			roomState := serverRoom.AllCurrentState()
+			stateEventIDs := make([]string, 0, len(roomState))
+			for _, ev := range roomState {
+				stateEventIDs = append(stateEventIDs, ev.EventID())
+			}
+			authEventIDs := make([]string, 0, len(roomState))
+			for _, ev := range serverRoom.AuthChainForEvents(roomState) {
+				authEventIDs = append(authEventIDs, ev.EventID())
+			}
+			res := fclient.RespStateIDs{
+				AuthEventIDs:  authEventIDs,
+				StateEventIDs: stateEventIDs,
+			}
+			responseBytes, err := json.Marshal(&res)
+			must.NotError(t, "failed to marshal /state_ids response", err)
+			w.WriteHeader(200)
+			_, _ = w.Write(responseBytes)
+		}).Methods("GET")
+
 		lostKeyFedClient := federationClientWithSigningKey(
 			deployment,
 			spec.ServerName(srv.ServerName()),

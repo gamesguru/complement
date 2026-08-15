@@ -211,6 +211,30 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 	// join the room
 	alice.MustJoinRoom(t, roomAlias, nil)
 
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		pathVars := mux.Vars(req)
+		if pathVars["roomID"] != room.RoomID {
+			t.Fatalf("Received /state_ids for the wrong room: %s", pathVars["roomID"])
+		}
+		roomState := room.AllCurrentState()
+		stateEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range roomState {
+			stateEventIDs = append(stateEventIDs, ev.EventID())
+		}
+		authEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range room.AuthChainForEvents(roomState) {
+			authEventIDs = append(authEventIDs, ev.EventID())
+		}
+		res := fclient.RespStateIDs{
+			AuthEventIDs:  authEventIDs,
+			StateEventIDs: stateEventIDs,
+		}
+		responseBytes, err := json.Marshal(res)
+		must.NotError(t, "failed to marshal /state_ids response", err)
+		w.WriteHeader(200)
+		w.Write(responseBytes)
+	}).Methods("GET")
+
 	latestEvent := room.Timeline[len(room.Timeline)-1]
 
 	// Sign this bad event which has a float (we can't use helpers here as they check it isn't bad)
@@ -1100,13 +1124,18 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
 		latestEvents := body.Get("latest_events").Array()
+		matched := false
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
+				matched = true
 				if !gmeRequested.Swap(true) {
 					gmeWaiter.Finish()
 				}
 				break
 			}
+		}
+		if !matched {
+			t.Fatalf("unexpected event provided to /get_missing_events: got %v want %s", latestEvents, sendTxnEvent.EventID())
 		}
 		w.WriteHeader(200)
 		res := struct {
