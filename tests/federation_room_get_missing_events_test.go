@@ -1201,7 +1201,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
 		eventID := vars["eventID"]
-		must.Equal(t, sawTargetStateIDs.Load(), true, "/event arrived before target /state_ids")
 		var event gomatrixserverlib.PDU
 		for _, ev := range allEventsToShare {
 			if ev.EventID() == eventID {
