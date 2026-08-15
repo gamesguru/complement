@@ -94,7 +94,7 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 		baseImageURI = uri
 	}
 
-	containerName := fmt.Sprintf("complement_%s_dirty_%s", d.config.PackageNamespace, hsName)
+	containerName := fmt.Sprintf("complement_%s_%s_dirty_%s", d.config.PackageNamespace, d.config.RunID, hsName)
 	hsDeployment, err := deployImage(
 		d.Docker, baseImageURI, containerName,
 		d.config.PackageNamespace, "", hsName, nil, "dirty",
@@ -173,7 +173,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 		asIDToRegistrationMap := asIDToRegistrationFromLabels(img.Labels)
 
 		// TODO: Make CSAPI port configurable
-		containerName := fmt.Sprintf("complement_%s_%s_%s_%d", d.config.PackageNamespace, d.DeployNamespace, contextStr, counter)
+		containerName := fmt.Sprintf("complement_%s_%s_%s_%s_%d", d.config.PackageNamespace, d.config.RunID, d.DeployNamespace, contextStr, counter)
 		deployment, err := deployImage(
 			d.Docker, img.ID, containerName,
 			d.config.PackageNamespace, blueprintName, hsName, asIDToRegistrationMap, contextStr, networkName, d.config,
