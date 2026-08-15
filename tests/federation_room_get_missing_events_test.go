@@ -1219,17 +1219,18 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		t.Logf("individually fetched %s", eid)
 	}
 
-	alice.MustSyncUntil(t, client.SyncReq{}, func(clientUserID string, topLevelSyncJSON gjson.Result) error {
-		res := alice.GetStateEventContent(t, roomID, spec.MRoomMember, bob)
-		if res.StatusCode != 200 {
-			return fmt.Errorf("bob's membership state is not ready yet: HTTP %d", res.StatusCode)
-		}
-		content := gjson.ParseBytes(client.ParseJSON(t, res))
-		if content.Get("displayname").Str != "E" {
-			return fmt.Errorf("bob's membership state is %q, want E", content.Get("displayname").Str)
-		}
-		return nil
+	syncAnchorEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "finished",
+		},
+		PrevEvents: []string{eventE.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
 	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{syncAnchorEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, syncAnchorEvent.EventID()))
 
 	// Unlike TestCorruptedAuthChain: every event was individually
 	// fetchable, so the full A->B->C->D->E chain should have been
