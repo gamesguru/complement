@@ -1335,6 +1335,105 @@ func TestPartialStateJoin(t *testing.T) {
 		)
 	})
 
+	// regression test for the case where one homeserver has a hole in its state
+	// response and the joining server must continue with another homeserver.
+	t.Run("PartialStateJoinFallsBackAcrossHomeserversForStateIds", func(t *testing.T) {
+		deployment := complement.Deploy(t, 2)
+		defer deployment.Destroy(t)
+
+		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+		charlie := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+
+		roomID := alice.MustCreateRoom(t, map[string]interface{}{
+			"preset": "public_chat",
+		})
+
+		primaryServer := createTestServer(t, deployment)
+		cancelPrimary := primaryServer.Listen()
+		defer cancelPrimary()
+
+		fallbackServer := createTestServer(t, deployment)
+		cancelFallback := fallbackServer.Listen()
+		defer cancelFallback()
+
+		primaryRoom := primaryServer.MustJoinRoom(
+			t,
+			deployment,
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			roomID,
+			primaryServer.UserID("david"),
+		)
+		fallbackRoom := fallbackServer.MustJoinRoom(
+			t,
+			deployment,
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			roomID,
+			fallbackServer.UserID("erin"),
+		)
+
+		primaryStateIdsSeen := helpers.NewWaiter()
+		fallbackStateIdsSeen := helpers.NewWaiter()
+
+		primaryServer.Mux().Handle(
+			fmt.Sprintf("/_matrix/federation/v1/state_ids/%s", roomID),
+			http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				t.Logf(
+					"Primary homeserver received /state_ids for event %s in room %s",
+					req.URL.Query().Get("event_id"), roomID,
+				)
+				primaryStateIdsSeen.Finish()
+
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"primary homeserver failed"}`))
+			}),
+		).Methods("GET")
+
+		handleStateIdsRequests(
+			t,
+			fallbackServer,
+			fallbackRoom,
+			fallbackRoom.Timeline[len(fallbackRoom.Timeline)-1].EventID(),
+			fallbackRoom.AllCurrentState(),
+			fallbackStateIdsSeen,
+			nil,
+		)
+		handleStateRequests(
+			t,
+			fallbackServer,
+			fallbackRoom,
+			fallbackRoom.Timeline[len(fallbackRoom.Timeline)-1].EventID(),
+			fallbackRoom.AllCurrentState(),
+			nil,
+			nil,
+		)
+
+		primaryMembership := primaryRoom.CurrentState("m.room.member", primaryServer.UserID("david")).JSON()
+		fallbackMembership := fallbackRoom.CurrentState("m.room.member", fallbackServer.UserID("erin")).JSON()
+		primaryServer.MustSendTransaction(
+			t,
+			deployment,
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			[]json.RawMessage{primaryMembership},
+			nil,
+		)
+		fallbackServer.MustSendTransaction(
+			t,
+			deployment,
+			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+			[]json.RawMessage{fallbackMembership},
+			nil,
+		)
+
+		primaryStateIdsSeen.Waitf(t, 5*time.Second, "Waiting for the primary /state_ids request")
+		fallbackStateIdsSeen.Waitf(t, 5*time.Second, "Waiting for the fallback /state_ids request")
+
+		charlie.MustJoinRoom(
+			t,
+			roomID,
+			[]spec.ServerName{primaryServer.ServerName(), fallbackServer.ServerName()},
+		)
+	})
+
 	// test a lazy-load-members sync while re-syncing partial state, followed by completion of state syncing,
 	// followed by a gappy sync. the gappy sync should include the correct member state,
 	// since it was not sent on the previous sync.
