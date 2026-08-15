@@ -1100,19 +1100,27 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
 		latestEvents := body.Get("latest_events").Array()
+		respondWithMissingEvent := false
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
 				if !gmeRequested.Swap(true) {
 					gmeWaiter.Finish()
 				}
+				respondWithMissingEvent = true
 				break
 			}
 		}
 		w.WriteHeader(200)
+		events := []gomatrixserverlib.PDU{}
+		if respondWithMissingEvent {
+			events = []gomatrixserverlib.PDU{gmeEvent}
+		} else {
+			t.Logf("/get_missing_events ignored non-target request with latest_events=%v", latestEvents)
+		}
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
+			Events: events,
 		}
 		var responseBytes []byte
 		responseBytes, err := json.Marshal(&res)
@@ -1120,13 +1128,16 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		w.Write(responseBytes)
 	})
 	stateIDWaiter := helpers.NewWaiter()
+	var stateIDRequested atomic.Bool
 	var sawTargetStateIDs atomic.Bool
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
-		defer stateIDWaiter.Finish()
 		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
 		reqEventID := req.URL.Query().Get("event_id")
 		if reqEventID == stateIDsEvent.EventID() {
 			sawTargetStateIDs.Store(true)
+			if !stateIDRequested.Swap(true) {
+				stateIDWaiter.Finish()
+			}
 		} else {
 			t.Logf("/state_ids received unexpected event %s; serving the same fallback response", reqEventID)
 		}
