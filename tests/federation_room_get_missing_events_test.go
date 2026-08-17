@@ -745,9 +745,6 @@ func TestCorruptedAuthChain(t *testing.T) {
 		PrevEvents: []string{eventA.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
 	})
-	srvRoom.TimelineMutex.Lock()
-	srvRoom.Timeline = append(srvRoom.Timeline, eventB)
-	srvRoom.TimelineMutex.Unlock()
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -928,7 +925,20 @@ func TestCorruptedAuthChain(t *testing.T) {
 		w.Write(resp)
 	}))
 
-	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sendTxnEvent.JSON()}, nil)
+	// sendTxnEvent references event B, which this mock deliberately never serves,
+	// so a correct homeserver rejects it. A synchronous homeserver returns the
+	// rejection inline as a per-PDU error in the /send response (a legal 200 +
+	// pdus:{...error...}), while an asynchronous one stages it and rejects in the
+	// background. Send tolerantly rather than via MustSendTransaction, since the
+	// real correctness check is the final state assertion at the end of this test.
+	fedClient := srv.FederationClient(deployment)
+	_, err := fedClient.SendTransaction(context.Background(), gomatrixserverlib.Transaction{
+		TransactionID: "sendTxnEvent",
+		Origin:        srv.ServerName(),
+		Destination:   deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+		PDUs:          []json.RawMessage{sendTxnEvent.JSON()},
+	})
+	must.NotError(t, "SendTransaction errored", err)
 
 	// wait for the server to make the requests
 	gmeWaiter.Wait(t, 5*time.Second)
