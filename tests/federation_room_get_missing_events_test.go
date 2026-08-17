@@ -1110,9 +1110,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
 				matched = true
-				if !gmeRequested.Swap(true) {
-					gmeWaiter.Finish()
-				}
 				break
 			}
 		}
@@ -1123,6 +1120,19 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			// same fallback response and keep waiting for the request we
 			// actually care about instead of failing the whole test on it.
 			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
+			w.WriteHeader(200)
+			res := struct {
+				Events []gomatrixserverlib.PDU `json:"events"`
+			}{
+				Events: []gomatrixserverlib.PDU{gmeEvent},
+			}
+			responseBytes, err := json.Marshal(&res)
+			must.NotError(t, "failed to marshal response", err)
+			w.Write(responseBytes)
+			return
+		}
+		if !gmeRequested.Swap(true) {
+			gmeWaiter.Finish()
 		}
 		w.WriteHeader(200)
 		res := struct {
