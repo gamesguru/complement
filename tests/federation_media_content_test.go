@@ -2,10 +2,11 @@ package tests
 
 import (
 	"bytes"
+	"testing"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/internal/data"
-	"testing"
 )
 
 func TestContentMediaV1(t *testing.T) {

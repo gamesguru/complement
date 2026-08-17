@@ -1,8 +1,9 @@
 package csapi_tests
 
 import (
-	"github.com/tidwall/gjson"
 	"testing"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
