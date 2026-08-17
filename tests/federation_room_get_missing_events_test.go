@@ -704,8 +704,9 @@ type corruptedAuthChainFixture struct {
 
 // newCorruptedAuthChainFixture builds the common playground used by
 // TestCorruptedAuthChain, TestStateIdsFallbackFetchesFullAuthChain and
-// TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse. Callers
-// are responsible for tearing down the deployment via fixt.deployment.Destroy.
+// TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse. The
+// deployment and server teardown are registered automatically via t.Cleanup;
+// callers must NOT call fixt.deployment.Destroy themselves.
 func newCorruptedAuthChainFixture(t *testing.T) *corruptedAuthChainFixture {
 	deployment := complement.Deploy(t, 1)
 	t.Cleanup(func() { deployment.Destroy(t) })
