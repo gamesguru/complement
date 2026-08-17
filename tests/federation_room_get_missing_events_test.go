@@ -1117,7 +1117,12 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			}
 		}
 		if !matched {
-			t.Fatalf("unexpected event provided to /get_missing_events: got %v want %s", latestEvents, sendTxnEvent.EventID())
+			// The dense padded room can generate /get_missing_events traffic
+			// unrelated to the sendTxnEvent chain under test (e.g. Synapse's
+			// own backfill/catch-up for the leave/join padding). Serve the
+			// same fallback response and keep waiting for the request we
+			// actually care about instead of failing the whole test on it.
+			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
 		}
 		w.WriteHeader(200)
 		res := struct {
@@ -1295,13 +1300,33 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
 		latestEvents := body.Get("latest_events").Array()
+		matched := false
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
-				if !gmeRequested.Swap(true) {
-					gmeWaiter.Finish()
-				}
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			// The dense padded room can generate /get_missing_events traffic
+			// unrelated to the sendTxnEvent chain under test (e.g. Synapse's
+			// own backfill/catch-up for the leave/join padding). Don't let it
+			// consume the malformed-JSON slot meant for the first sendTxnEvent
+			// request -- serve it the same fallback response instead.
+			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
+			w.WriteHeader(200)
+			res := struct {
+				Events []gomatrixserverlib.PDU `json:"events"`
+			}{
+				Events: []gomatrixserverlib.PDU{gmeEvent},
+			}
+			responseBytes, err := json.Marshal(&res)
+			must.NotError(t, "failed to marshal response", err)
+			w.Write(responseBytes)
+			return
+		}
+		if !gmeRequested.Swap(true) {
+			gmeWaiter.Finish()
 		}
 
 		callNum := gmeCallCount.Add(1)
