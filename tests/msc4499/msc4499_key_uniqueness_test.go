@@ -1082,12 +1082,6 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 
-// This matches Synapse's current literal retired-key lookup wording. If that
-// upstream error text changes, this guard should be updated alongside it.
-func isSynapseRetiredKeyLookupError(err error) bool {
-	return runtime.Homeserver == runtime.Synapse && strings.Contains(err.Error(), "Failed to find any key to satisfy")
-}
-
 func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Synapse)
@@ -1201,15 +1195,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		Destination:   "hs1",
 		PDUs:          []json.RawMessage{eventA.JSON()},
 	})
-	if err != nil {
-		if isSynapseRetiredKeyLookupError(err) {
-			// Synapse currently does not retain/serve the retired key needed to
-			// verify this backdated historical event. Keep the run informative by
-			// skipping at the point of divergence rather than hard-failing.
-			t.Skipf("hs1 rejected valid historical event before expired_ts: %v", err)
-		}
-		must.NotError(t, "SendTransaction failed for backdated historical event", err)
-	}
+	must.NotError(t, "SendTransaction failed for backdated historical event", err)
 	for eventID, pduResp := range respA.PDUs {
 		if pduResp.Error != "" {
 			t.Fatalf("hs1 rejected valid historical event %s (origin_server_ts before expired_ts): %s", eventID, pduResp.Error)
