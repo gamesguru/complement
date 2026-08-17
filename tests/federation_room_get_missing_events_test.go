@@ -983,6 +983,14 @@ func TestCorruptedAuthChain(t *testing.T) {
 // exercised the case where it succeeds, only the case where it's
 // defeated by a genuinely-missing event.
 func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
+	// Dendrite does not walk the /get_missing_events -> /state_ids -> /event
+	// ladder: for an event with unknown prev_events it falls back to fetching the
+	// auth chain via /event_auth instead, so the gmeWaiter never fires. Skipped
+	// with a documented reason rather than silently -- see the Dendrite CI logs
+	// for TestStateIdsFallbackFetchesFullAuthChain (the mock receives
+	// GET /_matrix/federation/v1/event_auth/... and answers 404, then the test
+	// times out waiting for /get_missing_events).
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1289,6 +1297,11 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 // we intentionally return a malformed response once, then let the server retry
 // and complete the fallback ladder normally.
 func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testing.T) {
+	// Same as TestStateIdsFallbackFetchesFullAuthChain: Dendrite falls back to
+	// /event_auth instead of /get_missing_events, so the gmeWaiter never fires
+	// and this test would time out. See the Dendrite CI logs for the /event_auth
+	// request the mock receives for sendTxnEvent.
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
