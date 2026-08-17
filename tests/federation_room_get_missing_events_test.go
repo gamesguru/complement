@@ -983,7 +983,6 @@ func TestCorruptedAuthChain(t *testing.T) {
 // exercised the case where it succeeds, only the case where it's
 // defeated by a genuinely-missing event.
 func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1259,12 +1258,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		t.Logf("individually fetched %s", eid)
 	}
 
-	if runtime.Homeserver == runtime.Synapse {
-		// Synapse exercises the fallback ladder, but this final state assertion is
-		// still too coupled to its current recovery behavior.
-		t.Skip("skipping Synapse-specific final state assertion after state_ids fallback")
-	}
-
 	// Unlike TestCorruptedAuthChain: every event was individually
 	// fetchable, so the full A->B->C->D->E chain should have been
 	// recovered via the /state_ids -> /event/{id} ladder and bob's
@@ -1296,8 +1289,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 // we intentionally return a malformed response once, then let the server retry
 // and complete the fallback ladder normally.
 func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	runtime.SkipIf(t, runtime.Synapse) // Synapse does not currently guarantee this malformed-response retry shape.
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
