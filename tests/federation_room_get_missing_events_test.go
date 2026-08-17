@@ -214,7 +214,9 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		pathVars := mux.Vars(req)
 		if pathVars["roomID"] != room.RoomID {
-			t.Fatalf("Received /state_ids for the wrong room: %s", pathVars["roomID"])
+			ct.Errorf(t, "Received /state_ids for the wrong room: %s", pathVars["roomID"])
+			w.WriteHeader(404)
+			return
 		}
 		roomState := room.AllCurrentState()
 		stateEventIDs := make([]string, 0, len(roomState))
@@ -1267,6 +1269,23 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	// fetchable, so the full A->B->C->D->E chain should have been
 	// recovered via the /state_ids -> /event/{id} ladder and bob's
 	// current membership content should reflect E.
+	//
+	// The individual /event fetches complete asynchronously to /send, so send a
+	// sentinel and wait for it to appear in the sync timeline before asserting the
+	// final membership state, mirroring TestCorruptedAuthChain.
+	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "finished",
+		},
+		PrevEvents: []string{eventE.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
+
 	content := alice.MustGetStateEventContent(t, roomID, spec.MRoomMember, bob)
 	t.Logf("bob's membership content: %v", content.Raw)
 	must.Equal(t, content.Get("displayname").Str, "E", "Events A-E should have all been recovered via individual /event fetches, but bob's final profile doesn't reflect event E.")
