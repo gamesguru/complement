@@ -934,7 +934,12 @@ func TestCorruptedAuthChain(t *testing.T) {
 	// background. Send tolerantly rather than via MustSendTransaction, since the
 	// real correctness check is the final state assertion at the end of this test.
 	fedClient := srv.FederationClient(deployment)
-	_, err := fedClient.SendTransaction(context.Background(), gomatrixserverlib.Transaction{
+	// Time out the /send like MustSendTransaction does, so a homeserver that
+	// stalls while processing sendTxnEvent fails fast instead of hanging the
+	// test (the waiter timeouts below would otherwise be unreachable).
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	_, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
 		TransactionID: "sendTxnEvent",
 		Origin:        srv.ServerName(),
 		Destination:   deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
@@ -1227,8 +1232,8 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 				break
 			}
 		}
-		if w, ok := eventWaiters[eventID]; ok {
-			w.Finish()
+		if waiter, ok := eventWaiters[eventID]; ok {
+			waiter.Finish()
 		}
 
 		if event == nil {
@@ -1537,8 +1542,8 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 				break
 			}
 		}
-		if w, ok := eventWaiters[eventID]; ok {
-			w.Finish()
+		if waiter, ok := eventWaiters[eventID]; ok {
+			waiter.Finish()
 		}
 
 		if event == nil {
@@ -1571,6 +1576,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	stateIDWaiter.Wait(t, 5*time.Second)
 	must.Equal(t, gmeRequested.Load(), true, "/get_missing_events was never requested")
 	must.Equal(t, sawTargetStateIDs.Load(), true, "target /state_ids event was never requested")
+	// The whole point of this test is that a malformed first /get_missing_events
+	// response triggers a retry that then succeeds. Assert the retry actually
+	// happened (>=2 calls) rather than only that the (malformed) first call fired
+	// the waiter.
+	must.Equal(t, gmeCallCount.Load() >= 2, true, "/get_missing_events was never retried after the malformed response")
 	for eid, w := range eventWaiters {
 		w.Wait(t, 5*time.Second)
 		t.Logf("individually fetched %s", eid)
