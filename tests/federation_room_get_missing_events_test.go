@@ -1102,6 +1102,19 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	}
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
+	// Serve a valid fallback response, both for unrelated /get_missing_events
+	// traffic from the padded room and for the real request under test.
+	writeFallback := func(w http.ResponseWriter) {
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
@@ -1120,30 +1133,13 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			// same fallback response and keep waiting for the request we
 			// actually care about instead of failing the whole test on it.
 			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
-			w.WriteHeader(200)
-			res := struct {
-				Events []gomatrixserverlib.PDU `json:"events"`
-			}{
-				Events: []gomatrixserverlib.PDU{gmeEvent},
-			}
-			responseBytes, err := json.Marshal(&res)
-			must.NotError(t, "failed to marshal response", err)
-			w.Write(responseBytes)
+			writeFallback(w)
 			return
 		}
 		if !gmeRequested.Swap(true) {
 			gmeWaiter.Finish()
 		}
-		w.WriteHeader(200)
-		res := struct {
-			Events []gomatrixserverlib.PDU `json:"events"`
-		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
-		}
-		var responseBytes []byte
-		responseBytes, err := json.Marshal(&res)
-		must.NotError(t, "failed to marshal response", err)
-		w.Write(responseBytes)
+		writeFallback(w)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool
@@ -1306,6 +1302,20 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	var gmeCallCount atomic.Int32
+	// Serve a valid fallback response. Used both for unrelated /get_missing_events
+	// traffic (the padded room generates backfill we don't care about) and for the
+	// successful retry after the malformed first response.
+	writeFallback := func(w http.ResponseWriter) {
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
@@ -1324,15 +1334,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			// consume the malformed-JSON slot meant for the first sendTxnEvent
 			// request -- serve it the same fallback response instead.
 			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
-			w.WriteHeader(200)
-			res := struct {
-				Events []gomatrixserverlib.PDU `json:"events"`
-			}{
-				Events: []gomatrixserverlib.PDU{gmeEvent},
-			}
-			responseBytes, err := json.Marshal(&res)
-			must.NotError(t, "failed to marshal response", err)
-			w.Write(responseBytes)
+			writeFallback(w)
 			return
 		}
 		if !gmeRequested.Swap(true) {
@@ -1347,16 +1349,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			return
 		}
 
-		w.WriteHeader(200)
-		res := struct {
-			Events []gomatrixserverlib.PDU `json:"events"`
-		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
-		}
-		var responseBytes []byte
-		responseBytes, err := json.Marshal(&res)
-		must.NotError(t, "failed to marshal response", err)
-		w.Write(responseBytes)
+		writeFallback(w)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool
