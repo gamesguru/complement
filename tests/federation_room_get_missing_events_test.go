@@ -674,11 +674,41 @@ func TestOutboundFederationEventSizeGetMissingEvents(t *testing.T) {
 // the entry from that event map. If this happens: A is processed, B is missing, C is dropped due to missing B,
 // crucially D and E ARE PERSISTED because C exists in-memory.
 // This breaks the auth chain for the room, which matters when doing state resolution.
-func TestCorruptedAuthChain(t *testing.T) {
-	// This test should exercise the /state_ids path, not the /event_auth fallback.
-	runtime.SkipIf(t, runtime.Dendrite)
+
+// corruptedAuthChainFixture holds the shared setup for the corrupted-auth-chain
+// and /state_ids-fallback tests: a dense room with 100+ leave/join cycles, a
+// joined Bob, and the A->B->C->D->E profile-change chain plus the three
+// unrelated message events used to drive /send, /get_missing_events and
+// /state_ids.
+type corruptedAuthChainFixture struct {
+	deployment           complement.Deployment
+	srv                  *federation.Server
+	alice                *client.CSAPI
+	roomID               string
+	bob                  string
+	srvRoom              *federation.ServerRoom
+	existingAuthChain    []gomatrixserverlib.PDU
+	createEvent          gomatrixserverlib.PDU
+	plEvent              gomatrixserverlib.PDU
+	jrEvent              gomatrixserverlib.PDU
+	bobOriginalJoinEvent gomatrixserverlib.PDU
+	eventA               gomatrixserverlib.PDU
+	eventB               gomatrixserverlib.PDU
+	eventC               gomatrixserverlib.PDU
+	eventD               gomatrixserverlib.PDU
+	eventE               gomatrixserverlib.PDU
+	stateIDsEvent        gomatrixserverlib.PDU
+	gmeEvent             gomatrixserverlib.PDU
+	sendTxnEvent         gomatrixserverlib.PDU
+}
+
+// newCorruptedAuthChainFixture builds the common playground used by
+// TestCorruptedAuthChain, TestStateIdsFallbackFetchesFullAuthChain and
+// TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse. Callers
+// are responsible for tearing down the deployment via fixt.deployment.Destroy.
+func newCorruptedAuthChainFixture(t *testing.T) *corruptedAuthChainFixture {
 	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
+	t.Cleanup(func() { deployment.Destroy(t) })
 
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
@@ -689,7 +719,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 	// We expect to be pushed events that we don't care about responding to (not relevant to the test)
 	srv.UnexpectedRequestsAreErrors = false
 	cancel := srv.Listen()
-	defer cancel()
+	t.Cleanup(cancel)
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "alice"})
 	// ensure the server under test remains in the room when alice rejoins
@@ -815,10 +845,28 @@ func TestCorruptedAuthChain(t *testing.T) {
 	})
 	srvRoom.AddEvent(sendTxnEvent)
 
-	// the possible events to return in /event. This omits B.
-	allEventsToShare := []gomatrixserverlib.PDU{
-		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventC, eventD, eventE,
+	fixt := &corruptedAuthChainFixture{
+		deployment:           deployment,
+		srv:                  srv,
+		alice:                alice,
+		roomID:               roomID,
+		bob:                  bob,
+		srvRoom:              srvRoom,
+		existingAuthChain:    existingAuthChain,
+		createEvent:          createEvent,
+		plEvent:              plEvent,
+		jrEvent:              jrEvent,
+		bobOriginalJoinEvent: bobOriginalJoinEvent,
+		eventA:               eventA,
+		eventB:               eventB,
+		eventC:               eventC,
+		eventD:               eventD,
+		eventE:               eventE,
+		stateIDsEvent:        stateIDsEvent,
+		gmeEvent:             gmeEvent,
+		sendTxnEvent:         sendTxnEvent,
 	}
+
 	t.Logf("event A: %s", eventA.EventID())
 	t.Logf("event B: %s", eventB.EventID())
 	t.Logf("event C: %s", eventC.EventID())
@@ -828,6 +876,36 @@ func TestCorruptedAuthChain(t *testing.T) {
 	t.Logf("event for /get_missing_events: %s", gmeEvent.EventID())
 	t.Logf("event for /send: %s", sendTxnEvent.EventID())
 
+	return fixt
+}
+
+func TestCorruptedAuthChain(t *testing.T) {
+	// This test should exercise the /state_ids path, not the /event_auth fallback.
+	runtime.SkipIf(t, runtime.Dendrite)
+	fixt := newCorruptedAuthChainFixture(t)
+	srv := fixt.srv
+	deployment := fixt.deployment
+	alice := fixt.alice
+	roomID := fixt.roomID
+	bob := fixt.bob
+	srvRoom := fixt.srvRoom
+	existingAuthChain := fixt.existingAuthChain
+	createEvent := fixt.createEvent
+	plEvent := fixt.plEvent
+	eventA := fixt.eventA
+	eventB := fixt.eventB
+	eventC := fixt.eventC
+	eventD := fixt.eventD
+	eventE := fixt.eventE
+	stateIDsEvent := fixt.stateIDsEvent
+	gmeEvent := fixt.gmeEvent
+	sendTxnEvent := fixt.sendTxnEvent
+	bobOriginalJoinEvent := fixt.bobOriginalJoinEvent
+
+	// the possible events to return in /event. This omits B.
+	allEventsToShare := []gomatrixserverlib.PDU{
+		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventC, eventD, eventE,
+	}
 	// add handlers for them
 	gmeWaiter := helpers.NewWaiter()
 	// We will send 'sendTxnEvent' via /send. The homeserver will see the event has unknown prev_events and hit /get_missing_events
@@ -996,136 +1074,25 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	// GET /_matrix/federation/v1/event_auth/... and answers 404, then the test
 	// times out waiting for /get_missing_events).
 	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
-	srv := federation.NewServer(t, deployment,
-		federation.HandleKeyRequests(),
-		federation.HandleMakeSendJoinRequests(),
-		federation.HandleTransactionRequests(nil, nil),
-		federation.HandleInviteRequests(nil),
-	)
-	srv.UnexpectedRequestsAreErrors = false
-	cancel := srv.Listen()
-	defer cancel()
-
-	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "alice"})
-	sentinel := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "sentinel"})
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset":       "public_chat",
-		"room_version": "10",
-	})
-	sentinel.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
-	for i := 0; i < 100; i++ {
-		if i%2 == 0 {
-			alice.MustLeaveRoom(t, roomID)
-		} else {
-			alice.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
-		}
-	}
-	bob := srv.UserID("bob")
-	defaultImpl := federation.ServerRoomImplDefault{}
-	var existingAuthChain []gomatrixserverlib.PDU
-	srvRoom := srv.MustJoinRoom(t, deployment, spec.ServerName("hs1"), roomID, bob, federation.WithRoomOpts(federation.WithImpl(&federation.ServerRoomImplCustom{
-		ServerRoomImplDefault: defaultImpl,
-		PopulateFromSendJoinResponseFn: func(def federation.ServerRoomImpl, room *federation.ServerRoom, joinEvent gomatrixserverlib.PDU, resp fclient.RespSendJoin) {
-			defaultImpl.PopulateFromSendJoinResponse(room, joinEvent, resp)
-			existingAuthChain = resp.AuthEvents.TrustedEvents(joinEvent.Version(), false)
-		},
-	})))
-	if len(existingAuthChain) < 100 {
-		ct.Fatalf(t, "not enough events in the auth chain, got %d want >100", len(existingAuthChain))
-	}
-	createEvent := srvRoom.CurrentState(spec.MRoomCreate, "")
-	plEvent := srvRoom.CurrentState(spec.MRoomPowerLevels, "")
-	jrEvent := srvRoom.CurrentState(spec.MRoomJoinRules, "")
-
-	// Same A -> B -> C -> D -> E profile-change chain as TestCorruptedAuthChain.
-	eventA := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "A",
-		},
-	})
-	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "B",
-		},
-		PrevEvents: []string{eventA.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
-	})
-	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "C",
-		},
-		PrevEvents: []string{eventB.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
-	})
-	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "D",
-		},
-		PrevEvents: []string{eventC.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
-	})
-	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "E",
-		},
-		PrevEvents: []string{eventD.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventD.EventID()},
-	})
-	srvRoom.AddEvent(eventE)
-
-	stateIDsEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /state_ids",
-		},
-		PrevEvents: []string{eventE.EventID()},
-	})
-	srvRoom.AddEvent(stateIDsEvent)
-	gmeEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /get_missing_events",
-		},
-		PrevEvents: []string{stateIDsEvent.EventID()},
-	})
-	srvRoom.AddEvent(gmeEvent)
-	sendTxnEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /send",
-		},
-		PrevEvents: []string{gmeEvent.EventID()},
-	})
-	srvRoom.AddEvent(sendTxnEvent)
+	fixt := newCorruptedAuthChainFixture(t)
+	srv := fixt.srv
+	deployment := fixt.deployment
+	alice := fixt.alice
+	roomID := fixt.roomID
+	bob := fixt.bob
+	srvRoom := fixt.srvRoom
+	existingAuthChain := fixt.existingAuthChain
+	createEvent := fixt.createEvent
+	plEvent := fixt.plEvent
+	jrEvent := fixt.jrEvent
+	eventA := fixt.eventA
+	eventB := fixt.eventB
+	eventC := fixt.eventC
+	eventD := fixt.eventD
+	eventE := fixt.eventE
+	stateIDsEvent := fixt.stateIDsEvent
+	gmeEvent := fixt.gmeEvent
+	sendTxnEvent := fixt.sendTxnEvent
 
 	// Unlike TestCorruptedAuthChain, every event -- including B -- is
 	// individually fetchable. This is the only substantive difference from
@@ -1133,15 +1100,6 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	allEventsToShare := []gomatrixserverlib.PDU{
 		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventB, eventC, eventD, eventE,
 	}
-	t.Logf("event A: %s", eventA.EventID())
-	t.Logf("event B: %s", eventB.EventID())
-	t.Logf("event C: %s", eventC.EventID())
-	t.Logf("event D: %s", eventD.EventID())
-	t.Logf("event E: %s", eventE.EventID())
-	t.Logf("event for /state_ids: %s", stateIDsEvent.EventID())
-	t.Logf("event for /get_missing_events: %s", gmeEvent.EventID())
-	t.Logf("event for /send: %s", sendTxnEvent.EventID())
-
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
@@ -1307,148 +1265,29 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	// and this test would time out. See the Dendrite CI logs for the /event_auth
 	// request the mock receives for sendTxnEvent.
 	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
-	srv := federation.NewServer(t, deployment,
-		federation.HandleKeyRequests(),
-		federation.HandleMakeSendJoinRequests(),
-		federation.HandleTransactionRequests(nil, nil),
-		federation.HandleInviteRequests(nil),
-	)
-	srv.UnexpectedRequestsAreErrors = false
-	cancel := srv.Listen()
-	defer cancel()
-
-	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "alice"})
-	sentinel := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "sentinel"})
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset":       "public_chat",
-		"room_version": "10",
-	})
-	sentinel.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
-	for i := 0; i < 100; i++ {
-		if i%2 == 0 {
-			alice.MustLeaveRoom(t, roomID)
-		} else {
-			alice.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
-		}
-	}
-	bob := srv.UserID("bob")
-	defaultImpl := federation.ServerRoomImplDefault{}
-	var existingAuthChain []gomatrixserverlib.PDU
-	srvRoom := srv.MustJoinRoom(t, deployment, spec.ServerName("hs1"), roomID, bob, federation.WithRoomOpts(federation.WithImpl(&federation.ServerRoomImplCustom{
-		ServerRoomImplDefault: defaultImpl,
-		PopulateFromSendJoinResponseFn: func(def federation.ServerRoomImpl, room *federation.ServerRoom, joinEvent gomatrixserverlib.PDU, resp fclient.RespSendJoin) {
-			defaultImpl.PopulateFromSendJoinResponse(room, joinEvent, resp)
-			existingAuthChain = resp.AuthEvents.TrustedEvents(joinEvent.Version(), false)
-		},
-	})))
-	if len(existingAuthChain) < 100 {
-		ct.Fatalf(t, "not enough events in the auth chain, got %d want >100", len(existingAuthChain))
-	}
-	createEvent := srvRoom.CurrentState(spec.MRoomCreate, "")
-	plEvent := srvRoom.CurrentState(spec.MRoomPowerLevels, "")
-	jrEvent := srvRoom.CurrentState(spec.MRoomJoinRules, "")
-
-	eventA := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "A",
-		},
-	})
-	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "B",
-		},
-		PrevEvents: []string{eventA.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
-	})
-	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "C",
-		},
-		PrevEvents: []string{eventB.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
-	})
-	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "D",
-		},
-		PrevEvents: []string{eventC.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
-	})
-	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:     spec.MRoomMember,
-		Sender:   bob,
-		StateKey: &bob,
-		Content: map[string]interface{}{
-			"membership":  "join",
-			"displayname": "E",
-		},
-		PrevEvents: []string{eventD.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventD.EventID()},
-	})
-	srvRoom.AddEvent(eventE)
-
-	stateIDsEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /state_ids",
-		},
-		PrevEvents: []string{eventE.EventID()},
-	})
-	srvRoom.AddEvent(stateIDsEvent)
-	gmeEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /get_missing_events",
-		},
-		PrevEvents: []string{stateIDsEvent.EventID()},
-	})
-	srvRoom.AddEvent(gmeEvent)
-	sendTxnEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
-		Type:   "m.room.message",
-		Sender: bob,
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "for /send",
-		},
-		PrevEvents: []string{gmeEvent.EventID()},
-	})
-	srvRoom.AddEvent(sendTxnEvent)
+	fixt := newCorruptedAuthChainFixture(t)
+	srv := fixt.srv
+	deployment := fixt.deployment
+	alice := fixt.alice
+	roomID := fixt.roomID
+	bob := fixt.bob
+	srvRoom := fixt.srvRoom
+	existingAuthChain := fixt.existingAuthChain
+	createEvent := fixt.createEvent
+	plEvent := fixt.plEvent
+	jrEvent := fixt.jrEvent
+	eventA := fixt.eventA
+	eventB := fixt.eventB
+	eventC := fixt.eventC
+	eventD := fixt.eventD
+	eventE := fixt.eventE
+	stateIDsEvent := fixt.stateIDsEvent
+	gmeEvent := fixt.gmeEvent
+	sendTxnEvent := fixt.sendTxnEvent
 
 	allEventsToShare := []gomatrixserverlib.PDU{
 		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventB, eventC, eventD, eventE,
 	}
-	t.Logf("event A: %s", eventA.EventID())
-	t.Logf("event B: %s", eventB.EventID())
-	t.Logf("event C: %s", eventC.EventID())
-	t.Logf("event D: %s", eventD.EventID())
-	t.Logf("event E: %s", eventE.EventID())
-	t.Logf("event for /state_ids: %s", stateIDsEvent.EventID())
-	t.Logf("event for /get_missing_events: %s", gmeEvent.EventID())
-	t.Logf("event for /send: %s", sendTxnEvent.EventID())
-
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	var gmeCallCount atomic.Int32
