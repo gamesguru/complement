@@ -214,7 +214,9 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		pathVars := mux.Vars(req)
 		if pathVars["roomID"] != room.RoomID {
-			t.Fatalf("Received /state_ids for the wrong room: %s", pathVars["roomID"])
+			ct.Errorf(t, "Received /state_ids for the wrong room: %s", pathVars["roomID"])
+			w.WriteHeader(404)
+			return
 		}
 		roomState := room.AllCurrentState()
 		stateEventIDs := make([]string, 0, len(roomState))
@@ -1120,6 +1122,19 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
+	// Serve a valid fallback response, both for unrelated /get_missing_events
+	// traffic from the padded room and for the real request under test.
+	writeFallback := func(w http.ResponseWriter) {
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
@@ -1128,25 +1143,23 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
 				matched = true
-				if !gmeRequested.Swap(true) {
-					gmeWaiter.Finish()
-				}
 				break
 			}
 		}
 		if !matched {
-			t.Fatalf("unexpected event provided to /get_missing_events: got %v want %s", latestEvents, sendTxnEvent.EventID())
+			// The dense padded room can generate /get_missing_events traffic
+			// unrelated to the sendTxnEvent chain under test (e.g. Synapse's
+			// own backfill/catch-up for the leave/join padding). Serve the
+			// same fallback response and keep waiting for the request we
+			// actually care about instead of failing the whole test on it.
+			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
+			writeFallback(w)
+			return
 		}
-		w.WriteHeader(200)
-		res := struct {
-			Events []gomatrixserverlib.PDU `json:"events"`
-		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
+		if !gmeRequested.Swap(true) {
+			gmeWaiter.Finish()
 		}
-		var responseBytes []byte
-		responseBytes, err := json.Marshal(&res)
-		must.NotError(t, "failed to marshal response", err)
-		w.Write(responseBytes)
+		writeFallback(w)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool
@@ -1414,17 +1427,43 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	gmeWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	var gmeCallCount atomic.Int32
+	// Serve a valid fallback response. Used both for unrelated /get_missing_events
+	// traffic (the padded room generates backfill we don't care about) and for the
+	// successful retry after the malformed first response.
+	writeFallback := func(w http.ResponseWriter) {
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		body := must.ParseJSON(t, req.Body)
 		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
 		latestEvents := body.Get("latest_events").Array()
+		matched := false
 		for _, ev := range latestEvents {
 			if ev.String() == sendTxnEvent.EventID() {
-				if !gmeRequested.Swap(true) {
-					gmeWaiter.Finish()
-				}
+				matched = true
 				break
 			}
+		}
+		if !matched {
+			// The dense padded room can generate /get_missing_events traffic
+			// unrelated to the sendTxnEvent chain under test (e.g. Synapse's
+			// own backfill/catch-up for the leave/join padding). Don't let it
+			// consume the malformed-JSON slot meant for the first sendTxnEvent
+			// request -- serve it the same fallback response instead.
+			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
+			writeFallback(w)
+			return
+		}
+		if !gmeRequested.Swap(true) {
+			gmeWaiter.Finish()
 		}
 
 		callNum := gmeCallCount.Add(1)
@@ -1435,16 +1474,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			return
 		}
 
-		w.WriteHeader(200)
-		res := struct {
-			Events []gomatrixserverlib.PDU `json:"events"`
-		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
-		}
-		var responseBytes []byte
-		responseBytes, err := json.Marshal(&res)
-		must.NotError(t, "failed to marshal response", err)
-		w.Write(responseBytes)
+		writeFallback(w)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool
