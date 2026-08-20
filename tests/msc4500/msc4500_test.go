@@ -178,7 +178,7 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 }
 
 // testMSC4500StateOutbound verifies that outbound /send transactions carry the
-// MSC4500 state_hashes extension (tk.nutra.msc4500.state_hashes), so that remote
+// MSC4500 state_hashes extension, so that remote
 // servers can validate state equivalence across the wire.
 func testMSC4500StateOutbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
@@ -188,7 +188,7 @@ func testMSC4500StateOutbound(t *testing.T) {
 
 	// Remote homeserver that captures raw /send transaction bodies. We parse the
 	// raw body (rather than gomatrixserverlib.Transaction) because the custom
-	// tk.nutra.msc4500.state_hashes field would otherwise be dropped.
+	// state_hashes field would otherwise be dropped.
 	found := helpers.NewWaiter()
 
 	srv := federation.NewServer(t, deployment,
@@ -228,11 +228,11 @@ func testMSC4500StateOutbound(t *testing.T) {
 		},
 	})
 
-	found.Waitf(t, 30*time.Second, "timed out waiting for outbound tk.nutra.msc4500.state_hashes on /send")
+	found.Waitf(t, 30*time.Second, "timed out waiting for outbound state_hashes on /send")
 }
 
 // checkMSC4500Outbound inspects a raw /send transaction body and finishes the
-// waiter if it carries a valid tk.nutra.msc4500.state_hashes extension.
+// waiter if it carries a valid state_hashes extension.
 //
 // It parses the body twice: once into a gomatrixserverlib.Transaction to confirm
 // the payload is a well-formed /send transaction (optional - ignored on failure),
@@ -248,7 +248,10 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return
 	}
-	stateHashes, ok := body["tk.nutra.msc4500.state_hashes"]
+	stateHashes, ok := body["state_hashes"]
+	if !ok {
+		stateHashes, ok = body["tk.nutra.msc4500.state_hashes"]
+	}
 	if !ok {
 		return
 	}
