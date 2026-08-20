@@ -122,6 +122,8 @@ func testMSC4500StateHashMatch(t *testing.T) {
 
 	charlie := srv.UserID("charlie")
 	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
+	joinEvent := serverRoom.CurrentState("m.room.member", charlie)
+	must.NotEqual(t, joinEvent, nil, "expected charlie join event in remote room state")
 
 	event := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
@@ -132,7 +134,9 @@ func testMSC4500StateHashMatch(t *testing.T) {
 		},
 	})
 
-	digestHex := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, event.EventID())
+	// The message event does not change room state, so the post-event digest is
+	// the same as the one after charlie's join event, which hs1 already knows.
+	digestHex := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
 
 	pdus := []json.RawMessage{event.JSON()}
 	txnJSON := map[string]interface{}{
