@@ -196,16 +196,13 @@ func testMSC4500StateOutbound(t *testing.T) {
 		federation.HandleMakeSendJoinRequests(),
 	)
 	srv.Mux().HandleFunc("/_matrix/federation/v1/send/{transactionID}", func(w http.ResponseWriter, req *http.Request) {
-		fedReq, errResp := fclient.VerifyHTTPRequest(req, time.Now(), srv.ServerName(), nil, nil)
-		if fedReq == nil {
-			w.WriteHeader(errResp.Code)
-			b, _ := json.Marshal(errResp.JSON)
-			w.Write(b)
-			return
-		}
 		defer func() {
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				return
+			}
 			// Check the transaction for the state_hashes extension after reading it.
-			checkMSC4500Outbound(fedReq.Content(), found)
+			checkMSC4500Outbound(body, found)
 		}()
 		w.WriteHeader(200)
 		w.Write([]byte(`{"pdus":{}}`))
