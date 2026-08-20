@@ -19,6 +19,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
 	"golang.org/x/crypto/blake2b"
@@ -235,7 +236,17 @@ func testMSC4500StateOutbound(t *testing.T) {
 
 // checkMSC4500Outbound inspects a raw /send transaction body and finishes the
 // waiter if it carries a valid tk.nutra.msc4500.state_hashes extension.
+//
+// It parses the body twice: once into a gomatrixserverlib.Transaction to confirm
+// the payload is a well-formed /send transaction (optional - ignored on failure),
+// and once into a generic map so the custom state_hashes extension (which the
+// strongly-typed Transaction drops) can be inspected.
 func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter) {
+	// Optional: verify the body also unmarshals as a standard Transaction. This
+	// is not required for the state_hashes check, so a parse error is ignored.
+	var txn gomatrixserverlib.Transaction
+	_ = json.Unmarshal(raw, &txn)
+
 	var body map[string]interface{}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return
