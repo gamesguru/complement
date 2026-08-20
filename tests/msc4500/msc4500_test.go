@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
@@ -22,10 +24,12 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-// TestMSC4500State exercises the MSC4500 state_accumulator endpoint.
+// TestMSC4500State exercises the MSC4500 state_accumulator endpoint and the
+// outbound state_hashes extension on /send transactions.
 func TestMSC4500State(t *testing.T) {
 	t.Run("Accumulator", testMSC4500StateAccumulator)
 	t.Run("HashMismatch", testMSC4500StateHashMismatch)
+	t.Run("Outbound", testMSC4500StateOutbound)
 }
 
 // testMSC4500StateAccumulator verifies that the state_accumulator endpoint
@@ -170,4 +174,90 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 	})
 	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
 	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16", "mismatch algorithm wrong")
+}
+
+// testMSC4500StateOutbound verifies that outbound /send transactions carry the
+// MSC4500 state_hashes extension (tk.nutra.msc4500.state_hashes), so that remote
+// servers can validate state equivalence across the wire.
+func testMSC4500StateOutbound(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	// Remote homeserver that captures raw /send transaction bodies. We parse the
+	// raw body (rather than gomatrixserverlib.Transaction) because the custom
+	// tk.nutra.msc4500.state_hashes field would otherwise be dropped.
+	found := helpers.NewWaiter()
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.Mux().HandleFunc("/_matrix/federation/v1/send/{transactionID}", func(w http.ResponseWriter, req *http.Request) {
+		fedReq, errResp := fclient.VerifyHTTPRequest(req, time.Now(), srv.ServerName(), nil, nil)
+		if fedReq == nil {
+			w.WriteHeader(errResp.Code)
+			b, _ := json.Marshal(errResp.JSON)
+			w.Write(b)
+			return
+		}
+		defer func() {
+			// Check the transaction for the state_hashes extension after reading it.
+			checkMSC4500Outbound(fedReq.Content(), found)
+		}()
+		w.WriteHeader(200)
+		w.Write([]byte(`{"pdus":{}}`))
+	}).Methods("PUT")
+
+	cancel := srv.Listen()
+	defer cancel()
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+	})
+
+	charlie := srv.UserID("charlie")
+	_ = srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
+
+	// Trigger an outbound transaction by having alice send a message and syncing
+	// until it is present (which forces the homeserver to forward it to charlie).
+	alice.SendEventSynced(t, roomID, b.Event{
+		Type: "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "hello",
+		},
+	})
+
+	found.Waitf(t, 30*time.Second, "timed out waiting for outbound tk.nutra.msc4500.state_hashes on /send")
+}
+
+// checkMSC4500Outbound inspects a raw /send transaction body and finishes the
+// waiter if it carries a valid tk.nutra.msc4500.state_hashes extension.
+func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter) {
+	var body map[string]interface{}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return
+	}
+	stateHashes, ok := body["tk.nutra.msc4500.state_hashes"]
+	if !ok {
+		return
+	}
+	sh, ok := stateHashes.(map[string]interface{})
+	if !ok || len(sh) == 0 {
+		return
+	}
+	for _, v := range sh {
+		entry, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		algo, _ := entry["algorithm"].(string)
+		after, _ := entry["after"].(string)
+		if algo == "lthash16" && len(after) == 64 {
+			found.Finish()
+			return
+		}
+	}
 }
