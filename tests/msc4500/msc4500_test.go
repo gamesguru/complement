@@ -29,6 +29,7 @@ import (
 // outbound state_hashes extension on /send transactions.
 func TestMSC4500State(t *testing.T) {
 	t.Run("Accumulator", testMSC4500StateAccumulator)
+	t.Run("HashMatch", testMSC4500StateHashMatch)
 	t.Run("HashMismatch", testMSC4500StateHashMismatch)
 	t.Run("Outbound", testMSC4500StateOutbound)
 }
@@ -97,6 +98,85 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	expectedDigestHex := hex.EncodeToString(hash[:])
 
 	must.Equal(t, digestHex, expectedDigestHex, "Digest does not match BLAKE2b-256 of lattice")
+}
+
+func testMSC4500StateHashMatch(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	// Create a remote homeserver
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	cancel := srv.Listen()
+	defer cancel()
+
+	// Alice creates a public room
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset": "public_chat",
+	})
+
+	charlie := srv.UserID("charlie")
+	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
+
+	event := srv.MustCreateEvent(t, serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Matching state hash event",
+		},
+	})
+
+	digestHex := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, event.EventID())
+
+	pdus := []json.RawMessage{event.JSON()}
+	txnJSON := map[string]interface{}{
+		"origin":           srv.ServerName(),
+		"origin_server_ts": time.Now().UnixNano() / 1000000,
+		"pdus":             pdus,
+		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
+			event.EventID(): map[string]interface{}{
+				"algorithm": "lthash16",
+				"after":     digestHex,
+			},
+		},
+	}
+
+	txnBody, err := json.Marshal(txnJSON)
+	must.NotError(t, "json marshal txn", err)
+
+	txnID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
+	reqURI := fmt.Sprintf("/_matrix/federation/v1/send/%s", txnID)
+
+	req := fclient.NewFederationRequest("PUT", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
+	err = req.SetContent(json.RawMessage(txnBody))
+	must.NotError(t, "set content", err)
+
+	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
+	must.NotError(t, "do federation request", err)
+
+	resBody, err := io.ReadAll(res.Body)
+	must.NotError(t, "read res body", err)
+	must.NotError(t, "close res body", res.Body.Close())
+
+	t.Logf("Response: %s", string(resBody))
+
+	// Verify the response does not contain state_hash_mismatch for the event
+	parsedRes := gjson.ParseBytes(resBody)
+	mismatchObj := gjson.Result{}
+	parsedRes.Get("pdus").ForEach(func(key, value gjson.Result) bool {
+		if key.Str == event.EventID() {
+			mismatchObj = value.Get("state_hash_mismatch")
+			return false
+		}
+		return true
+	})
+	must.Equal(t, mismatchObj.Exists(), false, "state_hash_mismatch should not be present in response")
 }
 
 func testMSC4500StateHashMismatch(t *testing.T) {
@@ -175,6 +255,27 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 	})
 	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
 	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16", "mismatch algorithm wrong")
+}
+
+func mustGetStateAccumulatorDigest(
+	t *testing.T,
+	srv *federation.Server,
+	deployment complement.Deployment,
+	roomID string,
+	eventID string,
+) string {
+	t.Helper()
+
+	reqURI := fmt.Sprintf("/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/%s?event_id=%s", roomID, eventID)
+	req := fclient.NewFederationRequest("GET", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
+
+	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
+	must.NotError(t, "do federation request", err)
+
+	fedBody := must.ParseJSON(t, fedRes.Body)
+	digestHex := fedBody.Get("digest").Str
+	must.NotEqual(t, digestHex, "", "Digest is empty")
+	return digestHex
 }
 
 // testMSC4500StateOutbound verifies that outbound /send transactions carry the
