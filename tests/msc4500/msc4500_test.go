@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -259,6 +260,8 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 	})
 	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
 	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16", "mismatch algorithm wrong")
+	expectedDigest := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, badEvent.EventID())
+	must.Equal(t, mismatchObj.Get("digest").Str, expectedDigest, "mismatch digest wrong")
 }
 
 func mustGetStateAccumulatorDigest(
@@ -295,6 +298,12 @@ func testMSC4500StateOutbound(t *testing.T) {
 	// raw body (rather than gomatrixserverlib.Transaction) because the custom
 	// state_hashes field would otherwise be dropped.
 	found := helpers.NewWaiter()
+	var (
+		mu             sync.Mutex
+		observedAfter  string
+		observedDigest bool
+		expectedDigest string
+	)
 
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
@@ -307,7 +316,7 @@ func testMSC4500StateOutbound(t *testing.T) {
 				return
 			}
 			// Check the transaction for the state_hashes extension after reading it.
-			checkMSC4500Outbound(body, found)
+			checkMSC4500Outbound(body, found, &mu, &observedAfter, &observedDigest)
 		}()
 		w.WriteHeader(200)
 		w.Write([]byte(`{"pdus":{}}`))
@@ -321,7 +330,10 @@ func testMSC4500StateOutbound(t *testing.T) {
 	})
 
 	charlie := srv.UserID("charlie")
-	_ = srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
+	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
+	joinEvent := serverRoom.CurrentState("m.room.member", charlie)
+	must.NotEqual(t, joinEvent, nil, "expected charlie join event in remote room state")
+	expectedDigest = mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
 
 	// Trigger an outbound transaction by having alice send a message and syncing
 	// until it is present (which forces the homeserver to forward it to charlie).
@@ -334,6 +346,11 @@ func testMSC4500StateOutbound(t *testing.T) {
 	})
 
 	found.Waitf(t, 30*time.Second, "timed out waiting for outbound state_hashes on /send")
+
+	mu.Lock()
+	defer mu.Unlock()
+	must.Equal(t, observedDigest, true, "did not observe a valid outbound state_hashes entry")
+	must.Equal(t, observedAfter, expectedDigest, "outbound state_hashes digest wrong")
 }
 
 // checkMSC4500Outbound inspects a raw /send transaction body and finishes the
@@ -343,7 +360,7 @@ func testMSC4500StateOutbound(t *testing.T) {
 // the payload is a well-formed /send transaction (optional - ignored on failure),
 // and once into a generic map so the custom state_hashes extension (which the
 // strongly-typed Transaction drops) can be inspected.
-func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter) {
+func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.Mutex, observedAfter *string, observedDigest *bool) {
 	// Optional: verify the body also unmarshals as a standard Transaction. This
 	// is not required for the state_hashes check, so a parse error is ignored.
 	var txn gomatrixserverlib.Transaction
@@ -372,6 +389,10 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter) {
 		algo, _ := entry["algorithm"].(string)
 		after, _ := entry["after"].(string)
 		if algo == "lthash16" && len(after) == 64 {
+			mu.Lock()
+			*observedAfter = after
+			*observedDigest = true
+			mu.Unlock()
 			found.Finish()
 			return
 		}
