@@ -3,7 +3,6 @@ package msc4500
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -85,10 +84,10 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", "lthash16-v1"))
 
 	latticeB64 := fedBody.Get("lattice").Str
-	digestHex := fedBody.Get("digest").Str
+	digestB64 := fedBody.Get("digest").Str
 
 	must.NotEqual(t, latticeB64, "", "Lattice is empty")
-	must.Equal(t, len(digestHex), 64, "Digest is not 64 hex characters")
+	must.Equal(t, len(digestB64), 43, "Digest is not 43 base64url characters")
 
 	// Verify the digest matches the lattice
 	latticeBytes, err := base64.RawURLEncoding.DecodeString(latticeB64)
@@ -96,9 +95,9 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	must.Equal(t, len(latticeBytes), 2048, "Lattice is not 2048 bytes")
 
 	hash := blake2b.Sum256(latticeBytes)
-	expectedDigestHex := hex.EncodeToString(hash[:])
+	expectedDigestB64 := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	must.Equal(t, digestHex, expectedDigestHex, "Digest does not match BLAKE2b-256 of lattice")
+	must.Equal(t, digestB64, expectedDigestB64, "Digest does not match BLAKE2b-256 of lattice")
 }
 
 func testMSC4500StateHashMatch(t *testing.T) {
@@ -224,7 +223,7 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 		"state_hashes": map[string]interface{}{
 			badEvent.EventID(): map[string]interface{}{
 				"algorithm": "lthash16-v1",
-				"after":     "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+				"after":     "ABEiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8",
 			},
 		},
 	}
@@ -280,9 +279,9 @@ func mustGetStateAccumulatorDigest(
 	must.NotError(t, "do federation request", err)
 
 	fedBody := must.ParseJSON(t, fedRes.Body)
-	digestHex := fedBody.Get("digest").Str
-	must.NotEqual(t, digestHex, "", "Digest is empty")
-	return digestHex
+	digestB64 := fedBody.Get("digest").Str
+	must.NotEqual(t, digestB64, "", "Digest is empty")
+	return digestB64
 }
 
 // testMSC4500StateOutbound verifies that outbound /send transactions carry the
