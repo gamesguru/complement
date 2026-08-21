@@ -82,7 +82,7 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	fedBody := must.ParseJSON(t, fedRes.Body)
 
 	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("event_id", eventID))
-	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", "lthash16"))
+	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", "lthash16-v1"))
 
 	latticeB64 := fedBody.Get("lattice").Str
 	digestHex := fedBody.Get("digest").Str
@@ -146,7 +146,7 @@ func testMSC4500StateHashMatch(t *testing.T) {
 		"pdus":             pdus,
 		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
 			event.EventID(): map[string]interface{}{
-				"algorithm": "lthash16",
+				"algorithm": "lthash16-v1",
 				"after":     digestHex,
 			},
 		},
@@ -221,9 +221,9 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 		"origin":           srv.ServerName(),
 		"origin_server_ts": time.Now().UnixNano() / 1000000,
 		"pdus":             pdus,
-		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
+		"state_hashes": map[string]interface{}{
 			badEvent.EventID(): map[string]interface{}{
-				"algorithm": "lthash16",
+				"algorithm": "lthash16-v1",
 				"after":     "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 			},
 		},
@@ -259,7 +259,7 @@ func testMSC4500StateHashMismatch(t *testing.T) {
 		return true
 	})
 	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
-	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16", "mismatch algorithm wrong")
+	must.Equal(t, mismatchObj.Get("algorithm").Str, "lthash16-v1", "mismatch algorithm wrong")
 	expectedDigest := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, badEvent.EventID())
 	must.Equal(t, mismatchObj.Get("digest").Str, expectedDigest, "mismatch digest wrong")
 }
@@ -388,7 +388,7 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.M
 		}
 		algo, _ := entry["algorithm"].(string)
 		after, _ := entry["after"].(string)
-		if algo == "lthash16" && len(after) == 64 {
+		if algo == "lthash16-v1" && len(after) == 64 {
 			mu.Lock()
 			*observedAfter = after
 			*observedDigest = true
