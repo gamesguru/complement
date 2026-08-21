@@ -603,7 +603,7 @@ func TestMSC4499Key(t *testing.T) {
 		defer deployment.Destroy(t)
 		testMSC4499KeyVerifyKeysCeiling(t, deployment)
 	})
-	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTsSanityCheck)
+	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
 	t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 	t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
 	t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
@@ -2735,7 +2735,7 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T, deployment complement.Deploym
 //     (in old_verify_keys with expired_ts = now + 1 year — malformed)
 //  2. Query for key A → should be returned (payload not poisoned)
 //  3. Query for key B → should be absent (malformed entry ignored)
-func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
+func testMSC4499KeyExpiredTSSanityCheck(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -2763,7 +2763,7 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_sanity_b")
 
 	// Future expired_ts: 1 year from now — clearly malformed
-	futureExpiredTs := spec.AsTimestamp(time.Now().Add(365 * 24 * time.Hour))
+	futureExpiredTS := spec.AsTimestamp(time.Now().Add(365 * 24 * time.Hour))
 
 	mockKeyServer := &MockKeyServer{
 		serverName: originName,
@@ -2778,7 +2778,7 @@ func testMSC4499KeyExpiredTsSanityCheck(t *testing.T) {
 				VerifyKey: gomatrixserverlib.VerifyKey{
 					Key: spec.Base64Bytes(pubKeyB),
 				},
-				ExpiredTS: futureExpiredTs,
+				ExpiredTS: futureExpiredTS,
 			},
 		},
 		validUntil: time.Now().Add(24 * time.Hour),
