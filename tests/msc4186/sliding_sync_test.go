@@ -618,7 +618,6 @@ func testMSC4186SlidingSyncSubscriptionsKeepLeftRooms(t *testing.T) {
 	})
 
 	bob.MustLeaveRoom(t, roomID)
-	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 	_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
 		ConnID: "stale-subscription",
