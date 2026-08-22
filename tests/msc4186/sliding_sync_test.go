@@ -609,8 +609,8 @@ func testMSC4186SlidingSyncSubscriptionsKeepLeftRooms(t *testing.T) {
 	bob.MustJoinRoom(t, roomID, nil)
 	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
-	mustDoSlidingSync(t, bob, slidingSyncReq{
-		ConnID: "stale-subscription-prime",
+	pos, _ := mustDoSlidingSync(t, bob, slidingSyncReq{
+		ConnID: "stale-subscription",
 		Lists:  allRoomsList(1, 0, 0),
 		RoomSubscriptions: map[string]interface{}{
 			roomID: slidingSubscription(1),
@@ -621,7 +621,8 @@ func testMSC4186SlidingSyncSubscriptionsKeepLeftRooms(t *testing.T) {
 	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 	_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
-		ConnID: "stale-subscription-after-leave",
+		ConnID: "stale-subscription",
+		Pos:    pos,
 		Lists:  allRoomsList(1, 0, 0),
 		RoomSubscriptions: map[string]interface{}{
 			roomID: slidingSubscription(1),
