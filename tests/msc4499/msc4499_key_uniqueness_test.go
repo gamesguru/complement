@@ -550,71 +550,145 @@ func federationClientWithSigningKey(
 // behaviour across many scenarios: first-seen-wins conflict resolution, key
 // rotation, rejection of duplicate/malformed payloads, caching/backoff, and
 // storage limits.
+// Section numbers cited below (§n) index the MSC4499 proposal doc's ###
+// subsections in document order (../proposals/proposals/4499-key-caching.md):
+//
+//	§3  Key caching requirements       (refresh, negative caching/backoff,
+//	                                     fetch coalescing, notary two-tier
+//	                                     binding, PER-RESPONSE 50/3000 ceilings)
+//	§4  Key ID uniqueness requirement  (permanent binding, collision detection,
+//	                                     duplicate-JSON-key rejection, First
+//	                                     Seen Wins)
+//	§5  Key rotation procedure
+//	§6  Admin startup guardrails
+//	§7  Recovery from key loss
+//	§8  Historical event verification
+//	§9  Storage considerations         (the CUMULATIVE 3,000-entry retention
+//	                                     ceiling / eviction / corroboration
+//	                                     tiers)
+//
+// §n is its own t.Run() level below each leaf's parent group, so it's
+// visible in the actual subtest name (e.g.
+// TestMSC4499Key/Resolution/§4/IDFirstSeenWinsDirect) — not just a comment.
+// §3 and §4 in particular both span the Validation and Resolution groups, so
+// the doc's own section boundaries don't line up with (and don't dictate)
+// this taxonomy; §n is a cross-cutting index into it, not the taxonomy
+// itself.
 func TestMSC4499Key(t *testing.T) {
-	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
-	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
-	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
-	t.Run("Rotation", testMSC4499KeyRotation)
-	t.Run("IntraPayloadRejection", testMSC4499KeyIntraPayloadRejection)
-	t.Run("IdenticalCrossMapIsLegal", testMSC4499KeyIdenticalCrossMapIsLegal)
-	t.Run("FetchCoalescing", testMSC4499KeyFetchCoalescing)
-	t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
-	t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
-	t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
-	t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
+	// Validation: a single payload's structure gets rejected wholesale —
+	// duplicate/colliding JSON keys, or a per-response ceiling breach — before
+	// conflict resolution even begins.
+	t.Run("Validation", func(t *testing.T) {
+		// VerifyKeysCeiling tests the PER-RESPONSE 50-active-key ceiling (§3):
+		// one oversized payload, rejected wholesale — the same shape as the
+		// JSON-parsing tests below, NOT the cumulative cross-response eviction
+		// that CorroborationTierRetention/StorageQuotaResilience test under
+		// System (§9). It gets its own deployment: pairing it with those two
+		// would make one test's saturation silently change another's
+		// pass/fail reason.
+		t.Run("§3", func(t *testing.T) {
+			t.Run("VerifyKeysCeiling", func(t *testing.T) {
+				runtime.SkipIf(t, runtime.Dendrite)
+				deployment := complement.Deploy(t, 1)
+				defer deployment.Destroy(t)
+				testMSC4499KeyVerifyKeysCeiling(t, deployment)
+			})
+		})
 
-	// BindingPromotion is the only trusted-notary test that doesn't push hs1's
-	// key store toward its retention ceiling, so it's the only one safe to
-	// share a deployment with. CorroborationTierRetention floods old_verify_keys
-	// with 3001 entries (same saturation pattern as StorageQuotaResilience /
-	// VerifyKeysCeiling below), so it gets its own deployment rather than being
-	// grouped here — pairing it would make its pass/fail depend on run order
-	// and on no earlier subtest in the group having partially mutated hs1.
-	t.Run("BindingPromotion", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Dendrite)
-		deployment := deployMSC4499TrustedNotary(t)
-		defer deployment.Destroy(t)
-		testMSC4499KeyBindingPromotion(t, deployment)
+		t.Run("§4", func(t *testing.T) {
+			t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
+			t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
+			t.Run("IdenticalCrossMapIsLegal", testMSC4499KeyIdenticalCrossMapIsLegal)
+			t.Run("IntraPayloadRejection", testMSC4499KeyIntraPayloadRejection)
+		})
 	})
 
-	// CorroborationTierRetention, StorageQuotaResilience, and VerifyKeysCeiling
-	// each get their own deployment: all three deliberately push a homeserver's
-	// key store to (and past) its retention ceiling, so sharing a deployment
-	// between any of them risks one test's saturation silently changing
-	// another's pass/fail reason.
-	t.Run("CorroborationTierRetention", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Dendrite)
-		deployment := deployMSC4499TrustedNotary(t)
-		defer deployment.Destroy(t)
-		testMSC4499KeyCorroborationTierRetention(t, deployment)
-	})
-	t.Run("StorageQuotaResilience", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Dendrite)
-		deployment := complement.Deploy(t, 1)
-		defer deployment.Destroy(t)
-		testMSC4499KeyStorageQuotaResilience(t, deployment)
+	// Resolution: when valid payloads disagree, these assert the First Seen
+	// Wins and notary two-tier binding rules.
+	t.Run("Resolution", func(t *testing.T) {
+		t.Run("§3", func(t *testing.T) {
+			// BindingPromotion is the only trusted-notary test that doesn't push
+			// hs1's key store toward its retention ceiling, so it's the only one
+			// safe to share a deployment with. CorroborationTierRetention (under
+			// System, below) floods old_verify_keys with 3001 entries (same
+			// saturation pattern as StorageQuotaResilience), so it gets its own
+			// deployment rather than being grouped here — pairing it would make
+			// its pass/fail depend on run order and on no earlier subtest in the
+			// group having partially mutated hs1.
+			t.Run("BindingPromotion", func(t *testing.T) {
+				runtime.SkipIf(t, runtime.Dendrite)
+				deployment := deployMSC4499TrustedNotary(t)
+				defer deployment.Destroy(t)
+				testMSC4499KeyBindingPromotion(t, deployment)
+			})
+
+			t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
+			t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
+		})
+
+		t.Run("§4", func(t *testing.T) {
+			t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
+			t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
+		})
 	})
 
-	t.Run("BackoffClearedOnSuccess", testMSC4499KeyBackoffClearedOnSuccess)
-	t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
-	t.Run("VerifyKeysCeiling", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Dendrite)
-		deployment := complement.Deploy(t, 1)
-		defer deployment.Destroy(t)
-		testMSC4499KeyVerifyKeysCeiling(t, deployment)
+	// Temporal: key validity across time — rotating to a new key, and
+	// verifying against a key that was valid in the past.
+	t.Run("Temporal", func(t *testing.T) {
+		t.Run("§5", func(t *testing.T) {
+			t.Run("KeyRotation", testMSC4499KeyRotation)
+		})
+		t.Run("§7", func(t *testing.T) {
+			t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
+		})
+		t.Run("§8", func(t *testing.T) {
+			t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
+			t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
+		})
 	})
-	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
-	t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
-	t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
-	t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
-}
 
-// Kept as a standalone top-level test, not a TestMSC4499Key subtest: downstream
-// CI (e.g. continuwuity's) tracks/filters this coverage by its flat top-level
-// name, so nesting it would silently break anything keyed on that name even
-// though the test itself would still run.
-func TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart(t *testing.T) {
-	testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t)
+	// System: the server's own local state — caching mechanics, cumulative
+	// storage/retention under pressure, restart durability, and startup/
+	// recovery guardrails — rather than protocol behavior toward peers.
+	t.Run("System", func(t *testing.T) {
+		t.Run("§3", func(t *testing.T) {
+			t.Run("BackoffClearedOnSuccess", testMSC4499KeyBackoffClearedOnSuccess)
+			t.Run("FetchCoalescing", testMSC4499KeyFetchCoalescing)
+			t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
+		})
+
+		t.Run("§4", func(t *testing.T) {
+			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
+		})
+
+		t.Run("§6", func(t *testing.T) {
+			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
+		})
+		t.Run("§7", func(t *testing.T) {
+			t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
+		})
+
+		// CorroborationTierRetention and StorageQuotaResilience each get their
+		// own deployment: both deliberately push a homeserver's key store to
+		// (and past) its CUMULATIVE retention ceiling, so sharing a deployment
+		// between them (or with BindingPromotion/VerifyKeysCeiling above)
+		// risks one test's saturation silently changing another's pass/fail
+		// reason.
+		t.Run("§9", func(t *testing.T) {
+			t.Run("CorroborationTierRetention", func(t *testing.T) {
+				runtime.SkipIf(t, runtime.Dendrite)
+				deployment := deployMSC4499TrustedNotary(t)
+				defer deployment.Destroy(t)
+				testMSC4499KeyCorroborationTierRetention(t, deployment)
+			})
+			t.Run("StorageQuotaResilience", func(t *testing.T) {
+				runtime.SkipIf(t, runtime.Dendrite)
+				deployment := complement.Deploy(t, 1)
+				defer deployment.Destroy(t)
+				testMSC4499KeyStorageQuotaResilience(t, deployment)
+			})
+		})
+	})
 }
 
 // testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
