@@ -21,6 +21,7 @@ package match
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -317,21 +318,21 @@ func AnyOf(checkers ...JSON) JSON {
 			return fmt.Errorf("must provide at least one checker to AnyOf")
 		}
 
-		errors := make([]error, len(checkers))
+		errs := make([]error, len(checkers))
 		for i, check := range checkers {
-			errors[i] = check(body)
-			if errors[i] == nil {
+			errs[i] = check(body)
+			if errs[i] == nil {
 				return nil
 			}
 		}
 
 		builder := strings.Builder{}
 		builder.WriteString("all checks failed:")
-		for _, err := range errors {
+		for _, err := range errs {
 			builder.WriteString("\n    ")
 			builder.WriteString(err.Error())
 		}
-		return fmt.Errorf(builder.String())
+		return errors.New(builder.String())
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/complement/should"
 	"github.com/tidwall/gjson"
 )
@@ -26,27 +27,28 @@ func TestSync(t *testing.T) {
 		// We're specifically testing the scenario where a new "DM" is created and the other person
 		// joins without speaking yet.
 		t.Run("Initial sync with lazy-loading room members -> public room `state_after` includes all members from timeline", func(t *testing.T) {
-				t.Parallel()
+			t.Parallel()
+			runtime.SkipIf(t, runtime.Dendrite) // race condition
 
-				// Alice creates a room
-				roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
-				alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
+			// Alice creates a room
+			roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
 
-				// Bob joins the room
-				bob.MustJoinRoom(t, roomID, nil)
+			// Bob joins the room
+			bob.MustJoinRoom(t, roomID, nil)
 
-				// Wait for Bob's join to be seen by Alice's sync (this is not necessarily instant)
-				alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+			// Wait for Bob's join to be seen by Alice's sync (this is not necessarily instant)
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
-				// Ensure `state_after` looks correct
-				expectedSendersFromTimeline := []string{ alice.UserID, bob.UserID }
-				syncFilter := `{
+			// Ensure `state_after` looks correct
+			expectedSendersFromTimeline := []string{alice.UserID, bob.UserID}
+			syncFilter := `{
 					"room": {
 						"timeline": { "limit": 20 },
 						"state": { "lazy_load_members": true }
 					}
 				}`
-				testInitialSyncStateAfterIncludesTimelineSenders(t, alice, roomID, expectedSendersFromTimeline, syncFilter)
+			testInitialSyncStateAfterIncludesTimelineSenders(t, alice, roomID, expectedSendersFromTimeline, syncFilter)
 		})
 
 		// When lazy-loading room members is enabled, for a private room, the `state_after`
@@ -56,37 +58,37 @@ func TestSync(t *testing.T) {
 		// We're specifically testing the scenario where a new "DM" is created and the other person
 		// joins without speaking yet.
 		t.Run("Initial sync with lazy-loading room members -> private room `state_after` includes all members from timeline", func(t *testing.T) {
-				t.Parallel()
+			t.Parallel()
+			runtime.SkipIf(t, runtime.Dendrite) // race condition
 
-				// Alice creates a room
-				roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "private_chat"})
-				alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
+			// Alice creates a room
+			roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "private_chat"})
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
 
-				// Alice invites Bob
-				alice.MustInviteRoom(t, roomID, bob.UserID)
+			// Alice invites Bob
+			alice.MustInviteRoom(t, roomID, bob.UserID)
 
-				// Wait for Bob to get the invite
-				bob.MustSyncUntil(t, client.SyncReq{}, client.SyncInvitedTo(bob.UserID, roomID))
+			// Wait for Bob to get the invite
+			bob.MustSyncUntil(t, client.SyncReq{}, client.SyncInvitedTo(bob.UserID, roomID))
 
-				// Bob joins the room
-				bob.MustJoinRoom(t, roomID, nil)
+			// Bob joins the room
+			bob.MustJoinRoom(t, roomID, nil)
 
-				// Wait for Bob's join to be seen by Alice's sync (this is not necessarily instant)
-				alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
+			// Wait for Bob's join to be seen by Alice's sync (this is not necessarily instant)
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
-				// Ensure `state_after` looks correct
-				expectedSendersFromTimeline := []string{ alice.UserID, bob.UserID }
-				syncFilter := `{
+			// Ensure `state_after` looks correct
+			expectedSendersFromTimeline := []string{alice.UserID, bob.UserID}
+			syncFilter := `{
 					"room": {
 						"timeline": { "limit": 20 },
 						"state": { "lazy_load_members": true }
 					}
 				}`
-				testInitialSyncStateAfterIncludesTimelineSenders(t, alice, roomID, expectedSendersFromTimeline, syncFilter)
+			testInitialSyncStateAfterIncludesTimelineSenders(t, alice, roomID, expectedSendersFromTimeline, syncFilter)
 		})
 	})
 }
-
 
 // The `state_after` in an initial sync request should at-least include membership from
 // every `sender` in the `timeline`.
@@ -111,7 +113,7 @@ func testInitialSyncStateAfterIncludesTimelineSenders(
 	}
 
 	// Collect the senders of all the time timeline events.
-	roomTimelineRes := joinedRoomRes.Get("timeline.events");
+	roomTimelineRes := joinedRoomRes.Get("timeline.events")
 	if !roomTimelineRes.IsArray() {
 		t.Fatalf("Timeline events is not an array (found %s) %s", roomTimelineRes.Type.String(), res)
 	}
@@ -126,8 +128,8 @@ func testInitialSyncStateAfterIncludesTimelineSenders(
 	)
 	if err != nil {
 		t.Fatalf(
-			"Expected to see timeline events from (%s) but only saw %s. " +
-			"Got error: %s. join part of the sync response: %s",
+			"Expected to see timeline events from (%s) but only saw %s. "+
+				"Got error: %s. join part of the sync response: %s",
 			expectedSendersFromTimeline,
 			slices.Collect(maps.Keys(sendersFromTimeline)),
 			err.Error(),
@@ -139,8 +141,8 @@ func testInitialSyncStateAfterIncludesTimelineSenders(
 	//
 	// Try looking up the stable variant `state_after` first, then fallback to the
 	// unstable version
-	roomStateAfterResStable := joinedRoomRes.Get("state_after.events");
-	roomStateAfterResUnstable := joinedRoomRes.Get("org\\.matrix\\.msc4222\\.state_after.events");
+	roomStateAfterResStable := joinedRoomRes.Get("state_after.events")
+	roomStateAfterResUnstable := joinedRoomRes.Get("org\\.matrix\\.msc4222\\.state_after.events")
 	var roomStateAfterRes gjson.Result
 	if roomStateAfterResStable.Exists() {
 		roomStateAfterRes = roomStateAfterResStable
@@ -164,8 +166,8 @@ func testInitialSyncStateAfterIncludesTimelineSenders(
 	)
 	if err != nil {
 		t.Fatalf(
-			"Expected to see membership state (%s) from every sender in the timeline (%s). " +
-			"Got error: %s. join part of the sync response: %s",
+			"Expected to see membership state (%s) from every sender in the timeline (%s). "+
+				"Got error: %s. join part of the sync response: %s",
 			slices.Collect(maps.Keys(membershipFromState)),
 			slices.Collect(maps.Keys(sendersFromTimeline)),
 			err.Error(),

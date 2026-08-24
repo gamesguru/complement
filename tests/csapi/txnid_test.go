@@ -157,8 +157,6 @@ func TestTxnIdempotencyScopedToDevice(t *testing.T) {
 // TestTxnIdempotency tests that PUT requests idempotency follows required semantics
 func TestTxnIdempotency(t *testing.T) {
 	// Conduit appears to be tracking transaction IDs individually rather than combined with the request URI/room ID
-	runtime.SkipIf(t, runtime.Conduit)
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

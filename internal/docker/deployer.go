@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/matrix-org/complement/internal"
 	complementRuntime "github.com/matrix-org/complement/runtime"
@@ -93,11 +94,11 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 		baseImageURI = uri
 	}
 
-	containerName := fmt.Sprintf("complement_%s_dirty_%s", d.config.PackageNamespace, hsName)
+	containerName := fmt.Sprintf("complement_%s_%s_dirty_%s", d.config.PackageNamespace, d.config.RunID, hsName)
 	hsDeployment, err := deployImage(
 		d.Docker, baseImageURI, containerName,
 		d.config.PackageNamespace, "", hsName, nil, "dirty",
-		networkName, d.config,
+		networkName, d.config, nil,
 	)
 	if err != nil {
 		if hsDeployment != nil && hsDeployment.ContainerID != "" {
@@ -172,10 +173,11 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 		asIDToRegistrationMap := asIDToRegistrationFromLabels(img.Labels)
 
 		// TODO: Make CSAPI port configurable
-		containerName := fmt.Sprintf("complement_%s_%s_%s_%d", d.config.PackageNamespace, d.DeployNamespace, contextStr, counter)
+		containerName := fmt.Sprintf("complement_%s_%s_%s_%s_%d", d.config.PackageNamespace, d.config.RunID, d.DeployNamespace, contextStr, counter)
 		deployment, err := deployImage(
 			d.Docker, img.ID, containerName,
 			d.config.PackageNamespace, blueprintName, hsName, asIDToRegistrationMap, contextStr, networkName, d.config,
+			nil,
 		)
 		if err != nil {
 			if deployment != nil && deployment.ContainerID != "" {
@@ -333,10 +335,70 @@ func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
-// nolint
 func deployImage(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
-	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement,
+	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
+) (*HomeserverDeployment, error) {
+	const maxAttempts = 3
+	var lastDeployment *HomeserverDeployment
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		deployment, err := deployImageOnce(
+			docker, imageID, containerName, pkgNamespace, blueprintName, hsName,
+			asIDToRegistrationMap, contextStr, networkName, cfg, extraEnv,
+		)
+		if err == nil {
+			return deployment, nil
+		}
+		lastDeployment = deployment
+		lastErr = err
+		if !isRetryableDeployBootstrapError(err) {
+			return deployment, err
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		if deployment != nil && deployment.ContainerID != "" {
+			if rmErr := docker.ContainerRemove(context.Background(), deployment.ContainerID, container.RemoveOptions{Force: true}); rmErr != nil {
+				log.Printf("%s: failed to remove failed container %s before retry: %s", contextStr, deployment.ContainerID, rmErr)
+			}
+		} else {
+			removeContainersByName(docker, containerName)
+		}
+		log.Printf("%s: deploy attempt %d/%d failed, retrying: %v", contextStr, attempt, maxAttempts, err)
+		time.Sleep(250 * time.Millisecond)
+	}
+	return lastDeployment, lastErr
+}
+
+func isRetryableDeployBootstrapError(err error) bool {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "ContainerCreate:"):
+		return true
+	case strings.Contains(msg, "ContainerStart:"):
+		return true
+	case strings.Contains(msg, "failed to wait for ports on container"):
+		return true
+	case strings.Contains(msg, "failed to get host accessible homeserver URL's from container"):
+		return true
+	case strings.Contains(msg, "failed to check server is up"):
+		return true
+	case strings.Contains(msg, "already in use"):
+		return true
+	case strings.Contains(msg, "connection reset by peer"):
+		return true
+	case strings.Contains(msg, "EOF"):
+		return true
+	default:
+		return false
+	}
+}
+
+// nolint
+func deployImageOnce(
+	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
+	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
 ) (*HomeserverDeployment, error) {
 	ctx := context.Background()
 	var extraHosts []string
@@ -373,6 +435,9 @@ func deployImage(
 			}
 		}
 		log.Printf("Sharing %v host environment variables with container", env)
+	}
+	for k, v := range extraEnv {
+		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	body, err := docker.ContainerCreate(ctx, &container.Config{
@@ -588,6 +653,25 @@ func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client,
 	}
 
 	return baseURL, fedBaseURL, nil
+}
+
+func removeContainersByName(docker *client.Client, containerName string) {
+	ctx := context.Background()
+	containers, err := docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("name", containerName),
+		),
+	})
+	if err != nil {
+		log.Printf("%s: failed to list containers during retry cleanup: %s", containerName, err)
+		return
+	}
+	for _, c := range containers {
+		if err := docker.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+			log.Printf("%s: failed to remove stale container %s during retry cleanup: %s", containerName, c.ID, err)
+		}
+	}
 }
 
 // waitForPorts waits until a homeserver container has NAT ports assigned (8008, 8448).

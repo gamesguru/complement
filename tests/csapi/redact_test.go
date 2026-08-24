@@ -8,10 +8,13 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 // Test `PUT /_matrix/client/v3/rooms/{roomId}/redact/{eventId}/{txnId} ` (redactions)
 func TestRedact(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite) // Dendrite does not strip content from a redacted event's /event response
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -33,12 +36,12 @@ func TestRedact(t *testing.T) {
 	t.Run("Event content is redacted", func(t *testing.T) {
 		// Alice creates an event
 		expectedEventContent := map[string]interface{}{
-				"msgtype": "m.text",
-				"body":    "expected message body",
-			}
+			"msgtype": "m.text",
+			"body":    "expected message body",
+		}
 		eventIDToRedact := alice.SendEventSynced(t, roomID, b.Event{
-			Type: "m.room.message",
-			Content:expectedEventContent,
+			Type:    "m.room.message",
+			Content: expectedEventContent,
 		})
 
 		// Bob can see the event content

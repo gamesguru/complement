@@ -6,7 +6,8 @@ complement
 # Homerunner can end up in various places
 /homerunner
 /cmd/homerunner/homerunner
-
+# top-level build artifacts
+/*.test
 # For direnv users
 /.envrc
 .direnv/

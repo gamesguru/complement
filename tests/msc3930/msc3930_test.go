@@ -1,3 +1,6 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 // This file contains tests for "push rules of polls" as defined by MSC3930.
 // The MSC that defines the design of the polls system is MSC3381.
 //
@@ -18,6 +21,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 const pollResponseRuleID = ".org.matrix.msc3930.rule.poll_response"
@@ -27,6 +31,7 @@ const pollStartRuleID = ".org.matrix.msc3930.rule.poll_start"
 const pollEndRuleID = ".org.matrix.msc3930.rule.poll_end"
 
 func TestPollsLocalPushRules(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

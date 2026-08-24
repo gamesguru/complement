@@ -1,21 +1,30 @@
+---
 name: Tests
 
 on:
   push:
-    branches: [ 'master', 'main' ]
+    branches: ["master", "main"]
   pull_request:
   workflow_dispatch:
+
+permissions: {}
 
 jobs:
   check-signoff:
     if: "github.event_name == 'pull_request'"
-    uses: "matrix-org/backend-meta/.github/workflows/sign-off.yml@v2"
+    permissions:
+      pull-requests: read
+    uses: matrix-org/backend-meta/.github/workflows/sign-off.yml@18beaf3c8e536108bd04d18e6c3dc40ba3931e28 # v2
 
   complement-internal:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6 # Checkout complement
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: "Run internal Complement tests"
@@ -31,10 +40,11 @@ jobs:
           (cd homeserver && docker build -t complement-dendrite -f build/scripts/Complement.Dockerfile .)
           (cd cmd/homerunner/test && ./test.sh)
 
-
   complement:
     name: Complement (${{ matrix.homeserver }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false # ensure if synapse fails we keep running dendrite and vice-versa
       matrix:
@@ -42,21 +52,23 @@ jobs:
           - homeserver: Synapse
             repo: element-hq/synapse
             tags: synapse_blacklist
-            packages: ./tests/msc3874 ./tests/msc3902 ./tests/msc4306
+            packages: ./tests/msc3874 ./tests/msc3902 ./tests/msc4186 ./tests/msc4306 ./tests/msc4499
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1 COMPLEMENT_SHARE_ENV_PREFIX=PASS_ PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite"
             timeout: 20m
 
           - homeserver: Dendrite
             repo: element-hq/dendrite
             tags: dendrite_blacklist
-            packages: ""
+            packages: ./tests/msc4499
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
             timeout: 10m
 
     steps:
-      - uses: actions/checkout@v6 # Checkout complement
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
@@ -66,7 +78,7 @@ jobs:
       # servers which listen on random high numbered ports.
       - name: "Install Complement Dependencies"
         run: |
-          go install -v github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest
+          go install -v github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@v2.5.0
           mkdir .gotestfmt/github -p
           cp .ci/complement_package.gotpl .gotestfmt/github/package.gotpl
           gotestfmt -help
@@ -97,8 +109,7 @@ jobs:
           done
 
       # Build homeserver image
-
-        # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
+      # Build the base Synapse dockerfile and then build a Complement-specific image from that base.
       - run: |
           docker build -t matrixdotorg/synapse:latest -f docker/Dockerfile .
           docker build -t matrixdotorg/synapse-workers:latest -f docker/Dockerfile-workers .
@@ -119,6 +130,7 @@ jobs:
       - run: |
           set -o pipefail &&
           ${{ matrix.env }} go test -v -json -tags "${{ matrix.tags }}" -timeout "${{ matrix.timeout }}" ./tests ./tests/csapi ${{ matrix.packages }} | .ci/scripts/gotestfmt
+
         shell: bash # required for pipefail to be A Thing. pipefail is required to stop gotestfmt swallowing non-zero exit codes
         name: Run Complement Tests
         env:

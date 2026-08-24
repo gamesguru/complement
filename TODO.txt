@@ -1,0 +1,1 @@
+Add a regression test for jump-to-date -> /messages handoff: verify /timestamp_to_event-based navigation, then pagination from the returned context token. Current stress tests cover /messages token walking, but not deep historical federation outliers or sparse auth-chain layouts.

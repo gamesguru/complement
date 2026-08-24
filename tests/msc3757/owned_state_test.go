@@ -1,3 +1,6 @@
+//go:build !dendrite_blacklist
+// +build !dendrite_blacklist
+
 package tests
 
 import (
@@ -9,6 +12,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/complement/runtime"
 )
 
 const hsName = "hs1"
@@ -70,6 +74,9 @@ func TestWithoutOwnedState(t *testing.T) {
 }
 
 func TestMSC3757OwnedState(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Conduit)
+
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

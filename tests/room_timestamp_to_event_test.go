@@ -56,6 +56,9 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		t.Run("should find nothing before the earliest timestamp", func(t *testing.T) {
 			t.Parallel()
 			timeBeforeRoomCreation := time.Now()
+			// Guard so createRoom cannot share this sample's millisecond; a
+			// backward search there would return m.room.create instead of nothing.
+			time.Sleep(tsBoundaryGuard)
 			roomID, _, _ := createTestRoom(t, alice)
 			mustCheckEventisReturnedForTime(t, alice, roomID, timeBeforeRoomCreation, "b", "")
 		})
@@ -75,6 +78,9 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			as.MustJoinRoom(t, roomID, []spec.ServerName{
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
+
+			// Guard so the join cannot share a millisecond with the messages below.
+			time.Sleep(tsBoundaryGuard)
 
 			// Send a couple messages with the same timestamp after the other test
 			// messages in the room.
@@ -98,6 +104,9 @@ func TestJumpToDateEndpoint(t *testing.T) {
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
 
+			// Guard so the join cannot share a millisecond with the messages below.
+			time.Sleep(tsBoundaryGuard)
+
 			// Send a couple messages with the same timestamp after the other test
 			// messages in the room.
 			timeBeforeMessageCreation := time.Now()
@@ -113,6 +122,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		t.Run("should not be able to query a private room you are not a member of", func(t *testing.T) {
 			t.Parallel()
 			timeBeforeRoomCreation := time.Now()
+			time.Sleep(tsBoundaryGuard)
 
 			// Alice will create the private room
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
@@ -141,6 +151,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		t.Run("should not be able to query a public room you are not a member of", func(t *testing.T) {
 			t.Parallel()
 			timeBeforeRoomCreation := time.Now()
+			time.Sleep(tsBoundaryGuard)
 
 			// Alice will create the public room
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
@@ -187,6 +198,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			t.Run("when looking backwards before the room was created, should be able to find event that was imported", func(t *testing.T) {
 				t.Parallel()
 				timeBeforeRoomCreation := time.Now()
+				time.Sleep(tsBoundaryGuard)
 				roomID, _, _ := createTestRoom(t, alice)
 
 				// Join from the application service bridge user so we can use it to send
@@ -311,15 +323,19 @@ func TestJumpToDateEndpoint(t *testing.T) {
 						"from":  []string{paginationToken},
 					}),
 				)
-
 				// Make sure both messages are visible
-				must.MatchResponse(t, messagesRes, match.HTTPResponse{
+				messagesResBody := must.MatchResponse(t, messagesRes, match.HTTPResponse{
 					JSON: []match.JSON{
 						match.JSONCheckOff("chunk", []interface{}{eventA.EventID, eventB.EventID}, match.CheckOffMapper(func(r gjson.Result) interface{} {
 							return r.Get("event_id").Str
 						}), match.CheckOffAllowUnwanted()),
 					},
 				})
+				chunk := gjson.GetBytes(messagesResBody, "chunk").Array()
+				chunkIDs := make([]string, 0, len(chunk))
+				for _, ev := range chunk {
+					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+				}
 			})
 		})
 	})
@@ -331,6 +347,16 @@ type eventTime struct {
 	AfterTimestamp  time.Time
 }
 
+// tsBoundaryGuard is a pause inserted around (before and after) where we create events
+// so that `time.Now()` samples and subsequent event `origin_server_ts` don't collide at
+// the same millisecond granularity. /timestamp_to_event returns the boundary event
+// inclusively (forward picks the earliest event with ts >= query, backward picks the
+// latest with ts <= query), so a shared millisecond between events means the wrong
+// event can be picked. Adding one whole millisecond to a timestamp always carries it
+// into the next millisecond bucket, so 1ms is enough to separate the sample from every
+// event stamped after the pause.
+const tsBoundaryGuard = 1 * time.Millisecond
+
 func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, eventB *eventTime) {
 	t.Helper()
 
@@ -339,6 +365,7 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 	})
 
 	timeBeforeEventA := time.Now()
+	time.Sleep(tsBoundaryGuard)
 	eventAID := c.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
 		Content: map[string]interface{}{
@@ -346,8 +373,12 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 			"body":    "Message A",
 		},
 	})
-	timeAfterEventA := time.Now()
 
+	// timeBeforeEventB doubles as eventA's after-timestamp, so guard it on
+	// both sides to keep it between the two events.
+	time.Sleep(tsBoundaryGuard)
+	timeBeforeEventB := time.Now()
+	time.Sleep(tsBoundaryGuard)
 	eventBID := c.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
 		Content: map[string]interface{}{
@@ -355,10 +386,12 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 			"body":    "Message B",
 		},
 	})
+
+	time.Sleep(tsBoundaryGuard)
 	timeAfterEventB := time.Now()
 
-	eventA = &eventTime{EventID: eventAID, BeforeTimestamp: timeBeforeEventA, AfterTimestamp: timeAfterEventA}
-	eventB = &eventTime{EventID: eventBID, BeforeTimestamp: timeAfterEventA, AfterTimestamp: timeAfterEventB}
+	eventA = &eventTime{EventID: eventAID, BeforeTimestamp: timeBeforeEventA, AfterTimestamp: timeBeforeEventB}
+	eventB = &eventTime{EventID: eventBID, BeforeTimestamp: timeBeforeEventB, AfterTimestamp: timeAfterEventB}
 
 	return roomID, eventA, eventB
 }
@@ -395,6 +428,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 
 	givenTimestamp := makeTimestampFromTime(givenTime)
 	timestampString := strconv.FormatInt(givenTimestamp, 10)
+	t.Logf("timestamp_to_event request room=%s ts=%s dir=%s expected=%s", roomID, timestampString, direction, expectedEventId)
 	timestampToEventRes := c.Do(t, "GET", []string{"_matrix", "client", "v1", "rooms", roomID, "timestamp_to_event"}, client.WithContentType("application/json"), client.WithQueries(url.Values{
 		"ts":  []string{timestampString},
 		"dir": []string{direction},
@@ -410,6 +444,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 	} else if timestampToEventRes.StatusCode != 404 || (timestampToEventRes.StatusCode == 404 && expectedEventId != "") {
 		t.Fatalf("mustCheckEventisReturnedForTime: /timestamp_to_event request failed with status=%d body=%s", timestampToEventRes.StatusCode, string(timestampToEventResBody))
 	}
+	t.Logf("timestamp_to_event response room=%s ts=%s dir=%s status=%d actual=%s", roomID, timestampString, direction, timestampToEventRes.StatusCode, actualEventId)
 
 	if actualEventId != expectedEventId {
 		debugMessageList := getDebugMessageListFromMessagesResponse(t, c, roomID, expectedEventId, actualEventId, givenTimestamp)
@@ -441,9 +476,15 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 	if !keyRes.IsArray() {
 		t.Fatalf("key '%s' is not an array (was %s)", wantKey, keyRes.Type)
 	}
+	chunk := keyRes.Array()
+	chunkIDs := make([]string, 0, len(chunk))
+	for _, ev := range chunk {
+		chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+	}
+	t.Logf("debug /messages room=%s status=%d chunk_len=%d event_ids=%v expected=%s actual=%s ts=%d", roomID, messagesRes.StatusCode, len(chunkIDs), chunkIDs, expectedEventId, actualEventId, givenTimestamp)
 
 	// Make the events go from oldest-in-time -> newest-in-time
-	events := keyRes.Array()
+	events := chunk
 	slices.Reverse(events)
 	if len(events) == 0 {
 		t.Fatalf(

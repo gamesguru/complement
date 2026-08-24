@@ -76,12 +76,20 @@ func TestMain(m *testing.M, namespace string, customOpts ...opt) {
 		fmt.Printf("Error: %s", err)
 		os.Exit(1)
 	}
-	exitCode := m.Run()
-	if opts.cleanup != nil {
-		opts.cleanup(testPackage.Config)
+
+	// Run the cleanup functions even on panic.
+	// Note that deferred functions aren't run on `os.Exit`, so we need to put the `defer` calls
+	// inside a new `func()`.
+	runAndCleanup := func() int {
+		defer testPackage.Cleanup()
+		if opts.cleanup != nil {
+			defer opts.cleanup(testPackage.Config)
+		}
+
+		return m.Run()
 	}
-	testPackage.Cleanup()
-	os.Exit(exitCode)
+
+	os.Exit(runAndCleanup())
 }
 
 // Deploy will deploy the given blueprint or terminate the test.
@@ -94,6 +102,13 @@ func OldDeploy(t ct.TestLike, blueprint b.Blueprint) Deployment {
 		ct.Fatalf(t, "Deploy: testPackage not set, did you forget to call complement.TestMain?")
 	}
 	return testPackage.OldDeploy(t, blueprint)
+}
+
+// DeployBlueprint deploys an explicit blueprint, which allows tests to control
+// per-homeserver details such as extra environment variables or notary settings.
+func DeployBlueprint(t ct.TestLike, blueprint b.Blueprint) Deployment {
+	t.Helper()
+	return OldDeploy(t, blueprint)
 }
 
 // Deploy will deploy the given number of servers or terminate the test.

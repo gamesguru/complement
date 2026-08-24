@@ -38,7 +38,9 @@ func init() {
 }
 
 // Maps test names to filenames then looks for:
-//   sytest: $test_name
+//
+//	sytest: $test_name
+//
 // in all files in ./tests - if there's a match it marks that test as converted.
 func main() {
 

@@ -43,7 +43,7 @@ func main() {
 			for evType := range internal.RedactRules {
 				eventsHandled += "  " + evType + "\n"
 			}
-			fmt.Fprintf(os.Stderr,
+			fmt.Fprint(os.Stderr,
 				"Capture an anonymous snapshot of this account.\n"+
 					"User name is required to map DM rooms correctly.\n"+
 					"/sync output is stored in 'sync_snapshot.json'\n"+
@@ -72,7 +72,7 @@ func main() {
 			if err != nil {
 				log.Printf("WARNING: failed to marshal anonymous snapshot: %s", err)
 			} else {
-				fmt.Printf(string(b) + "\n")
+				fmt.Print(string(b) + "\n")
 			}
 			os.Exit(0)
 		}
@@ -94,6 +94,6 @@ func main() {
 	if err != nil {
 		log.Printf("WARNING: failed to marshal blueprint: %s", err)
 	} else {
-		fmt.Printf(string(b) + "\n")
+		fmt.Print(string(b) + "\n")
 	}
 }
