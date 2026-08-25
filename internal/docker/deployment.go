@@ -58,6 +58,7 @@ func (hsDep *HomeserverDeployment) SetEndpoints(baseURL string, fedBaseURL strin
 	}
 }
 
+// GetFullyQualifiedHomeserverName returns the Docker-resolvable server name for a homeserver alias.
 func (d *Deployment) GetFullyQualifiedHomeserverName(t ct.TestLike, hsName string) spec.ServerName {
 	_, ok := d.HS[hsName]
 	if !ok {
@@ -91,14 +92,17 @@ func (d *Deployment) Destroy(t ct.TestLike) {
 	d.Deployer.Destroy(d, d.Deployer.config.AlwaysPrintServerLogs || t.Failed(), t.Name(), t.Failed())
 }
 
+// GetConfig returns the configuration backing this deployment.
 func (d *Deployment) GetConfig() *config.Complement {
 	return d.Config
 }
 
+// RoundTripper returns an HTTP transport that routes federation requests to this deployment.
 func (d *Deployment) RoundTripper() http.RoundTripper {
 	return &RoundTripper{Deployment: d}
 }
 
+// Register creates a new user on the requested homeserver and returns a client for it.
 func (d *Deployment) Register(t ct.TestLike, hsName string, opts helpers.RegistrationOpts) *client.CSAPI {
 	dep, ok := d.HS[hsName]
 	if !ok {
@@ -144,6 +148,7 @@ func (d *Deployment) Register(t ct.TestLike, hsName string, opts helpers.Registr
 	return client
 }
 
+// Login logs in an existing user on the requested homeserver.
 func (d *Deployment) Login(t ct.TestLike, hsName string, existing *client.CSAPI, opts helpers.LoginOpts) *client.CSAPI {
 	t.Helper()
 	dep, ok := d.HS[hsName]
@@ -182,6 +187,7 @@ func (d *Deployment) Login(t ct.TestLike, hsName string, existing *client.CSAPI,
 	return c
 }
 
+// Network returns the Docker network used by this deployment.
 func (d *Deployment) Network() string {
 	// all HSes are on the same network
 	for _, hsd := range d.HS {
@@ -190,6 +196,7 @@ func (d *Deployment) Network() string {
 	return ""
 }
 
+// UnauthenticatedClient returns a CSAPI client without credentials for the given homeserver.
 func (d *Deployment) UnauthenticatedClient(t ct.TestLike, hsName string) *client.CSAPI {
 	t.Helper()
 	dep, ok := d.HS[hsName]
@@ -261,6 +268,7 @@ func (d *Deployment) Restart(t ct.TestLike) error {
 	return nil
 }
 
+// StartServer starts the named homeserver container.
 func (d *Deployment) StartServer(t ct.TestLike, hsName string) {
 	t.Helper()
 	t.Logf("StartServer %s", hsName)
@@ -273,6 +281,7 @@ func (d *Deployment) StartServer(t ct.TestLike, hsName string) {
 	}
 }
 
+// StopServer stops the named homeserver container.
 func (d *Deployment) StopServer(t ct.TestLike, hsName string) {
 	t.Helper()
 	t.Logf("StopServer %s", hsName)
@@ -285,6 +294,7 @@ func (d *Deployment) StopServer(t ct.TestLike, hsName string) {
 	}
 }
 
+// PauseServer pauses the named homeserver container.
 func (d *Deployment) PauseServer(t ct.TestLike, hsName string) {
 	t.Helper()
 	t.Logf("PauseServer %s", hsName)
@@ -297,6 +307,7 @@ func (d *Deployment) PauseServer(t ct.TestLike, hsName string) {
 	}
 }
 
+// UnpauseServer resumes the named homeserver container.
 func (d *Deployment) UnpauseServer(t ct.TestLike, hsName string) {
 	t.Helper()
 	t.Logf("UnpauseServer %s", hsName)
@@ -309,6 +320,7 @@ func (d *Deployment) UnpauseServer(t ct.TestLike, hsName string) {
 	}
 }
 
+// ContainerID returns the Docker container ID for the named homeserver.
 func (d *Deployment) ContainerID(t ct.TestLike, hsName string) string {
 	t.Helper()
 	hsDep := d.HS[hsName]

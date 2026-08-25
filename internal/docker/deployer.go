@@ -43,12 +43,14 @@ import (
 	"github.com/matrix-org/complement/config"
 )
 
+// Mount points used when injecting Complement CA material and appservice files.
 const (
 	MountCACertPath     = "/complement/ca/ca.crt"
 	MountCAKeyPath      = "/complement/ca/ca.key"
 	MountAppServicePath = "/complement/appservice/" // All registration files sit here
 )
 
+// Deployer starts, stops, and tears down deployed Complement homeservers.
 type Deployer struct {
 	DeployNamespace string
 	Docker          *client.Client
@@ -57,6 +59,7 @@ type Deployer struct {
 	config          *config.Complement
 }
 
+// NewDeployer constructs a Docker deployer for the given namespace.
 func NewDeployer(deployNamespace string, cfg *config.Complement) (*Deployer, error) {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
@@ -134,6 +137,7 @@ func (d *Deployer) CreateDirtyDeployment() (*Deployment, error) {
 	}, nil
 }
 
+// Deploy starts all Docker images built for the named blueprint.
 func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deployment, error) {
 	dep := &Deployment{
 		Deployer:      d,
@@ -213,6 +217,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 	return dep, lastErr
 }
 
+// PrintLogs prints the logs for every homeserver in a deployment.
 func (d *Deployer) PrintLogs(dep *Deployment) {
 	for _, hsDep := range dep.HS {
 		printLogs(d.Docker, hsDep.ContainerID, hsDep.ContainerID)
@@ -267,6 +272,7 @@ func (d *Deployer) executePostScript(hsDep *HomeserverDeployment, testName strin
 	return cmd.CombinedOutput()
 }
 
+// PauseServer pauses a running homeserver container.
 func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerPause(ctx, hsDep.ContainerID)
@@ -276,6 +282,7 @@ func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// UnpauseServer resumes a paused homeserver container.
 func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerUnpause(ctx, hsDep.ContainerID)
@@ -285,6 +292,7 @@ func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StopServer stops a running homeserver container.
 func (d *Deployer) StopServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	secs := int(d.config.SpawnHSTimeout.Seconds())
@@ -308,6 +316,7 @@ func (d *Deployer) Restart(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StartServer starts a stopped homeserver container and refreshes its endpoints.
 func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerStart(ctx, hsDep.ContainerID, container.StartOptions{})
@@ -704,6 +713,7 @@ type containerInspectionError struct {
 	Fatal bool
 }
 
+// Error returns the inspection error message.
 func (e *containerInspectionError) Error() string { return e.msg }
 
 // inspectContainer inspects the container with the given ID and returns response.
@@ -792,10 +802,12 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 
 // RoundTripper is a round tripper that maps https://hs1 to the federation port of the container
 // e.g https://localhost:35352
+// RoundTripper rewrites homeserver hostnames to the matching Docker endpoints.
 type RoundTripper struct {
 	Deployment *Deployment
 }
 
+// RoundTrip sends the request to the Docker-backed homeserver endpoint.
 func (t *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// map HS names to localhost:port combos
 	hsName := req.URL.Hostname()

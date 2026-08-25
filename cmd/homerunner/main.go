@@ -14,8 +14,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Pkg is the namespace used for homerunner-managed deployments.
 const Pkg = "homerunner"
 
+// Config controls the homerunner process.
 type Config struct {
 	HomeserverLifetimeMins int
 	Port                   int
@@ -25,6 +27,7 @@ type Config struct {
 	HSPortBindingIP        string
 }
 
+// DeriveComplementConfig converts a homerunner config into a Complement config.
 func (c *Config) DeriveComplementConfig(baseImageURI string) *config.Complement {
 	cfg := config.NewConfigFromEnvVars(Pkg, baseImageURI)
 	cfg.BestEffort = true
@@ -34,6 +37,7 @@ func (c *Config) DeriveComplementConfig(baseImageURI string) *config.Complement 
 	return cfg
 }
 
+// Getenv returns the environment variable value or the provided default.
 func Getenv(key string, default_value string) string {
 	value, exists := os.LookupEnv(key)
 	if exists {
@@ -43,6 +47,7 @@ func Getenv(key string, default_value string) string {
 	}
 }
 
+// NewConfig reads homerunner settings from the environment.
 func NewConfig() *Config {
 	cfg := &Config{
 		HomeserverLifetimeMins: 30,

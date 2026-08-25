@@ -7,13 +7,16 @@ import (
 	"github.com/matrix-org/util"
 )
 
+// ReqDestroy is the request body accepted by the destroy endpoint.
 type ReqDestroy struct {
 	BlueprintName string `json:"blueprint_name"`
 }
 
+// ResDestroy is the response body returned by the destroy endpoint.
 type ResDestroy struct {
 }
 
+// RouteDestroy tears down an existing blueprint deployment.
 func RouteDestroy(ctx context.Context, rt *Runtime, rc *ReqDestroy) util.JSONResponse {
 	if rc.BlueprintName == "" {
 		return util.MessageResponse(400, "missing blueprint name")

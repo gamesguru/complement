@@ -745,9 +745,12 @@ type nopKeyDatabase struct {
 	gomatrixserverlib.KeyFetcher
 }
 
+// StoreKeys is a no-op key store used by the mock key database.
 func (d *nopKeyDatabase) StoreKeys(ctx context.Context, results map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult) error {
 	return nil
 }
+
+// FetchKeys returns no cached keys from the mock key database.
 func (f *nopKeyDatabase) FetchKeys(
 	ctx context.Context,
 	requests map[gomatrixserverlib.PublicKeyLookupRequest]spec.Timestamp) (
@@ -755,6 +758,8 @@ func (f *nopKeyDatabase) FetchKeys(
 ) {
 	return nil, nil
 }
+
+// FetcherName returns the name of the mock key database.
 func (f *nopKeyDatabase) FetcherName() string {
 	return "nopKeyDatabase"
 }
@@ -764,6 +769,7 @@ type basicKeyFetcher struct {
 	srv *Server
 }
 
+// FetchKeys returns the server's public key for requests targeting this mock server.
 func (f *basicKeyFetcher) FetchKeys(
 	ctx context.Context,
 	requests map[gomatrixserverlib.PublicKeyLookupRequest]spec.Timestamp) (
@@ -787,6 +793,7 @@ func (f *basicKeyFetcher) FetchKeys(
 	return result, nil
 }
 
+// FetcherName returns the name of the mock key fetcher.
 func (f *basicKeyFetcher) FetcherName() string {
 	return "basicKeyFetcher"
 }

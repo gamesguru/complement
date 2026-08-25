@@ -7,6 +7,7 @@ import (
 	"github.com/matrix-org/complement/ct"
 )
 
+// Known homeserver identifiers used by Complement.
 const (
 	Dendrite     = "dendrite"
 	Synapse      = "synapse"
@@ -16,6 +17,7 @@ const (
 	Continuwuity = "continuwuity"
 )
 
+// Homeserver identifies the currently selected homeserver implementation.
 var Homeserver string
 
 // ContainerKillFunc is used to destroy a container, it can be overwritten by Homeserver implementations
@@ -24,17 +26,7 @@ var ContainerKillFunc = func(client *client.Client, containerID string) error {
 	return client.ContainerKill(context.Background(), containerID, "KILL")
 }
 
-// Skip the test (via t.Skipf) if the homeserver being tested matches one of the homeservers, else return.
-//
-// The homeserver being tested is detected via the presence of a `*_blacklist` tag e.g:
-//
-//	go test -tags="dendrite_blacklist"
-//
-// This means it is important to always specify this tag when running tests. Failure to do
-// so will result in a warning being printed to stdout, and the test will be run. When a new server
-// implementation is added, a respective `hs_$name.go` needs to be created in this directory. This
-// file pairs together the tag name with a string constant declared in this package
-// e.g. dendrite_blacklist == runtime.Dendrite
+// parents describes the inheritance relationships between homeserver blacklist tags.
 var parents = map[string][]string{
 	Conduwuit:    {Conduit},
 	Continuwuity: {Conduwuit, Conduit},
@@ -71,6 +63,17 @@ func isExempt(testName string, hs string) bool {
 	return false
 }
 
+// SkipIf skips the test if the homeserver being tested matches one of the homeservers.
+//
+// The homeserver being tested is detected via the presence of a `*_blacklist` tag e.g:
+//
+//	go test -tags="dendrite_blacklist"
+//
+// This means it is important to always specify this tag when running tests. Failure to do
+// so will result in a warning being printed to stdout, and the test will be run. When a new server
+// implementation is added, a respective `hs_$name.go` needs to be created in this directory. This
+// file pairs together the tag name with a string constant declared in this package
+// e.g. dendrite_blacklist == runtime.Dendrite
 func SkipIf(t ct.TestLike, hses ...string) {
 	t.Helper()
 	for _, hs := range hses {
