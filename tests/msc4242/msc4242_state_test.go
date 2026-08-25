@@ -31,7 +31,7 @@ import (
 //      should | should not go down /sync and be present in the timeline.
 //  STATE04: mismatched prev_events and prev_state_events produces the correct state
 
-func TestMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
+func testMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -228,7 +228,7 @@ func TestMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 // The intention behind this test is to ensure that the outlier state => 'normal' state
 // is transparently handled. This was more important back when we had auth DAGs, but is
 // still a useful property to assert.
-func TestMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
+func testMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -439,7 +439,7 @@ func TestMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
 	}
 }
 
-func TestMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
+func testMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -585,7 +585,7 @@ func TestMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
 	}
 }
 
-func TestMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
+func testMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})

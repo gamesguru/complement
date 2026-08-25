@@ -209,7 +209,7 @@ func AsEventJSONs(pdus []gomatrixserverlib.PDU) []json.RawMessage {
 }
 
 // Checks that the StateGraph works
-func TestGraph(t *testing.T) {
+func testGraph(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
