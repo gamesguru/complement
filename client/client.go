@@ -859,7 +859,7 @@ type loggedRoundTripper struct {
 	wrap   http.RoundTripper
 }
 
-// RoundTrip logs the request and response metadata before delegating.
+// RoundTrip logs the request and response metadata after delegating.
 func (t *loggedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	res, err := t.wrap.RoundTrip(req)

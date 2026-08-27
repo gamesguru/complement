@@ -97,7 +97,7 @@ type ApplicationService struct {
 	EnableEncryption bool
 }
 
-// Event describes a raw event to inject into a room during blueprint creation.
+// Event describes a raw event to send into a room.
 type Event struct {
 	Type     string                 `json:"type"`
 	Sender   string                 `json:"sender,omitempty"`

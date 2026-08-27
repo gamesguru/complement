@@ -151,17 +151,19 @@ func ServerRoomImplStateDAG(t ct.TestLike, srv *federation.Server, opts ...State
 			}
 		},
 		GenerateSendJoinResponseFn: func(def federation.ServerRoomImpl, room *federation.ServerRoom, s *federation.Server, joinEvent gomatrixserverlib.PDU, expectPartialState, omitServersInRoom bool) fclient.RespSendJoin {
-			res := fclient.RespSendJoin{
-				ServersInRoom: []string{},
-			}
+			res := fclient.RespSendJoin{}
 			res.Event = joinEvent.JSON()
-			res.MembersOmitted = omitServersInRoom
+			res.Origin = s.ServerName()
+			res.MembersOmitted = expectPartialState
 			for _, ev := range room.Timeline {
 				if ev.StateKey() != nil {
 					res.StateDAG = append(res.StateDAG, ev.JSON())
 				}
 			}
-			serversInRoom := room.ServersInRoom()
+			serversInRoom := []spec.ServerName{s.ServerName()}
+			if !omitServersInRoom {
+				serversInRoom = room.ServersInRoom()
+			}
 			for _, srvName := range serversInRoom {
 				res.ServersInRoom = append(res.ServersInRoom, string(srvName))
 			}
@@ -319,6 +321,7 @@ func (g *Graph) Update(pdus []gomatrixserverlib.PDU) {
 func (g *Graph) GetMissingEvents(from []string, limit int) (result []gomatrixserverlib.PDU) {
 	queue := make([]string, len(from))
 	seen := make(map[string]bool)
+	added := make(map[string]bool) // event IDs already appended to result
 	copy(queue, from)
 	slices.Sort(queue)
 	for i := 0; i < len(queue); i++ {
@@ -336,7 +339,11 @@ func (g *Graph) GetMissingEvents(from []string, limit int) (result []gomatrixser
 		slices.Sort(prevs)
 		queue = append(queue, prevs...)
 		for _, p := range prevs {
+			if added[p] {
+				continue
+			}
 			if ev := g.events[p]; ev != nil {
+				added[p] = true
 				result = append(result, ev)
 				if len(result) >= limit {
 					return result

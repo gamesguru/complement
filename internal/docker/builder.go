@@ -62,7 +62,7 @@ func (d *Builder) log(str string, args ...interface{}) {
 	log.Printf(str, args...)
 }
 
-// Cleanup removes containers, images, and networks created by Complement.
+// Cleanup removes containers, networks, and eligible images created by Complement.
 func (d *Builder) Cleanup() {
 	err := d.removeContainers()
 	if err != nil {
@@ -170,7 +170,7 @@ func (d *Builder) removeContainers() error {
 	return nil
 }
 
-// ConstructBlueprintIfNotExist builds the blueprint if its images are not already cached.
+// ConstructBlueprintIfNotExist builds the blueprint if no images for it are already cached.
 func (d *Builder) ConstructBlueprintIfNotExist(bprint b.Blueprint) error {
 	images, err := d.Docker.ImageList(context.Background(), image.ListOptions{
 		Filters: label(

@@ -43,7 +43,7 @@ import (
 	"github.com/matrix-org/complement/config"
 )
 
-// Mount points used when injecting Complement CA material and appservice files.
+// In-container file paths used when injecting Complement CA material and appservice files via copy.
 const (
 	MountCACertPath     = "/complement/ca/ca.crt"
 	MountCAKeyPath      = "/complement/ca/ca.key"
