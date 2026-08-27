@@ -15,9 +15,10 @@ func TestMain(m *testing.M) {
 // here as a subtest so the whole feature's results live under one hierarchy:
 //
 //	TestMSC4242StateDAGs/Graph
-//	TestMSC4242StateDAGs/FederationSimple
-//	TestMSC4242StateDAGs/GetMissingEventsInbound/GME00
-//	TestMSC4242StateDAGs/SendJoinSJ01Outbound
+//	TestMSC4242StateDAGs/Federation_Simple
+//	TestMSC4242StateDAGs/GetMissingEvents:_inbound
+//	TestMSC4242StateDAGs/SendJoin:_SJ01_outbound
+//	TestMSC4242StateDAGs/STATE09:_Asymmetric_3-way_partition_eventual_consistency_and_rolling_heal
 //	...
 func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("Graph", testGraph)

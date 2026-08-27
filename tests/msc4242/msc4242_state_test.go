@@ -35,7 +35,6 @@ import (
 //  STATE08: redaction of state event in state DAG
 //  STATE09: asymmetric 3-way partition eventual consistency and rolling heal (highlights assists from MSC4500, MSC4511A, MSC4511C, MSC4521)
 
-
 func testMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
