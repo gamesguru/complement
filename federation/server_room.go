@@ -47,7 +47,7 @@ func WithRoomID(roomID string) ServerRoomOpt {
 }
 
 // WithImpl configures the room to have the given ServerRoomImpl.
-// Useful for custom rooms.
+// WithImpl configures a room to use the specified implementation.
 func WithImpl(impl ServerRoomImpl) ServerRoomOpt {
 	return func(r *ServerRoom) {
 		r.ServerRoomImpl = impl

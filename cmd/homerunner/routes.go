@@ -8,7 +8,7 @@ import (
 	"github.com/matrix-org/util"
 )
 
-// Routes returns the HTTP handler tree for the homerunner service.
+// Routes builds the HTTP handler tree for the Homerunner service.
 func Routes(rt *Runtime, cfg *Config) http.Handler {
 	mux := mux.NewRouter()
 	mux.Path("/create").Methods("POST", "OPTIONS").HandlerFunc(

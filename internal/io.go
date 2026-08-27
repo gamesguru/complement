@@ -32,7 +32,7 @@ import (
 //		}
 //	}(res.Body)
 //
-// ```
+// CloseIO closes c and logs a fatal error if closing fails. It ignores a nil closer.
 func CloseIO(c io.Closer, contextString string) {
 	if c != nil {
 		err := c.Close()

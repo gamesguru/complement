@@ -884,7 +884,8 @@ func GetOptionalJSONFieldObject(t ct.TestLike, body []byte, wantKey string) gjso
 	return res
 }
 
-// GetJSONFieldStr extracts a value from a byte-encoded JSON body given a search key
+// GetJSONFieldStr returns the non-empty string value at wantKey in a JSON body,
+// failing the test if the key is missing or does not contain a string.
 func GetJSONFieldStr(t ct.TestLike, body []byte, wantKey string) string {
 	t.Helper()
 	res := gjson.GetBytes(body, wantKey)

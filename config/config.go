@@ -150,7 +150,7 @@ type Complement struct {
 
 var hsRegex = regexp.MustCompile(`COMPLEMENT_BASE_IMAGE_(.+)=(.+)$`)
 
-// NewConfigFromEnvVars builds a Complement config from environment variables.
+// NewConfigFromEnvVars builds a Complement configuration from environment variables and the supplied package namespace and base image URI. Invalid configuration values cause a panic.
 func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg := &Complement{BaseImageURIs: map[string]string{}}
 	cfg.BaseImageURI = os.Getenv("COMPLEMENT_BASE_IMAGE")
@@ -221,6 +221,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	return cfg
 }
 
+// generateRunID generates a unique identifier for the current run, using random bytes when available and a timestamp-based fallback otherwise.
 func generateRunID() string {
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err == nil {

@@ -20,7 +20,7 @@ type Runtime struct {
 	BlueprintToTimer      map[string]*time.Timer
 }
 
-// NewRuntime makes a homerunner runtime
+// NewRuntime creates a Homerunner runtime with the supplied configuration and initialized deployment state.
 func NewRuntime(cfg *Config) (*Runtime, error) {
 	return &Runtime{
 		Config:                cfg,

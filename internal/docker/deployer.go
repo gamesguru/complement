@@ -59,7 +59,8 @@ type Deployer struct {
 	config          *config.Complement
 }
 
-// NewDeployer constructs a Docker deployer for the given namespace.
+// NewDeployer constructs a Docker deployer for the given namespace and configuration.
+// It returns an error if the Docker client cannot be created.
 func NewDeployer(deployNamespace string, cfg *config.Complement) (*Deployer, error) {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
@@ -344,6 +345,8 @@ func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// deployImage deploys a homeserver image, retrying recoverable bootstrap failures up to three times.
+// It returns the deployment from the successful or final attempt and the associated error.
 func deployImage(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
 	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
@@ -380,6 +383,7 @@ func deployImage(
 	return lastDeployment, lastErr
 }
 
+// isRetryableDeployBootstrapError reports whether an error indicates that deployment bootstrap may succeed on a subsequent attempt.
 func isRetryableDeployBootstrapError(err error) bool {
 	msg := err.Error()
 	switch {
@@ -404,7 +408,10 @@ func isRetryableDeployBootstrapError(err error) bool {
 	}
 }
 
-// nolint
+// deployImageOnce creates and starts a homeserver container, injects its required
+// files, determines its accessible endpoints, and waits for it to become ready.
+// It returns the deployment and any error encountered; the deployment may contain
+// partial information when setup fails.
 func deployImageOnce(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
 	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
@@ -639,7 +646,7 @@ func assertHostnameEqual(inputUrl string, expectedHostname string) error {
 }
 
 // getHostAccessibleHomeserverURLs returns URLs that are accessible from the host
-// machine (outside the container) for the homeserver's client API and federation API.
+// getHostAccessibleHomeserverURLs derives the client and federation URLs accessible from the host for a homeserver container and verifies their hostnames match the configured binding address.
 func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (baseURL string, fedBaseURL string, err error) {
 	inspectResponse, err := inspectContainer(ctx, docker, containerID)
 	if err != nil {
@@ -664,6 +671,7 @@ func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client,
 	return baseURL, fedBaseURL, nil
 }
 
+// removeContainersByName force-removes all Docker containers matching the specified name.
 func removeContainersByName(docker *client.Client, containerName string) {
 	ctx := context.Background()
 	containers, err := docker.ContainerList(ctx, container.ListOptions{
@@ -683,7 +691,8 @@ func removeContainersByName(docker *client.Client, containerName string) {
 	}
 }
 
-// waitForPorts waits until a homeserver container has NAT ports assigned (8008, 8448).
+// waitForPorts waits for a homeserver container to have host bindings for ports 8008 and 8448.
+// It returns a fatal inspection error immediately when the container cannot be inspected.
 func waitForPorts(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (err error) {
 	// We need to hammer the inspect endpoint until the ports show up, they don't appear immediately.
 	inspectStartTime := time.Now()

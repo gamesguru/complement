@@ -49,6 +49,7 @@ func isParent(child, parent string) bool {
 	return false
 }
 
+// isExempt reports whether a test or one of its subtests is exempt from the specified homeserver restriction.
 func isExempt(testName string, hs string) bool {
 	for name, exemptHSes := range Exemptions {
 		// check if testName matches or has prefix of name (since subtests can have names like TestPartialStateJoin/Subtest)
@@ -73,7 +74,7 @@ func isExempt(testName string, hs string) bool {
 // so will result in a warning being printed to stdout, and the test will be run. When a new server
 // implementation is added, a respective `hs_$name.go` needs to be created in this directory. This
 // file pairs together the tag name with a string constant declared in this package
-// e.g. dendrite_blacklist == runtime.Dendrite
+// SkipIf skips the test when the selected homeserver matches or inherits any specified homeserver, unless the test is exempt. It logs a warning and runs the test when no homeserver blacklist tag identifies the selected homeserver.
 func SkipIf(t ct.TestLike, hses ...string) {
 	t.Helper()
 	for _, hs := range hses {

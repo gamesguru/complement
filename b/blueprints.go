@@ -114,7 +114,8 @@ func MustValidate(bp Blueprint) Blueprint {
 	return bp2
 }
 
-// Validate checks that a blueprint is structurally valid and normalizes a few fields.
+// Validate checks a blueprint's required fields and entries, normalizing user localparts, rooms, and application services.
+// It returns the normalized blueprint and an error if validation fails.
 func Validate(bp Blueprint) (Blueprint, error) {
 	if bp.Name == "" {
 		return bp, fmt.Errorf("Blueprint must have a Name")
