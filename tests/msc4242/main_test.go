@@ -41,5 +41,10 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("STATE00TemporaryNetworkErrorIsOkay", testMSC4242STATE00TemporaryNetworkErrorIsOkay)
 	t.Run("STATE01DeOutlieredStateIsCorrect", testMSC4242STATE01DeOutlieredStateIsCorrect)
 	t.Run("STATE02OldStateChangesBetweenEvents", testMSC4242STATE02OldStateChangesBetweenEvents)
+	t.Run("STATE03ConcurrentLosingStateEvent", testMSC4242STATE03ConcurrentLosingStateEvent)
 	t.Run("STATE04MismatchedPrevStateEventsVsPrevEvents", testMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents)
+	t.Run("STATE05DemotedModeratorConcurrentAction", testMSC4242STATE05DemotedModeratorConcurrentAction)
+	t.Run("STATE06ConcurrentBanAndKickDominance", testMSC4242STATE06ConcurrentBanAndKickDominance)
+	t.Run("STATE07PhantomJoinRulesLockdown", testMSC4242STATE07PhantomJoinRulesLockdown)
+	t.Run("STATE08RedactionOfStateEvent", testMSC4242STATE08RedactionOfStateEvent)
 }
