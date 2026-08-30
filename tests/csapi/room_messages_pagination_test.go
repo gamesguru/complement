@@ -1,9 +1,7 @@
-package csapi_tests
+package csapi
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -72,7 +70,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		eventIDs := sendNMessages(t, alice, roomID, 100)
-		// assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
 
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
 			deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
@@ -138,7 +135,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				"topic": "Phase 1: Getting started",
 			},
 		})
-		// assertForwardExtremities(t, admin, roomID, phase1TopicEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
 
@@ -163,7 +159,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, dana, roomID, 3)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 3: Power level changes ---
 		// Give charlie moderator power
@@ -179,7 +174,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, charlie, roomID, 5)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 4: User leaves and rejoins ---
 		dana.MustLeaveRoom(t, roomID)
@@ -192,7 +186,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(dana.UserID, roomID))
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, dana, roomID, 5)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 5: Kick a user ---
 		eve.MustJoinRoom(t, roomID, nil)
@@ -210,7 +203,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(eve.UserID, roomID))
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 5)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// --- Phase 6: More topic changes and messages to pad out ---
 		alice.SendEventSynced(t, roomID, b.Event{
@@ -250,10 +242,8 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				},
 			})
 		}
-		// assertForwardExtremities(t, admin, roomID, lastReactionEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 9)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		t.Logf("Total tracked message events: %d", len(trackedEventIDs))
 		t.Logf("Room should also contain: ~5 creation events, 3 topic changes, " +
@@ -303,7 +293,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		// While bob is away: messages + state changes
 		var trackedEventIDs []string
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 30)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		alice.SendEventSynced(t, roomID, b.Event{
 			Type:     "m.room.topic",
@@ -312,7 +301,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				"topic": "Bob missed this topic change",
 			},
 		})
-		// assertForwardExtremities(t, admin, roomID, firstTopicEventID)
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 30)...)
 
@@ -325,7 +313,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		})
 
 		trackedEventIDs = append(trackedEventIDs, sendNMessages(t, alice, roomID, 40)...)
-		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		// Bob re-joins
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
@@ -679,7 +666,6 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			// More from alice
 			morePreAway := sendNMessages(t, alice, roomID, 10)
 			allTrackedEventIDs = append(allTrackedEventIDs, morePreAway...)
-			// assertForwardExtremities(t, admin, roomID, morePreAway[len(morePreAway)-1])
 
 			// The stale token should represent a client that has caught up to the
 			// pre-away timeline. Otherwise later federation delivery can make
@@ -779,7 +765,6 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 
 			// More alice messages after the churn
 			awayMoreAlice := sendNMessages(t, alice, roomID, 10)
-			// assertForwardExtremities(t, admin, roomID, awayMoreAlice[len(awayMoreAlice)-1])
 
 			t.Logf("While-away phase: added %d more tracked messages + membership/state events",
 				len(awayAliceMsgs)+len(awayCharlieMsgs)+len(awayDanaMsgs)+len(awayMoreAlice))
@@ -933,7 +918,6 @@ func testMessagesPaginationStressTokenStability(t *testing.T) {
 	})
 
 	eventIDs := sendNMessages(t, alice, roomID, 50)
-	// assertForwardExtremities(t, admin, roomID, eventIDs[len(eventIDs)-1])
 
 	// Paginate with multiple limits and compare results
 	var referenceEventIDs []string
@@ -1020,15 +1004,6 @@ type paginationResult struct {
 	eventsPerPage []int
 }
 
-type forwardExtremitiesResponse struct {
-	Count   int                     `json:"count"`
-	Results []forwardExtremityEntry `json:"results"`
-}
-
-type forwardExtremityEntry struct {
-	EventID string `json:"event_id"`
-}
-
 // findRoomStartToken paginates backward through a room with large pages to find
 // the token pointing to the very start of the room timeline. This token can then
 // be used as a starting point for forward (dir=f) pagination.
@@ -1072,59 +1047,12 @@ func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string 
 	return startToken
 }
 
-func assertForwardExtremities(t *testing.T, admin *client.CSAPI, roomID string, expectedEventIDs ...string) {
-	t.Helper()
-
-	if len(expectedEventIDs) == 0 {
-		t.Fatal("assertForwardExtremities requires at least one expected event ID")
-	}
-
-	res := admin.Do(t, "GET", []string{"_synapse", "admin", "v1", "rooms", roomID, "forward_extremities"})
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
-			t.Logf("Skipping forward extremities assertion for %s: admin endpoint returned HTTP %d", roomID, res.StatusCode)
-			return
-		}
-		body := client.ParseJSON(t, res)
-		t.Fatalf("forward extremities admin endpoint for %s returned HTTP %d: %s", roomID, res.StatusCode, string(body))
-	}
-
-	body := client.ParseJSON(t, res)
-	var got forwardExtremitiesResponse
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("failed to decode forward extremities response for %s: %s\nbody=%s", roomID, err, string(body))
-	}
-
-	gotEventIDs := make([]string, 0, len(got.Results))
-	for _, result := range got.Results {
-		gotEventIDs = append(gotEventIDs, result.EventID)
-	}
-
-	expected := append([]string(nil), expectedEventIDs...)
-	slices.Sort(expected)
-	slices.Sort(gotEventIDs)
-
-	if got.Count != len(expectedEventIDs) {
-		t.Fatalf("forward extremities count mismatch for %s: got %d (results=%d), want %d; got=%v want=%v",
-			roomID, got.Count, len(gotEventIDs), len(expectedEventIDs), gotEventIDs, expected)
-	}
-
-	if !slices.Equal(gotEventIDs, expected) {
-		t.Fatalf("forward extremities mismatch for %s: got %v want %v", roomID, gotEventIDs, expected)
-	}
-}
-
 // paginateRoom paginates through a room's /messages endpoint in the given
 // direction ("b" for backwards, "f" for forwards), collecting ALL events
 // (including state events) without any filtering.
 func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) paginationResult {
 	t.Helper()
 	return paginateRoomDirFrom(t, user, roomID, limit, "b", "")
-}
-
-func paginateRoomDir(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string) paginationResult {
-	t.Helper()
-	return paginateRoomDirFrom(t, user, roomID, limit, dir, "")
 }
 
 func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string, initialToken string) paginationResult {
@@ -1377,25 +1305,5 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 	for _, failure := range failures {
 		t.Error(failure)
-	}
-}
-
-// dumpEventDetails is a test helper that can be called to log all raw events from
-// pagination for debugging purposes. This is intentionally verbose.
-func dumpEventDetails(t *testing.T, messagesResBody json.RawMessage, pageNum int) {
-	t.Helper()
-
-	chunkRes := gjson.GetBytes(messagesResBody, "chunk")
-	if !chunkRes.Exists() {
-		return
-	}
-
-	for i, event := range chunkRes.Array() {
-		t.Logf("  Page %d, event %d: type=%s event_id=%s state_key=%s",
-			pageNum, i,
-			event.Get("type").Str,
-			event.Get("event_id").Str,
-			event.Get("state_key").Str,
-		)
 	}
 }

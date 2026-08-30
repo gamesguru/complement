@@ -3,7 +3,7 @@
 
 // Venator: https://github.com/matrix-org/complement/issues/897
 
-package csapi_tests
+package csapi
 
 import (
 	"testing"

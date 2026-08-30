@@ -4,7 +4,7 @@
 // Rationale for being included in Dendrite's blacklist: https://github.com/matrix-org/complement/pull/104#discussion_r617646624
 // Venator: Does not implement presence
 
-package csapi_tests
+package csapi
 
 import (
 	"testing"

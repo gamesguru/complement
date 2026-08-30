@@ -2,7 +2,7 @@
 // +build !dendrite_blacklist
 
 // Rationale for being included in Dendrite's blacklist: https://github.com/matrix-org/complement/pull/199#issuecomment-904852233
-package csapi_tests
+package csapi
 
 import (
 	"strings"
