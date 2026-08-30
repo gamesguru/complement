@@ -23,12 +23,15 @@ func TestMembersLocal(t *testing.T) {
 	})
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 
-	bob.MustDo(
-		t, "PUT", []string{"_matrix", "client", "v3", "presence", bob.UserID, "status"},
-		client.WithJSONBody(t, map[string]interface{}{
-			"presence": "online",
-		}),
-	)
+	// Venator: does not implement presence
+	if runtime.Homeserver != runtime.Venator {
+		bob.MustDo(
+			t, "PUT", []string{"_matrix", "client", "v3", "presence", bob.UserID, "status"},
+			client.WithJSONBody(t, map[string]interface{}{
+				"presence": "online",
+			}),
+		)
+	}
 
 	_, incrementalSyncTokenBeforeBobJoinsRoom := alice.MustSync(t, client.SyncReq{TimeoutMillis: "0"})
 	bob.MustJoinRoom(t, roomID, []spec.ServerName{})

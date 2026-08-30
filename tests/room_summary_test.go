@@ -20,6 +20,8 @@ import (
 // for rooms that do not use restricted join rules.
 func TestRoomSummaryAllowedRoomIDs(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Venator: does not support room version 8 (>=v10 only)
+	runtime.SkipIf(t, runtime.Venator)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
