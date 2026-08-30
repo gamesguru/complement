@@ -125,7 +125,7 @@ func TestInboundFederationRejectsEventsWithRejectedAuthEvents(t *testing.T) {
 	// a stable snapshot.
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
-if vars["roomID"] != room.RoomID {
+		if vars["roomID"] != room.RoomID {
 			t.Errorf("unexpected /state_ids request for room %s", vars["roomID"])
 			w.WriteHeader(404)
 			_, _ = w.Write([]byte("{}"))

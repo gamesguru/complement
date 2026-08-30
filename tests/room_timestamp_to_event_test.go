@@ -327,18 +327,13 @@ func TestJumpToDateEndpoint(t *testing.T) {
 					}),
 				)
 				// Make sure both messages are visible
-				messagesResBody := must.MatchResponse(t, messagesRes, match.HTTPResponse{
+				must.MatchResponse(t, messagesRes, match.HTTPResponse{
 					JSON: []match.JSON{
 						match.JSONCheckOff("chunk", []interface{}{eventA.EventID, eventB.EventID}, match.CheckOffMapper(func(r gjson.Result) interface{} {
 							return r.Get("event_id").Str
 						}), match.CheckOffAllowUnwanted()),
 					},
 				})
-				chunk := gjson.GetBytes(messagesResBody, "chunk").Array()
-				chunkIDs := make([]string, 0, len(chunk))
-				for _, ev := range chunk {
-					chunkIDs = append(chunkIDs, ev.Get("event_id").String())
-				}
 			})
 		})
 	})
