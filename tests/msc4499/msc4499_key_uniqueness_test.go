@@ -1738,12 +1738,15 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 
 	// The PDU's own signature (above) intentionally uses keyIDExpired, since
 	// that's what's under test. The transport-level federation request
-	// (X-Matrix Authorization header) is a separate signature and MUST be
-	// made with a key the origin currently publishes as active — a receiving
-	// server has no obligation to trust a live request authenticated by a
-	// key that only appears in old_verify_keys. Use a client bound to the
-	// still-active identity for that, independent of srv.KeyID/srv.Priv
-	// (which get reassigned below for building event B's content).
+	// (X-Matrix Authorization header) is a separate signature. Per MSC4499's
+	// "Permanent binding" section: key-ID permanence "does not alter the
+	// validity-window semantics (e.g., event signatures are still verified
+	// against the key's validity at the event's origin_server_ts, and
+	// federation requests still require a currently valid key)" — so a key
+	// present only in old_verify_keys does not satisfy that for a live
+	// request. Use the active identity for the request, independent of
+	// srv.KeyID/srv.Priv (which get reassigned below for building event B's
+	// content).
 	fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), keyIDActive, privKeyActive)
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
@@ -3119,11 +3122,10 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		// historicalEvent's own signature (above, via buildEventWithSigningKey)
 		// intentionally uses keyIDLost, since that's what's under test. The
 		// transport-level federation request (X-Matrix Authorization header)
-		// is a separate signature and MUST be made with a key the origin
-		// currently publishes as active — a receiving server has no
-		// obligation to trust a live request authenticated by a key it
-		// never (or no longer) considers valid. Use the still-current
-		// identity for that.
+		// is separate — see the identical note in
+		// testMSC4499KeyHistoricalEventVerification above, citing MSC4499's
+		// "Permanent binding" section: "federation requests still require a
+		// currently valid key". Use the current identity for that request.
 		fedClient := federationClientWithSigningKey(
 			deployment,
 			spec.ServerName(srv.ServerName()),
