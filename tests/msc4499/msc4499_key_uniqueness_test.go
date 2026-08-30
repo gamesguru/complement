@@ -621,7 +621,6 @@ func TestMSC4499Key(t *testing.T) {
 		// pass/fail reason.
 		t.Run("§3", func(t *testing.T) {
 			t.Run("VerifyKeysCeiling", func(t *testing.T) {
-				runtime.SkipIf(t, runtime.Dendrite)
 				deployment := complement.Deploy(t, 1)
 				defer deployment.Destroy(t)
 				testMSC4499KeyVerifyKeysCeiling(t, deployment)
@@ -649,7 +648,6 @@ func TestMSC4499Key(t *testing.T) {
 			// its pass/fail depend on run order and on no earlier subtest in the
 			// group having partially mutated hs1.
 			t.Run("BindingPromotion", func(t *testing.T) {
-				runtime.SkipIf(t, runtime.Dendrite)
 				deployment := deployMSC4499TrustedNotary(t)
 				defer deployment.Destroy(t)
 				testMSC4499KeyBindingPromotion(t, deployment)
@@ -709,13 +707,11 @@ func TestMSC4499Key(t *testing.T) {
 		// reason.
 		t.Run("§9", func(t *testing.T) {
 			t.Run("CorroborationTierRetention", func(t *testing.T) {
-				runtime.SkipIf(t, runtime.Dendrite)
 				deployment := deployMSC4499TrustedNotary(t)
 				defer deployment.Destroy(t)
 				testMSC4499KeyCorroborationTierRetention(t, deployment)
 			})
 			t.Run("StorageQuotaResilience", func(t *testing.T) {
-				runtime.SkipIf(t, runtime.Dendrite)
 				deployment := complement.Deploy(t, 1)
 				defer deployment.Destroy(t)
 				testMSC4499KeyStorageQuotaResilience(t, deployment)
@@ -727,7 +723,6 @@ func TestMSC4499Key(t *testing.T) {
 // testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
 // "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -803,7 +798,6 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 // enough that a restart does not allow the same `(server_name, algorithm,
 // key_id)` to be rebound to a different key body.
 func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// This builds directly on the direct-fetch collision behavior above. A
 	// homeserver that already fails First Seen Wins on re-fetch cannot tell us
 	// anything meaningful about whether that binding also survives restart.
@@ -936,7 +930,6 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 // the signature (computed by the origin over a different body) would fail to
 // verify against the mutated body, catching the violation deterministically.
 func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// No specific failure recorded for this one from a past Synapse run — skipped
 	// on the general basis that this branch's Synapse image has no MSC4499
 	// support at all (element-hq/synapse has no msc4499-edge-cases branch for
@@ -1256,7 +1249,6 @@ func testMSC4499KeyRotation(t *testing.T) {
 // with DIFFERENT key material. MSC4499 requires the entire response to be rejected
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1427,7 +1419,6 @@ func testMSC4499KeyIdenticalCrossMapIsLegal(t *testing.T) {
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func testMSC4499KeyFetchCoalescing(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1532,7 +1523,6 @@ func testMSC4499KeyFetchCoalescing(t *testing.T) {
 
 // Test that failed key fetches are cached and subject to negative caching / backoff.
 func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1630,7 +1620,6 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1816,7 +1805,6 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 // bypassing Go's JSON marshaler (which silently deduplicates). The notary MUST reject
 // the payload and omit the colliding key from server_keys.
 func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1952,7 +1940,6 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // Test that duplicate JSON keys are rejected even when they appear inside a
 // nested object rather than directly in verify_keys.
 func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// No specific failure recorded for this one from a past Synapse run — skipped
 	// on the general basis that this branch's Synapse image has no MSC4499
 	// support (see note on testMSC4499KeyIDFirstSeenWinsDirect). Needs a fresh
@@ -2617,7 +2604,6 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  4. Query hs1 again with minimum_valid_until_ts forcing a re-fetch
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
@@ -2782,7 +2768,6 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T, deployment complement.Deploym
 //  2. Query for key A → should be returned (payload not poisoned)
 //  3. Query for key B → should be absent (malformed entry ignored)
 func testMSC4499KeyExpiredTSSanityCheck(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2982,7 +2967,6 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 // historical-verification consequences of publishing, or failing to publish, a
 // lost key in old_verify_keys.
 func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 
 	runCase := func(t *testing.T, publishLostKey bool) {
 		deployment := complement.Deploy(t, 1)
