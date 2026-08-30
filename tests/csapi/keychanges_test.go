@@ -2,7 +2,7 @@
 
 // Venator: does not implement r0 API, which part of this test depends on
 
-package csapi
+package csapi_tests
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-package csapi
+package csapi_tests
 
 import (
 	"io"
