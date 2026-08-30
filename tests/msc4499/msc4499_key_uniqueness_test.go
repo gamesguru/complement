@@ -190,6 +190,21 @@ func skipOnNotaryTimeout(t *testing.T, clientObj *http.Client, err error) {
 	}
 }
 
+// skipKnownSynapseGap reports a detected MSC4499 non-conformance as a skip
+// only when running against Synapse, which is currently known not to
+// implement the behaviour under test. Any other (i.e. unlisted) homeserver
+// is held to the assertion and fails outright, so a real regression there
+// isn't masked as a green skip.
+func skipKnownSynapseGap(t *testing.T, format string, args ...interface{}) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	if runtime.Homeserver == runtime.Synapse {
+		t.Skip(msg)
+	} else {
+		t.Fatal(msg)
+	}
+}
+
 // queryNotaryRaw queries the notary and returns the key found for the given server/keyID,
 // or empty string if the server was omitted or the key was absent. Does not assert on
 // the key value, allowing callers to apply custom assertion logic.
@@ -378,7 +393,7 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 
 	if foundKey == pubKeyBBase64 {
-		t.Skipf("Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch")
+		skipKnownSynapseGap(t, "Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch")
 	}
 
 	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
@@ -488,7 +503,7 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	// First Seen Wins must still hold: the served body must reflect key A,
 	// never the colliding key B.
 	if foundKeyBase64 == base64.RawStdEncoding.EncodeToString(pubKeyB) {
-		t.Skipf("Server does not implement First Seen Wins — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
+		skipKnownSynapseGap(t, "Server does not implement First Seen Wins — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
 	}
 
 	foundKeyRaw, err := base64.RawStdEncoding.DecodeString(foundKeyBase64)
@@ -822,7 +837,7 @@ func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
 			// The colliding key ID MUST NOT appear — this is the malformed payload's key
 			foundCollide := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
 			if foundCollide != "" {
-				t.Skipf("Server does not reject intra-payload key collisions — hs1 returned the colliding key %s in server_keys (key body: %s)",
+				skipKnownSynapseGap(t, "Server does not reject intra-payload key collisions — hs1 returned the colliding key %s in server_keys (key body: %s)",
 					collideKeyID, foundCollide)
 			}
 
@@ -1084,7 +1099,7 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 
 	// Due to negative caching/backoff, hs1 MUST NOT make another HTTP request to mockKeyServer yet!
 	if reqCount > 0 {
-		t.Skipf("Server does not implement negative caching / backoff: it made a network request on consecutive failure query")
+		skipKnownSynapseGap(t, "Server does not implement negative caching / backoff: it made a network request on consecutive failure query")
 	}
 }
 
@@ -1210,11 +1225,11 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		PDUs:          []json.RawMessage{eventA.JSON()},
 	})
 	if err != nil {
-		t.Skipf("Server does not implement historical event verification via old_verify_keys — SendTransaction failed for backdated historical event: %v", err)
+		skipKnownSynapseGap(t, "Server does not implement historical event verification via old_verify_keys — SendTransaction failed for backdated historical event: %v", err)
 	}
 	for eventID, pduResp := range respA.PDUs {
 		if pduResp.Error != "" {
-			t.Skipf("Server does not implement historical event verification — hs1 rejected valid historical event %s (origin_server_ts before expired_ts): %s", eventID, pduResp.Error)
+			skipKnownSynapseGap(t, "Server does not implement historical event verification — hs1 rejected valid historical event %s (origin_server_ts before expired_ts): %s", eventID, pduResp.Error)
 		}
 	}
 
@@ -1263,7 +1278,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
 			if ev.Get("event_id").Str == eventB.EventID() {
-				t.Skipf("Server does not enforce expired_ts — hs1 accepted event %s signed by expired key (origin_server_ts after expired_ts)", eventB.EventID())
+				skipKnownSynapseGap(t, "Server does not enforce expired_ts — hs1 accepted event %s signed by expired key (origin_server_ts after expired_ts)", eventB.EventID())
 			}
 		}
 	}
@@ -1484,7 +1499,7 @@ func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 		t.Fatalf("nested duplicate payload was never fetched — test did not exercise the duplicate parser path")
 	}
 	if foundKey != "" {
-		t.Skipf("Server does not implement deep duplicate-key detection — hs1 returned key %s from a payload with a nested duplicate key", foundKey)
+		skipKnownSynapseGap(t, "Server does not implement deep duplicate-key detection — hs1 returned key %s from a payload with a nested duplicate key", foundKey)
 	}
 }
 
@@ -1748,7 +1763,7 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	oldestKey := oldVerifyKeys[oldestKeyID]
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestKeyID), 0)
 	if foundKey != "" {
-		t.Skipf("Server does not enforce a retired-key storage ceiling — expected oldest retired key %s to be evicted under quota pressure, but found %q",
+		skipKnownSynapseGap(t, "Server does not enforce a retired-key storage ceiling — expected oldest retired key %s to be evicted under quota pressure, but found %q",
 			oldestKeyID, base64.RawStdEncoding.EncodeToString(oldestKey.Key))
 	}
 }
@@ -2067,8 +2082,8 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	//   2. server is omitted from response (can't satisfy constraint — correct)
 	//   3. key B is returned (frozen provisional was overridden — VIOLATION)
 	if foundKey == pubKeyBBase64 {
-		t.Skipf("Server does not implement Provisional Override Freeze — hs1 returned colliding key B after " +
-			"provisional binding expired. Expired provisional bindings MUST NOT be overridden by a direct fetch " +
+		skipKnownSynapseGap(t, "Server does not implement Provisional Override Freeze — hs1 returned colliding key B after "+
+			"provisional binding expired. Expired provisional bindings MUST NOT be overridden by a direct fetch "+
 			"(MSC4499 L147-157)")
 	}
 
@@ -2143,7 +2158,7 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0)
 
 	if foundKey != "" {
-		t.Skipf("Server does not enforce the verify_keys ceiling — hs1 accepted a payload with %d verify_keys "+
+		skipKnownSynapseGap(t, "Server does not enforce the verify_keys ceiling — hs1 accepted a payload with %d verify_keys "+
 			"(ceiling is 50) — key %s was returned instead of rejecting the payload as hostile (MSC4499 L551-558)",
 			len(verifyKeys), sigKeyID)
 	}
@@ -2258,7 +2273,7 @@ func testMSC4499KeyExpiredTSSanityCheck(t *testing.T) {
 		if sk.Get("server_name").Str == string(originName) {
 			foundKeyB := sk.Get("old_verify_keys." + client.GjsonEscape(string(keyIDB)) + ".key").Str
 			if foundKeyB != "" {
-				t.Skipf("Server does not sanity-check expired_ts — hs1 served key B (expired_ts in the future) in " +
+				skipKnownSynapseGap(t, "Server does not sanity-check expired_ts — hs1 served key B (expired_ts in the future) in "+
 					"old_verify_keys; future expired_ts MUST be treated as malformed (MSC4499 L351-354)")
 			}
 		}
