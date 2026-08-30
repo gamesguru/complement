@@ -1,7 +1,6 @@
 package csapi_tests
 
 import (
-	"strconv"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -12,6 +11,7 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
+	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
@@ -85,6 +85,7 @@ func TestRoomMembers(t *testing.T) {
 		// sytest: Test that we can be reinvited to a room we created
 		t.Run("Test that we can be reinvited to a room we created", func(t *testing.T) {
 			t.Parallel()
+			defaultRoomVersion := alice.GetDefaultRoomVersion(t)
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
 				"preset": "private_chat",
 			})
@@ -98,26 +99,23 @@ func TestRoomMembers(t *testing.T) {
 			// Sync to make sure bob has joined
 			bob.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 
-			roomVersion := alice.GetDefaultRoomVersion(t)
-			roomVer, err := strconv.Atoi(string(roomVersion))
-			if err != nil {
-				t.Skipf("non-numeric room version %q, skipping V12-conditional test", roomVersion)
-			}
-			usersMap := map[string]interface{}{
-				bob.UserID: 100,
-			}
-			if roomVer < 12 {
-				usersMap[alice.UserID] = 100
-			}
-
 			stateKey := ""
 			alice.SendEventSynced(t, roomID, b.Event{
 				Type:     "m.room.power_levels",
 				StateKey: &stateKey,
-				Content: map[string]interface{}{
-					"invite": 100,
-					"users":  usersMap,
-				},
+				Content: func() map[string]interface{} {
+					content := map[string]interface{}{
+						"invite": 100,
+						"users": map[string]int64{
+							bob.UserID:   100,
+							alice.UserID: 100,
+						},
+					}
+					if gomatrixserverlib.MustGetRoomVersion(defaultRoomVersion).PrivilegedCreators() {
+						delete(content["users"].(map[string]int64), alice.UserID)
+					}
+					return content
+				}(),
 			})
 
 			alice.MustLeaveRoom(t, roomID)
