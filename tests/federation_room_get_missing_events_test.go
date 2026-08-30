@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,6 +210,30 @@ func TestOutboundFederationIgnoresMissingEventWithBadJSONForRoomVersion6(t *test
 	roomAlias := srv.MakeAliasMapping("flibble", room.RoomID)
 	// join the room
 	alice.MustJoinRoom(t, roomAlias, nil)
+
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		pathVars := mux.Vars(req)
+		if pathVars["roomID"] != room.RoomID {
+			t.Fatalf("Received /state_ids for the wrong room: %s", pathVars["roomID"])
+		}
+		roomState := room.AllCurrentState()
+		stateEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range roomState {
+			stateEventIDs = append(stateEventIDs, ev.EventID())
+		}
+		authEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range room.AuthChainForEvents(roomState) {
+			authEventIDs = append(authEventIDs, ev.EventID())
+		}
+		res := fclient.RespStateIDs{
+			AuthEventIDs:  authEventIDs,
+			StateEventIDs: stateEventIDs,
+		}
+		responseBytes, err := json.Marshal(res)
+		must.NotError(t, "failed to marshal /state_ids response", err)
+		w.WriteHeader(200)
+		w.Write(responseBytes)
+	}).Methods("GET")
 
 	latestEvent := room.Timeline[len(room.Timeline)-1]
 
@@ -648,8 +673,7 @@ func TestOutboundFederationEventSizeGetMissingEvents(t *testing.T) {
 // crucially D and E ARE PERSISTED because C exists in-memory.
 // This breaks the auth chain for the room, which matters when doing state resolution.
 func TestCorruptedAuthChain(t *testing.T) {
-	// Dendrite doesn't make exactly the same requests as it seems to fallback to /event_auth.
-	// As this is intended for a synapse bugfix, we'll skip dendrite for now.
+	// This test should exercise the /state_ids path, not the /event_auth fallback.
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -721,6 +745,9 @@ func TestCorruptedAuthChain(t *testing.T) {
 		PrevEvents: []string{eventA.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
 	})
+	srvRoom.TimelineMutex.Lock()
+	srvRoom.Timeline = append(srvRoom.Timeline, eventB)
+	srvRoom.TimelineMutex.Unlock()
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -931,4 +958,605 @@ func TestCorruptedAuthChain(t *testing.T) {
 	t.Logf("bob's membership content: %v", content.Raw)
 	// assert bob's member event was his initial join, not any of the others. Technically you can argue A should be valid.
 	must.Equal(t, content.Get("displayname").Str, "", "Events C/D/E were processed when they should not have been as the server doesn't know B.")
+}
+
+// TestCorruptedAuthChain above characterizes what happens when an event
+// referenced only via /state_ids (never delivered through /send or
+// /get_missing_events) is permanently unfetchable: the whole dependent
+// chain is correctly dropped. This test is its positive counterpart: the
+// same /state_ids -> /event/{id} individual-fetch ladder
+// (fetch_state.rs, on the homeserver side), but where every referenced
+// event genuinely IS fetchable one at a time. It exists to give that
+// fallback ladder actual pass/fail coverage -- until this test, nothing
+// exercised the case where it succeeds, only the case where it's
+// defeated by a genuinely-missing event.
+func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleInviteRequests(nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "alice"})
+	sentinel := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "sentinel"})
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset":       "public_chat",
+		"room_version": "10",
+	})
+	sentinel.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
+	for i := 0; i < 100; i++ {
+		if i%2 == 0 {
+			alice.MustLeaveRoom(t, roomID)
+		} else {
+			alice.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
+		}
+	}
+	bob := srv.UserID("bob")
+	defaultImpl := federation.ServerRoomImplDefault{}
+	var existingAuthChain []gomatrixserverlib.PDU
+	srvRoom := srv.MustJoinRoom(t, deployment, spec.ServerName("hs1"), roomID, bob, federation.WithRoomOpts(federation.WithImpl(&federation.ServerRoomImplCustom{
+		ServerRoomImplDefault: defaultImpl,
+		PopulateFromSendJoinResponseFn: func(def federation.ServerRoomImpl, room *federation.ServerRoom, joinEvent gomatrixserverlib.PDU, resp fclient.RespSendJoin) {
+			defaultImpl.PopulateFromSendJoinResponse(room, joinEvent, resp)
+			existingAuthChain = resp.AuthEvents.TrustedEvents(joinEvent.Version(), false)
+		},
+	})))
+	if len(existingAuthChain) < 100 {
+		ct.Fatalf(t, "not enough events in the auth chain, got %d want >100", len(existingAuthChain))
+	}
+	createEvent := srvRoom.CurrentState(spec.MRoomCreate, "")
+	plEvent := srvRoom.CurrentState(spec.MRoomPowerLevels, "")
+	jrEvent := srvRoom.CurrentState(spec.MRoomJoinRules, "")
+
+	// Same A -> B -> C -> D -> E profile-change chain as TestCorruptedAuthChain.
+	eventA := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "A",
+		},
+	})
+	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "B",
+		},
+		PrevEvents: []string{eventA.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
+	})
+	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "C",
+		},
+		PrevEvents: []string{eventB.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
+	})
+	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "D",
+		},
+		PrevEvents: []string{eventC.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
+	})
+	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "E",
+		},
+		PrevEvents: []string{eventD.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventD.EventID()},
+	})
+	srvRoom.AddEvent(eventE)
+
+	stateIDsEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /state_ids",
+		},
+		PrevEvents: []string{eventE.EventID()},
+	})
+	srvRoom.AddEvent(stateIDsEvent)
+	gmeEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /get_missing_events",
+		},
+		PrevEvents: []string{stateIDsEvent.EventID()},
+	})
+	srvRoom.AddEvent(gmeEvent)
+	sendTxnEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /send",
+		},
+		PrevEvents: []string{gmeEvent.EventID()},
+	})
+	srvRoom.AddEvent(sendTxnEvent)
+
+	// Unlike TestCorruptedAuthChain, every event -- including B -- is
+	// individually fetchable. This is the only substantive difference from
+	// that test's setup.
+	allEventsToShare := []gomatrixserverlib.PDU{
+		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventB, eventC, eventD, eventE,
+	}
+	t.Logf("event A: %s", eventA.EventID())
+	t.Logf("event B: %s", eventB.EventID())
+	t.Logf("event C: %s", eventC.EventID())
+	t.Logf("event D: %s", eventD.EventID())
+	t.Logf("event E: %s", eventE.EventID())
+	t.Logf("event for /state_ids: %s", stateIDsEvent.EventID())
+	t.Logf("event for /get_missing_events: %s", gmeEvent.EventID())
+	t.Logf("event for /send: %s", sendTxnEvent.EventID())
+
+	gmeWaiter := helpers.NewWaiter()
+	var gmeRequested atomic.Bool
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		body := must.ParseJSON(t, req.Body)
+		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
+		latestEvents := body.Get("latest_events").Array()
+		matched := false
+		for _, ev := range latestEvents {
+			if ev.String() == sendTxnEvent.EventID() {
+				matched = true
+				if !gmeRequested.Swap(true) {
+					gmeWaiter.Finish()
+				}
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("unexpected event provided to /get_missing_events: got %v want %s", latestEvents, sendTxnEvent.EventID())
+		}
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		var responseBytes []byte
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	})
+	stateIDWaiter := helpers.NewWaiter()
+	var stateIDRequested atomic.Bool
+	var sawTargetStateIDs atomic.Bool
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
+		reqEventID := req.URL.Query().Get("event_id")
+		if reqEventID == stateIDsEvent.EventID() {
+			sawTargetStateIDs.Store(true)
+			if !stateIDRequested.Swap(true) {
+				stateIDWaiter.Finish()
+			}
+		} else {
+			t.Logf("/state_ids received unexpected event %s; serving the same fallback response", reqEventID)
+		}
+		w.WriteHeader(200)
+
+		var authChainIDs []string
+		for _, ev := range existingAuthChain {
+			authChainIDs = append(authChainIDs, ev.EventID())
+		}
+		authChainIDs = append(authChainIDs, eventA.EventID(), eventB.EventID(), eventC.EventID(), eventD.EventID())
+		var pduIDs []string
+		for _, ev := range srvRoom.AllCurrentState() {
+			if ev.Type() == spec.MRoomMember && ev.StateKeyEquals(bob) {
+				continue
+			}
+			pduIDs = append(pduIDs, ev.EventID())
+		}
+		pduIDs = append(pduIDs, eventE.EventID())
+		res := struct {
+			AuthChainIDs []string `json:"auth_chain_ids"`
+			PDUIDs       []string `json:"pdu_ids"`
+		}{
+			AuthChainIDs: authChainIDs,
+			PDUIDs:       pduIDs,
+		}
+		var responseBytes []byte
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	})
+	// Every ID the /state_ids response can surface as newly-missing that we
+	// care about proving got fetched.
+	eventWaiters := map[string]*helpers.Waiter{
+		eventA.EventID(): helpers.NewWaiter(),
+		eventB.EventID(): helpers.NewWaiter(),
+		eventC.EventID(): helpers.NewWaiter(),
+		eventD.EventID(): helpers.NewWaiter(),
+		eventE.EventID(): helpers.NewWaiter(),
+	}
+	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		vars := mux.Vars(req)
+		eventID := vars["eventID"]
+		var event gomatrixserverlib.PDU
+		for _, ev := range allEventsToShare {
+			if ev.EventID() == eventID {
+				event = ev
+				break
+			}
+		}
+		if w, ok := eventWaiters[eventID]; ok {
+			w.Finish()
+		}
+
+		if event == nil {
+			t.Logf("/event returning 404 for event %v", eventID)
+			w.WriteHeader(404)
+			w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+			return
+		}
+
+		txn := gomatrixserverlib.Transaction{
+			Origin:         spec.ServerName(srv.ServerName()),
+			OriginServerTS: spec.AsTimestamp(time.Now()),
+			PDUs: []json.RawMessage{
+				event.JSON(),
+			},
+		}
+		resp, err := json.Marshal(txn)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			return
+		}
+		w.WriteHeader(200)
+		w.Write(resp)
+	}))
+
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sendTxnEvent.JSON()}, nil)
+
+	gmeWaiter.Wait(t, 5*time.Second)
+	stateIDWaiter.Wait(t, 5*time.Second)
+	must.Equal(t, gmeRequested.Load(), true, "/get_missing_events was never requested")
+	must.Equal(t, sawTargetStateIDs.Load(), true, "target /state_ids event was never requested")
+	for eid, w := range eventWaiters {
+		w.Wait(t, 5*time.Second)
+		t.Logf("individually fetched %s", eid)
+	}
+
+	if runtime.Homeserver == runtime.Synapse {
+		// Synapse exercises the fallback ladder, but this final state assertion is
+		// still too coupled to its current recovery behavior.
+		t.Skip("skipping Synapse-specific final state assertion after state_ids fallback")
+	}
+
+	// Unlike TestCorruptedAuthChain: every event was individually
+	// fetchable, so the full A->B->C->D->E chain should have been
+	// recovered via the /state_ids -> /event/{id} ladder and bob's
+	// current membership content should reflect E.
+	content := alice.MustGetStateEventContent(t, roomID, spec.MRoomMember, bob)
+	t.Logf("bob's membership content: %v", content.Raw)
+	must.Equal(t, content.Get("displayname").Str, "E", "Events A-E should have all been recovered via individual /event fetches, but bob's final profile doesn't reflect event E.")
+}
+
+// A corrupted /get_missing_events response should not poison the recovery path.
+// This is the negative counterpart to TestStateIdsFallbackFetchesFullAuthChain:
+// we intentionally return a malformed response once, then let the server retry
+// and complete the fallback ladder normally.
+func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Synapse) // Synapse does not currently guarantee this malformed-response retry shape.
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleInviteRequests(nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "alice"})
+	sentinel := deployment.Register(t, "hs1", helpers.RegistrationOpts{LocalpartSuffix: "sentinel"})
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"preset":       "public_chat",
+		"room_version": "10",
+	})
+	sentinel.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
+	for i := 0; i < 100; i++ {
+		if i%2 == 0 {
+			alice.MustLeaveRoom(t, roomID)
+		} else {
+			alice.MustJoinRoom(t, roomID, []spec.ServerName{"hs1"})
+		}
+	}
+	bob := srv.UserID("bob")
+	defaultImpl := federation.ServerRoomImplDefault{}
+	var existingAuthChain []gomatrixserverlib.PDU
+	srvRoom := srv.MustJoinRoom(t, deployment, spec.ServerName("hs1"), roomID, bob, federation.WithRoomOpts(federation.WithImpl(&federation.ServerRoomImplCustom{
+		ServerRoomImplDefault: defaultImpl,
+		PopulateFromSendJoinResponseFn: func(def federation.ServerRoomImpl, room *federation.ServerRoom, joinEvent gomatrixserverlib.PDU, resp fclient.RespSendJoin) {
+			defaultImpl.PopulateFromSendJoinResponse(room, joinEvent, resp)
+			existingAuthChain = resp.AuthEvents.TrustedEvents(joinEvent.Version(), false)
+		},
+	})))
+	if len(existingAuthChain) < 100 {
+		ct.Fatalf(t, "not enough events in the auth chain, got %d want >100", len(existingAuthChain))
+	}
+	createEvent := srvRoom.CurrentState(spec.MRoomCreate, "")
+	plEvent := srvRoom.CurrentState(spec.MRoomPowerLevels, "")
+	jrEvent := srvRoom.CurrentState(spec.MRoomJoinRules, "")
+
+	eventA := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "A",
+		},
+	})
+	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "B",
+		},
+		PrevEvents: []string{eventA.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
+	})
+	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "C",
+		},
+		PrevEvents: []string{eventB.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
+	})
+	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "D",
+		},
+		PrevEvents: []string{eventC.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
+	})
+	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:     spec.MRoomMember,
+		Sender:   bob,
+		StateKey: &bob,
+		Content: map[string]interface{}{
+			"membership":  "join",
+			"displayname": "E",
+		},
+		PrevEvents: []string{eventD.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventD.EventID()},
+	})
+	srvRoom.AddEvent(eventE)
+
+	stateIDsEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /state_ids",
+		},
+		PrevEvents: []string{eventE.EventID()},
+	})
+	srvRoom.AddEvent(stateIDsEvent)
+	gmeEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /get_missing_events",
+		},
+		PrevEvents: []string{stateIDsEvent.EventID()},
+	})
+	srvRoom.AddEvent(gmeEvent)
+	sendTxnEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "for /send",
+		},
+		PrevEvents: []string{gmeEvent.EventID()},
+	})
+	srvRoom.AddEvent(sendTxnEvent)
+
+	allEventsToShare := []gomatrixserverlib.PDU{
+		stateIDsEvent, gmeEvent, sendTxnEvent, eventA, eventB, eventC, eventD, eventE,
+	}
+	t.Logf("event A: %s", eventA.EventID())
+	t.Logf("event B: %s", eventB.EventID())
+	t.Logf("event C: %s", eventC.EventID())
+	t.Logf("event D: %s", eventD.EventID())
+	t.Logf("event E: %s", eventE.EventID())
+	t.Logf("event for /state_ids: %s", stateIDsEvent.EventID())
+	t.Logf("event for /get_missing_events: %s", gmeEvent.EventID())
+	t.Logf("event for /send: %s", sendTxnEvent.EventID())
+
+	gmeWaiter := helpers.NewWaiter()
+	var gmeRequested atomic.Bool
+	var gmeCallCount atomic.Int32
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		body := must.ParseJSON(t, req.Body)
+		t.Logf("/get_missing_events req for room %s => %s", mux.Vars(req)["roomID"], body.Raw)
+		latestEvents := body.Get("latest_events").Array()
+		for _, ev := range latestEvents {
+			if ev.String() == sendTxnEvent.EventID() {
+				if !gmeRequested.Swap(true) {
+					gmeWaiter.Finish()
+				}
+				break
+			}
+		}
+
+		callNum := gmeCallCount.Add(1)
+		if callNum == 1 {
+			t.Logf("/get_missing_events returning malformed JSON on first call to exercise retry handling")
+			w.WriteHeader(200)
+			w.Write([]byte(`{"events":[`))
+			return
+		}
+
+		w.WriteHeader(200)
+		res := struct {
+			Events []gomatrixserverlib.PDU `json:"events"`
+		}{
+			Events: []gomatrixserverlib.PDU{gmeEvent},
+		}
+		var responseBytes []byte
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	})
+	stateIDWaiter := helpers.NewWaiter()
+	var stateIDRequested atomic.Bool
+	var sawTargetStateIDs atomic.Bool
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
+		reqEventID := req.URL.Query().Get("event_id")
+		if reqEventID == stateIDsEvent.EventID() {
+			sawTargetStateIDs.Store(true)
+			if !stateIDRequested.Swap(true) {
+				stateIDWaiter.Finish()
+			}
+		} else {
+			t.Logf("/state_ids received unexpected event %s; serving the same fallback response", reqEventID)
+		}
+		w.WriteHeader(200)
+
+		var authChainIDs []string
+		for _, ev := range existingAuthChain {
+			authChainIDs = append(authChainIDs, ev.EventID())
+		}
+		authChainIDs = append(authChainIDs, eventA.EventID(), eventB.EventID(), eventC.EventID(), eventD.EventID())
+		var pduIDs []string
+		for _, ev := range srvRoom.AllCurrentState() {
+			if ev.Type() == spec.MRoomMember && ev.StateKeyEquals(bob) {
+				continue
+			}
+			pduIDs = append(pduIDs, ev.EventID())
+		}
+		pduIDs = append(pduIDs, eventE.EventID())
+		res := struct {
+			AuthChainIDs []string `json:"auth_chain_ids"`
+			PDUIDs       []string `json:"pdu_ids"`
+		}{
+			AuthChainIDs: authChainIDs,
+			PDUIDs:       pduIDs,
+		}
+		var responseBytes []byte
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal response", err)
+		w.Write(responseBytes)
+	})
+	eventWaiters := map[string]*helpers.Waiter{
+		eventA.EventID(): helpers.NewWaiter(),
+		eventB.EventID(): helpers.NewWaiter(),
+		eventC.EventID(): helpers.NewWaiter(),
+		eventD.EventID(): helpers.NewWaiter(),
+		eventE.EventID(): helpers.NewWaiter(),
+	}
+	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		vars := mux.Vars(req)
+		eventID := vars["eventID"]
+		var event gomatrixserverlib.PDU
+		for _, ev := range allEventsToShare {
+			if ev.EventID() == eventID {
+				event = ev
+				break
+			}
+		}
+		if w, ok := eventWaiters[eventID]; ok {
+			w.Finish()
+		}
+
+		if event == nil {
+			t.Logf("/event returning 404 for event %v", eventID)
+			w.WriteHeader(404)
+			w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+			return
+		}
+
+		txn := gomatrixserverlib.Transaction{
+			Origin:         spec.ServerName(srv.ServerName()),
+			OriginServerTS: spec.AsTimestamp(time.Now()),
+			PDUs: []json.RawMessage{
+				event.JSON(),
+			},
+		}
+		resp, err := json.Marshal(txn)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			return
+		}
+		w.WriteHeader(200)
+		w.Write(resp)
+	}))
+
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sendTxnEvent.JSON()}, nil)
+
+	gmeWaiter.Wait(t, 5*time.Second)
+	stateIDWaiter.Wait(t, 5*time.Second)
+	must.Equal(t, gmeRequested.Load(), true, "/get_missing_events was never requested")
+	must.Equal(t, sawTargetStateIDs.Load(), true, "target /state_ids event was never requested")
+	for eid, w := range eventWaiters {
+		w.Wait(t, 5*time.Second)
+		t.Logf("individually fetched %s", eid)
+	}
+
+	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "finished",
+		},
+		PrevEvents: []string{eventE.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
+
+	content := alice.MustGetStateEventContent(t, roomID, spec.MRoomMember, bob)
+	t.Logf("bob's membership content after malformed gme retry: %v", content.Raw)
+	must.Equal(t, content.Get("displayname").Str, "E", "Corrupt get_missing_events data should be ignored, and the full auth chain should still be recovered.")
 }

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/matrix-org/complement/internal"
 	complementRuntime "github.com/matrix-org/complement/runtime"
@@ -42,12 +43,14 @@ import (
 	"github.com/matrix-org/complement/config"
 )
 
+// In-container file paths used when injecting Complement CA material and appservice files via copy.
 const (
 	MountCACertPath     = "/complement/ca/ca.crt"
 	MountCAKeyPath      = "/complement/ca/ca.key"
 	MountAppServicePath = "/complement/appservice/" // All registration files sit here
 )
 
+// Deployer starts, stops, and tears down deployed Complement homeservers.
 type Deployer struct {
 	DeployNamespace string
 	Docker          *client.Client
@@ -56,6 +59,8 @@ type Deployer struct {
 	config          *config.Complement
 }
 
+// NewDeployer constructs a Docker deployer for the given namespace and configuration.
+// It returns an error if the Docker client cannot be created.
 func NewDeployer(deployNamespace string, cfg *config.Complement) (*Deployer, error) {
 	cli, err := client.NewClientWithOpts(
 		client.FromEnv,
@@ -93,7 +98,7 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 		baseImageURI = uri
 	}
 
-	containerName := fmt.Sprintf("complement_%s_dirty_%s", d.config.PackageNamespace, hsName)
+	containerName := fmt.Sprintf("complement_%s_%s_dirty_%s", d.config.PackageNamespace, d.config.RunID, hsName)
 	hsDeployment, err := deployImage(
 		d.Docker, baseImageURI, containerName,
 		d.config.PackageNamespace, "", hsName, nil, "dirty",
@@ -133,6 +138,7 @@ func (d *Deployer) CreateDirtyDeployment() (*Deployment, error) {
 	}, nil
 }
 
+// Deploy starts all Docker images built for the named blueprint.
 func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deployment, error) {
 	dep := &Deployment{
 		Deployer:      d,
@@ -172,7 +178,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 		asIDToRegistrationMap := asIDToRegistrationFromLabels(img.Labels)
 
 		// TODO: Make CSAPI port configurable
-		containerName := fmt.Sprintf("complement_%s_%s_%s_%d", d.config.PackageNamespace, d.DeployNamespace, contextStr, counter)
+		containerName := fmt.Sprintf("complement_%s_%s_%s_%s_%d", d.config.PackageNamespace, d.config.RunID, d.DeployNamespace, contextStr, counter)
 		deployment, err := deployImage(
 			d.Docker, img.ID, containerName,
 			d.config.PackageNamespace, blueprintName, hsName, asIDToRegistrationMap, contextStr, networkName, d.config,
@@ -212,6 +218,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 	return dep, lastErr
 }
 
+// PrintLogs prints the logs for every homeserver in a deployment.
 func (d *Deployer) PrintLogs(dep *Deployment) {
 	for _, hsDep := range dep.HS {
 		printLogs(d.Docker, hsDep.ContainerID, hsDep.ContainerID)
@@ -221,6 +228,17 @@ func (d *Deployer) PrintLogs(dep *Deployment) {
 // Destroy a deployment. This will kill all running containers.
 func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName string, failed bool) {
 	for _, hsDep := range dep.HS {
+		// Run the post-test script while the homeserver is still running. In
+		// particular, this lets callers collect live database statistics before
+		// the container is stopped below.
+		result, err := d.executePostScript(hsDep, testName, failed)
+		if err != nil {
+			log.Printf("Failed to execute post test script: %s - %s", err, string(result))
+		}
+		if printServerLogs && err == nil && result != nil {
+			log.Printf("Post test script result: %s", string(result))
+		}
+
 		if printServerLogs {
 			// If we want the logs we gracefully stop the containers to allow
 			// the logs to be flushed.
@@ -238,14 +256,6 @@ func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName strin
 			if err != nil {
 				log.Printf("Destroy: Failed to destroy container %s : %s\n", hsDep.ContainerID, err)
 			}
-		}
-
-		result, err := d.executePostScript(hsDep, testName, failed)
-		if err != nil {
-			log.Printf("Failed to execute post test script: %s - %s", err, string(result))
-		}
-		if printServerLogs && err == nil && result != nil {
-			log.Printf("Post test script result: %s", string(result))
 		}
 
 		err = d.Docker.ContainerRemove(context.Background(), hsDep.ContainerID, container.RemoveOptions{
@@ -266,6 +276,7 @@ func (d *Deployer) executePostScript(hsDep *HomeserverDeployment, testName strin
 	return cmd.CombinedOutput()
 }
 
+// PauseServer pauses a running homeserver container.
 func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerPause(ctx, hsDep.ContainerID)
@@ -275,6 +286,7 @@ func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// UnpauseServer resumes a paused homeserver container.
 func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerUnpause(ctx, hsDep.ContainerID)
@@ -284,6 +296,7 @@ func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StopServer stops a running homeserver container.
 func (d *Deployer) StopServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	secs := int(d.config.SpawnHSTimeout.Seconds())
@@ -307,6 +320,7 @@ func (d *Deployer) Restart(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StartServer starts a stopped homeserver container and refreshes its endpoints.
 func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	err := d.Docker.ContainerStart(ctx, hsDep.ContainerID, container.StartOptions{})
@@ -334,8 +348,74 @@ func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
-// nolint
+// deployImage deploys a homeserver image, retrying recoverable bootstrap failures up to three times.
+// It returns the deployment from the successful or final attempt and the associated error.
 func deployImage(
+	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
+	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
+) (*HomeserverDeployment, error) {
+	const maxAttempts = 3
+	var lastDeployment *HomeserverDeployment
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		deployment, err := deployImageOnce(
+			docker, imageID, containerName, pkgNamespace, blueprintName, hsName,
+			asIDToRegistrationMap, contextStr, networkName, cfg, extraEnv,
+		)
+		if err == nil {
+			return deployment, nil
+		}
+		lastDeployment = deployment
+		lastErr = err
+		if !isRetryableDeployBootstrapError(err) {
+			return deployment, err
+		}
+		if attempt == maxAttempts {
+			break
+		}
+		if deployment != nil && deployment.ContainerID != "" {
+			if rmErr := docker.ContainerRemove(context.Background(), deployment.ContainerID, container.RemoveOptions{Force: true}); rmErr != nil {
+				log.Printf("%s: failed to remove failed container %s before retry: %s", contextStr, deployment.ContainerID, rmErr)
+			}
+		} else {
+			removeContainersByName(docker, containerName)
+		}
+		log.Printf("%s: deploy attempt %d/%d failed, retrying: %v", contextStr, attempt, maxAttempts, err)
+		time.Sleep(250 * time.Millisecond)
+	}
+	return lastDeployment, lastErr
+}
+
+// isRetryableDeployBootstrapError reports whether an error indicates that deployment bootstrap may succeed on a subsequent attempt.
+func isRetryableDeployBootstrapError(err error) bool {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "ContainerCreate:"):
+		return true
+	case strings.Contains(msg, "ContainerStart:"):
+		return true
+	case strings.Contains(msg, "failed to wait for ports on container"):
+		return true
+	case strings.Contains(msg, "failed to get host accessible homeserver URL's from container"):
+		return true
+	case strings.Contains(msg, "failed to check server is up"):
+		return true
+	case strings.Contains(msg, "already in use"):
+		return true
+	case strings.Contains(msg, "connection reset by peer"):
+		return true
+	case strings.Contains(msg, "EOF"):
+		return true
+	default:
+		return false
+	}
+}
+
+// deployImageOnce creates and starts a homeserver container, injects its required
+// files, determines its accessible endpoints, and waits for it to become ready.
+// It returns the deployment and any error encountered; the deployment may contain
+// partial information when setup fails.
+func deployImageOnce(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
 	asIDToRegistrationMap map[string]string, contextStr, networkName string, cfg *config.Complement, extraEnv map[string]string,
 ) (*HomeserverDeployment, error) {
@@ -569,7 +649,7 @@ func assertHostnameEqual(inputUrl string, expectedHostname string) error {
 }
 
 // getHostAccessibleHomeserverURLs returns URLs that are accessible from the host
-// machine (outside the container) for the homeserver's client API and federation API.
+// getHostAccessibleHomeserverURLs derives the client and federation URLs accessible from the host for a homeserver container and verifies their hostnames match the configured binding address.
 func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (baseURL string, fedBaseURL string, err error) {
 	inspectResponse, err := inspectContainer(ctx, docker, containerID)
 	if err != nil {
@@ -594,7 +674,28 @@ func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client,
 	return baseURL, fedBaseURL, nil
 }
 
-// waitForPorts waits until a homeserver container has NAT ports assigned (8008, 8448).
+// removeContainersByName force-removes all Docker containers matching the specified name.
+func removeContainersByName(docker *client.Client, containerName string) {
+	ctx := context.Background()
+	containers, err := docker.ContainerList(ctx, container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("name", containerName),
+		),
+	})
+	if err != nil {
+		log.Printf("%s: failed to list containers during retry cleanup: %s", containerName, err)
+		return
+	}
+	for _, c := range containers {
+		if err := docker.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true}); err != nil {
+			log.Printf("%s: failed to remove stale container %s during retry cleanup: %s", containerName, c.ID, err)
+		}
+	}
+}
+
+// waitForPorts waits for a homeserver container to have host bindings for ports 8008 and 8448.
+// It returns a fatal inspection error immediately when the container cannot be inspected.
 func waitForPorts(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (err error) {
 	// We need to hammer the inspect endpoint until the ports show up, they don't appear immediately.
 	inspectStartTime := time.Now()
@@ -624,6 +725,7 @@ type containerInspectionError struct {
 	Fatal bool
 }
 
+// Error returns the inspection error message.
 func (e *containerInspectionError) Error() string { return e.msg }
 
 // inspectContainer inspects the container with the given ID and returns response.
@@ -712,10 +814,12 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 
 // RoundTripper is a round tripper that maps https://hs1 to the federation port of the container
 // e.g https://localhost:35352
+// RoundTripper rewrites homeserver hostnames to the matching Docker endpoints.
 type RoundTripper struct {
 	Deployment *Deployment
 }
 
+// RoundTrip sends the request to the Docker-backed homeserver endpoint.
 func (t *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// map HS names to localhost:port combos
 	hsName := req.URL.Hostname()

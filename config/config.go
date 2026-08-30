@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -17,6 +18,7 @@ import (
 	"time"
 )
 
+// HostMount describes a host path mounted into each homeserver container.
 type HostMount struct {
 	HostPath      string
 	ContainerPath string
@@ -92,6 +94,8 @@ type Complement struct {
 
 	// The namespace for all complement created blueprints and deployments
 	PackageNamespace string
+	// A per-process suffix used to keep Docker object names unique across runs.
+	RunID string
 	// Certificate Authority generated values for this run of complement. Homeservers will use this
 	// as a base to derive their own signed Federation certificates.
 	CACertificate *x509.Certificate
@@ -146,6 +150,7 @@ type Complement struct {
 
 var hsRegex = regexp.MustCompile(`COMPLEMENT_BASE_IMAGE_(.+)=(.+)$`)
 
+// NewConfigFromEnvVars builds a Complement configuration from environment variables and the supplied package namespace and base image URI. Invalid configuration values cause a panic.
 func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg := &Complement{BaseImageURIs: map[string]string{}}
 	cfg.BaseImageURI = os.Getenv("COMPLEMENT_BASE_IMAGE")
@@ -194,6 +199,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	if namespacePrefix := os.Getenv("COMPLEMENT_PACKAGE_NAMESPACE_PREFIX"); namespacePrefix != "" {
 		cfg.PackageNamespace = namespacePrefix + "_" + cfg.PackageNamespace
 	}
+	cfg.RunID = generateRunID()
 
 	// create CA certs and keys
 	if err := cfg.GenerateCA(); err != nil {
@@ -215,6 +221,16 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	return cfg
 }
 
+// generateRunID generates a unique identifier for the current run, using random bytes when available and a timestamp-based fallback otherwise.
+func generateRunID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+}
+
+// GenerateCA creates a fresh CA certificate and private key for this run.
 func (c *Complement) GenerateCA() error {
 	cert, key, err := generateCAValues()
 	if err != nil {
@@ -225,12 +241,14 @@ func (c *Complement) GenerateCA() error {
 	return nil
 }
 
+// CACertificateBytes returns the PEM-encoded CA certificate.
 func (c *Complement) CACertificateBytes() ([]byte, error) {
 	cert := bytes.NewBuffer(nil)
 	err := pem.Encode(cert, &pem.Block{Type: "CERTIFICATE", Bytes: c.CACertificate.Raw})
 	return cert.Bytes(), err
 }
 
+// CAPrivateKeyBytes returns the PEM-encoded CA private key.
 func (c *Complement) CAPrivateKeyBytes() ([]byte, error) {
 	caKey := bytes.NewBuffer(nil)
 	err := pem.Encode(caKey, &pem.Block{

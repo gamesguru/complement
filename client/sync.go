@@ -235,7 +235,8 @@ func SyncStateHas(roomID string, check func(gjson.Result) bool) SyncCheckOpt {
 // Check that the `state_after` section for `roomID` has an event which passes the check function.
 //
 // Note that the `state_after` section of a sync response will not contain the entire
-// state of the room for incremental or `lazy_load_members` syncs.
+// SyncStateAfterHas checks whether a joined room's state_after events contain an
+// event that satisfies check in either the stable or unstable field.
 func SyncStateAfterHas(roomID string, check func(gjson.Result) bool) SyncCheckOpt {
 	return func(clientUserID string, topLevelSyncJSON gjson.Result) error {
 		// Check the stable field
@@ -257,6 +258,7 @@ func SyncStateAfterHas(roomID string, check func(gjson.Result) bool) SyncCheckOp
 	}
 }
 
+// SyncEphemeralHas asserts on the ephemeral section of a sync response for a room.
 func SyncEphemeralHas(roomID string, check func(gjson.Result) bool) SyncCheckOpt {
 	return func(clientUserID string, topLevelSyncJSON gjson.Result) error {
 		err := checkArrayElements(

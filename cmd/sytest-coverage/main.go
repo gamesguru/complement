@@ -27,6 +27,7 @@ var (
 var debug bool
 var verbose bool
 
+// init parses the debug and verbose command-line flags and stores their values.
 func init() {
 	debugFlag := flag.Bool("d", false, "debug mode")
 	verboseFlag := flag.Bool("v", false, "verbose mode")
@@ -38,8 +39,10 @@ func init() {
 }
 
 // Maps test names to filenames then looks for:
-//   sytest: $test_name
-// in all files in ./tests - if there's a match it marks that test as converted.
+//
+//	sytest: $test_name
+//
+// main reports sytest conversion coverage by matching test markers in Go test files against entries from sytest.list.
 func main() {
 
 	filenameToTestName, testNameToFilename := getList()
