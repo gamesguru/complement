@@ -50,6 +50,8 @@ func TestSyncLeaveSection(t *testing.T) {
 
 	// sytest: Left rooms appear in the leave section of sync
 	t.Run("Left rooms appear in the leave section of sync", func(t *testing.T) {
+		// Venator: rooms are automatically forgotten on leave, which results in conflicting behaviour
+		runtime.SkipIf(t, runtime.Venator)
 		// SyncLeftFrom does "active" probing of rooms.leave if userID == clientUserID
 		alice.MustSyncUntil(t, client.SyncReq{
 			Filter: includeLeaveFilter,
@@ -58,6 +60,8 @@ func TestSyncLeaveSection(t *testing.T) {
 
 	// sytest: Left rooms appear in the leave section of full state sync
 	t.Run("Left rooms appear in the leave section of full state sync", func(t *testing.T) {
+		// Venator: rooms are automatically forgotten on leave, which results in conflicting behaviour
+		runtime.SkipIf(t, runtime.Venator)
 		alice.MustSyncUntil(t, client.SyncReq{
 			Since:     fullStateSince,
 			Filter:    includeLeaveFilter,
@@ -76,6 +80,8 @@ func TestSyncLeaveSection(t *testing.T) {
 // sytest: Newly left rooms appear in the leave section of gapped sync
 func TestGappedSyncLeaveSection(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite) // FIXME: https://github.com/matrix-org/dendrite/issues/1323
+	// Venator: rooms are automatically forgotten on leave, which results in conflicting behaviour
+	runtime.SkipIf(t, runtime.Venator)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -118,6 +124,8 @@ func TestGappedSyncLeaveSection(t *testing.T) {
 // ... plus later additions
 func TestArchivedRoomsHistory(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite) // FIXME: https://github.com/matrix-org/dendrite/issues/1323
+	// Venator: rooms are automatically forgotten on leave, which results in conflicting behaviour
+	runtime.SkipIf(t, runtime.Venator)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
