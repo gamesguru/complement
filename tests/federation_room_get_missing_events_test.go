@@ -1442,6 +1442,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			Events: []gomatrixserverlib.PDU{gmeEvent},
 		}
 		responseBytes, err := json.Marshal(&res)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			return
+		}
 		must.NotError(t, "failed to marshal response", err)
 		w.Write(responseBytes)
 	}
