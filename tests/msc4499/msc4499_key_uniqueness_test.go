@@ -781,23 +781,50 @@ func TestFederationRequestAuthenticationKeyScope(t *testing.T) {
 		name       string
 		keyID      gomatrixserverlib.KeyID
 		privateKey ed25519.PrivateKey
+		rawAuth    string
 		accept     bool
 	}{
-		{"current_verify_key", keyIDCurrent, privKeyCurrent, true},
-		{"retired_old_verify_key", keyIDRetired, privKeyRetired, false},
-		{"unknown_key_id", keyIDUnknown, privKeyUnknown, false},
-		{"current_key_id_with_wrong_private_key", keyIDCurrent, privKeyWrong, false},
+		{name: "current_verify_key", keyID: keyIDCurrent, privateKey: privKeyCurrent, accept: true},
+		{name: "retired_old_verify_key", keyID: keyIDRetired, privateKey: privKeyRetired},
+		{name: "unknown_key_id", keyID: keyIDUnknown, privateKey: privKeyUnknown},
+		{name: "current_key_id_with_wrong_private_key", keyID: keyIDCurrent, privateKey: privKeyWrong},
+		{
+			name:    "missing_signature",
+			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"%s\"", srv.ServerName(), keyIDCurrent),
+		},
+		{
+			name:    "malformed_key_id_and_signature",
+			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"not a key id\",sig=\"not-base64!\"", srv.ServerName()),
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), tc.keyID, tc.privateKey)
 			ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancelCtx()
-			_, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
-				TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("request-auth-%s-%d", tc.name, time.Now().UnixNano())),
-				Origin:        spec.ServerName(srv.ServerName()),
-				Destination:   "hs1",
-			})
+			var err error
+			if tc.rawAuth != "" {
+				req, reqErr := http.NewRequestWithContext(ctx, "PUT", "https://hs1/_matrix/federation/v1/send/request-auth-"+tc.name, strings.NewReader(`{"pdus":[]}`))
+				must.NotError(t, "failed to construct malformed federation request", reqErr)
+				req.Header.Set("Authorization", tc.rawAuth)
+				req.Header.Set("Content-Type", "application/json")
+				resp, doErr := (&http.Client{Transport: deployment.RoundTripper()}).Do(req)
+				if doErr != nil {
+					err = doErr
+				} else {
+					defer resp.Body.Close()
+					if resp.StatusCode != http.StatusUnauthorized {
+						t.Fatalf("malformed federation request must be rejected with HTTP 401, got HTTP %d", resp.StatusCode)
+					}
+					return
+				}
+			} else {
+				fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), tc.keyID, tc.privateKey)
+				_, err = fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+					TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("request-auth-%s-%d", tc.name, time.Now().UnixNano())),
+					Origin:        spec.ServerName(srv.ServerName()),
+					Destination:   "hs1",
+				})
+			}
 
 			if tc.accept {
 				must.NotError(t, "current verify_key must authenticate the federation request", err)
