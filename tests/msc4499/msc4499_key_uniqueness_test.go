@@ -1671,7 +1671,7 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	defer deployment.Destroy(t)
 
 	fedClient := &http.Client{
-		Timeout:   30 * time.Second, // larger timeout for bulk payload
+		Timeout:   90 * time.Second, // larger timeout for bulk payload against a heavier storage backend
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -1691,6 +1691,10 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	// verify_keys. This is far beyond the example per-server quota in MSC4499,
 	// so the oldest retired key should be evicted if the implementation enforces
 	// a ceiling.
+	//
+	// Filler keys are never used to sign or verify anything — only their raw
+	// 32-byte value is stored and compared — so generate plain random bytes
+	// instead of full ed25519 keypairs to keep bulk-fixture setup fast.
 	numFillerKeys := 3000
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
@@ -1699,7 +1703,8 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
 	var oldestKeyID gomatrixserverlib.KeyID
 	for i := 0; i < numFillerKeys; i++ {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		pub := make([]byte, ed25519.PublicKeySize)
+		_, err := rand.Read(pub)
 		must.NotError(t, fmt.Sprintf("failed to generate filler key %d", i), err)
 		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_filler_%04d", i))
 		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
@@ -1759,7 +1764,7 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 	defer deployment.Destroy(t)
 
 	fedClient := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   90 * time.Second, // larger timeout for bulk payload over the two-hop trusted-notary path
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -1815,7 +1820,8 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 	}
 
 	for i := 0; i < 3000; i++ {
-		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		pub := make([]byte, ed25519.PublicKeySize)
+		_, err := rand.Read(pub)
 		must.NotError(t, fmt.Sprintf("failed to generate uncorroborated key %d", i), err)
 		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_uncorroborated_%04d", i))
 		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
