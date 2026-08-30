@@ -730,6 +730,90 @@ func TestMSC4499Key(t *testing.T) {
 	})
 }
 
+// TestFederationRequestAuthenticationKeyScope keeps X-Matrix request
+// authentication separate from MSC4499's historical-PDU checks. The
+// Server-Server API permits verify_keys for federation requests and events,
+// but permits old_verify_keys only for events.
+func TestFederationRequestAuthenticationKeyScope(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment)
+
+	pubKeyCurrent, privKeyCurrent, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate current signing key", err)
+	pubKeyRetired, privKeyRetired, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate retired signing key", err)
+	_, privKeyWrong, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate wrong signing key", err)
+	_, privKeyUnknown, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate unknown signing key", err)
+
+	keyIDCurrent := gomatrixserverlib.KeyID("ed25519:request_current")
+	keyIDRetired := gomatrixserverlib.KeyID("ed25519:request_retired")
+	keyIDUnknown := gomatrixserverlib.KeyID("ed25519:request_unknown")
+	srv.KeyID = keyIDCurrent
+	srv.Priv = privKeyCurrent
+
+	mockKeyServer := &MockKeyServer{
+		serverName: srv.ServerName(),
+		keyID:      keyIDCurrent,
+		privKey:    privKeyCurrent,
+		pubKey:     pubKeyCurrent,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyIDCurrent: pubKeyCurrent,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			keyIDRetired: {
+				VerifyKey: gomatrixserverlib.VerifyKey{Key: spec.Base64Bytes(pubKeyRetired)},
+				ExpiredTS: spec.AsTimestamp(time.Now().Add(-time.Hour)),
+			},
+		},
+		validUntil: time.Now().Add(24 * time.Hour),
+	}
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+	cancel := srv.Listen()
+	defer cancel()
+
+	testCases := []struct {
+		name       string
+		keyID      gomatrixserverlib.KeyID
+		privateKey ed25519.PrivateKey
+		accept     bool
+	}{
+		{"current_verify_key", keyIDCurrent, privKeyCurrent, true},
+		{"retired_old_verify_key", keyIDRetired, privKeyRetired, false},
+		{"unknown_key_id", keyIDUnknown, privKeyUnknown, false},
+		{"current_key_id_with_wrong_private_key", keyIDCurrent, privKeyWrong, false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), tc.keyID, tc.privateKey)
+			ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelCtx()
+			_, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+				TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("request-auth-%s-%d", tc.name, time.Now().UnixNano())),
+				Origin:        spec.ServerName(srv.ServerName()),
+				Destination:   "hs1",
+			})
+
+			if tc.accept {
+				must.NotError(t, "current verify_key must authenticate the federation request", err)
+				return
+			}
+			if err == nil {
+				t.Fatalf("federation request signed by %s was accepted; only verify_keys may authenticate requests", tc.keyID)
+			}
+			var httpErr gomatrix.HTTPError
+			if !errors.As(err, &httpErr) || httpErr.Code != http.StatusUnauthorized {
+				t.Fatalf("federation request signed by %s must be rejected with HTTP 401, got %v", tc.keyID, err)
+			}
+		})
+	}
+}
+
 // testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
 // "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
