@@ -22,6 +22,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
@@ -3121,14 +3122,24 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 			Destination:   "hs1",
 			PDUs:          []json.RawMessage{historicalEvent.JSON()},
 		})
-		if historicalErr != nil && publishLostKey {
-			if isSynapseRetiredKeyLookupError(historicalErr) {
-				// Synapse does not retain the retired key needed for this
-				// historical verification path. Skip at the actual failure point
-				// so the rest of the run stays readable.
-				t.Skipf("hs1 rejected historical event after the origin published the lost key in old_verify_keys: %v", historicalErr)
+		if historicalErr != nil {
+			if publishLostKey {
+				if isSynapseRetiredKeyLookupError(historicalErr) {
+					// Synapse does not retain the retired key needed for this
+					// historical verification path. Skip at the actual failure point
+					// so the rest of the run stays readable.
+					t.Skipf("hs1 rejected historical event after the origin published the lost key in old_verify_keys: %v", historicalErr)
+				}
+				must.NotError(t, "failed to send historical event after recovery rotation", historicalErr)
+			} else if _, ok := historicalErr.(gomatrix.HTTPError); !ok {
+				// For the fully-lost-key case, only an application-level
+				// rejection (hs1 correctly refusing to verify the event
+				// against a key it never learned) counts as evidence of
+				// correct behaviour below. A transport-level failure (timeout,
+				// connection reset, etc.) is unrelated to key verification and
+				// must not silently pass as a correct rejection.
+				t.Fatalf("failed to send historical event for fully-lost-key case: expected an application-level rejection, got a transport error: %v", historicalErr)
 			}
-			must.NotError(t, "failed to send historical event after recovery rotation", historicalErr)
 		}
 
 		fedClient := srv.FederationClient(deployment)
