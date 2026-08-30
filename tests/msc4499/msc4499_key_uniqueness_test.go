@@ -616,7 +616,6 @@ func federationClientWithSigningKey(
 // this taxonomy; §n is a cross-cutting index into it, not the taxonomy
 // itself.
 func TestMSC4499Key(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 
 	// Validation: a single payload's structure gets rejected wholesale —
 	// duplicate/colliding JSON keys, or a per-response ceiling breach — before
