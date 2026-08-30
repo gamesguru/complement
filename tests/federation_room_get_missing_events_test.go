@@ -1225,8 +1225,8 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 				break
 			}
 		}
-		if w, ok := eventWaiters[eventID]; ok {
-			w.Finish()
+		if waiter, ok := eventWaiters[eventID]; ok {
+			waiter.Finish()
 		}
 
 		if event == nil {
@@ -1269,6 +1269,25 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		// still too coupled to its current recovery behavior.
 		t.Skip("skipping Synapse-specific final state assertion after state_ids fallback")
 	}
+
+	// Synchronization barrier: send one more event and wait for it to appear
+	// in Alice's sync before reading current state, so we know hs1 has
+	// finished processing the recovered A->B->C->D->E chain (same pattern as
+	// TestCorruptedAuthChain and
+	// TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse).
+	// Without this, the state read below can race ahead of that processing.
+	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "finished",
+		},
+		PrevEvents: []string{sendTxnEvent.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
 
 	// Unlike TestCorruptedAuthChain: every event was individually
 	// fetchable, so the full A->B->C->D->E chain should have been
@@ -1543,8 +1562,8 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 				break
 			}
 		}
-		if w, ok := eventWaiters[eventID]; ok {
-			w.Finish()
+		if waiter, ok := eventWaiters[eventID]; ok {
+			waiter.Finish()
 		}
 
 		if event == nil {

@@ -387,7 +387,7 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.M
 		}
 		algo, _ := entry["algorithm"].(string)
 		after, _ := entry["after"].(string)
-		if algo == "lthash16-v1" && len(after) == 64 {
+		if algo == "lthash16-v1" && len(after) == 43 {
 			mu.Lock()
 			*observedAfter = after
 			*observedDigest = true

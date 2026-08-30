@@ -22,6 +22,7 @@ import (
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
@@ -126,7 +127,7 @@ func TestInboundFederationRejectsEventsWithRejectedAuthEvents(t *testing.T) {
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
 		if vars["roomID"] != room.RoomID {
-			t.Errorf("unexpected /state_ids request for room %s", vars["roomID"])
+			ct.Errorf(t, "unexpected /state_ids request for room %s", vars["roomID"])
 			w.WriteHeader(404)
 			_, _ = w.Write([]byte("{}"))
 			return

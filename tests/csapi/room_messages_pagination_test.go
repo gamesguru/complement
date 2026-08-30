@@ -90,7 +90,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// the failure actually reproduces, so a fix on either
 				// homeserver is caught rather than masked.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// limit=50 is a confirmed Dendrite-only gap: backward pagination
@@ -99,7 +99,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// event repeating the previous page's last event). Confirmed at
 				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
 				if limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
@@ -270,7 +270,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// See the limit=1 note in "Clean messages only" above — same
 				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
@@ -278,7 +278,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// hit at limit=3 and limit=7 here (this room's total event
 				// count lands the final page at size 1 for all three).
 				if limit == 3 || limit == 7 || limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
@@ -337,15 +337,20 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// See the limit=1 note in "Clean messages only" above — same
 				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
 				// confirmed Dendrite-only room.create boundary duplicate, also
-				// hit at limit=3 and limit=7 here (this room's total event
-				// count lands the final page at size 1 for all three).
+				// hit at limit=3 and limit=7 here. This re-join scenario's
+				// limit=3 case additionally shows the backfill gap alongside
+				// the duplicate (both share the same root cause: the re-join
+				// path's history recovery is incomplete), so accept either
+				// shape here rather than just the duplicate alone.
 				if limit == 3 || limit == 7 || limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig)
+					}, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
@@ -393,7 +398,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				// 53 pages; at limit=1, the single event never advances and
 				// 100/100 expected messages are reported missing). Confirmed
 				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
-				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite})
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matchesForwardPaginationStall)
 			})
 		}
 	})
@@ -406,7 +411,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				// duplicate described in NoDuplicates/"Clean messages only"
 				// above.
 				if limit == 50 {
-					assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "b", "", []string{runtime.Dendrite})
+					assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "b", "", []string{runtime.Dendrite}, matchesRoomCreateBoundaryDuplicate)
 					return
 				}
 				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "b")
@@ -603,7 +608,11 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				if len(failures) == 0 {
 					return
 				}
-				if runtime.Homeserver == runtime.Dendrite {
+				// Only skip when the failure actually matches the documented
+				// forward-pagination-stall shape (duplicates and/or missing
+				// events) — an order-only mismatch with no duplicates and no
+				// missing events is a different bug and must still fail.
+				if runtime.Homeserver == runtime.Dendrite && (len(duplicates) > 0 || len(missing) > 0) {
 					t.Skipf("known Dendrite forward-pagination gap, skipping:\n%s", strings.Join(failures, "\n"))
 				}
 				for _, failure := range failures {
@@ -836,6 +845,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			// CHECK 1: No duplicates across the entire session
 			seen := make(map[string]int)
 			var duplicates []string
+			duplicateTypeCounts := make(map[string]int)
 			for i, eventID := range allCollected {
 				if firstIdx, exists := seen[eventID]; exists {
 					duplicates = append(duplicates, fmt.Sprintf(
@@ -851,6 +861,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 							return "within resume"
 						}(),
 					))
+					duplicateTypeCounts[allTypes[i]]++
 				} else {
 					seen[eventID] = i
 				}
@@ -887,9 +898,15 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			if len(failures) > 0 {
 				// Confirmed Dendrite-only gap (limit=3 and limit=7 both hit
 				// it): a single m.room.create duplicate at the pre-away/resume
-				// boundary. Confirmed at
+				// boundary, and nothing else wrong. Confirmed at
 				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
-				if runtime.Homeserver == runtime.Dendrite {
+				// Only skip when the failure actually has that shape — a
+				// different duplicate, more than one duplicate, or any
+				// missing pre-away event is a different bug and must still
+				// fail.
+				matchesKnownGap := len(duplicates) == 1 && len(duplicateTypeCounts) == 1 &&
+					duplicateTypeCounts["m.room.create"] == 1 && len(missingPreAway) == 0
+				if runtime.Homeserver == runtime.Dendrite && matchesKnownGap {
 					t.Skipf("known Dendrite stale-token-resume gap, skipping:\n%s", strings.Join(failures, "\n"))
 				}
 				for _, failure := range failures {
@@ -1207,23 +1224,69 @@ func assertPaginationIntegrity(
 	limit int,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", nil)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", nil, nil)
+}
+
+// paginationFailureSignature summarizes what CHECKs 1-3 below detected, so a
+// known-issue skip can be scoped to the specific documented symptom instead
+// of firing on any failure that happens to occur at that call site — an
+// unrelated new regression (e.g. a totally different missing-event bug)
+// must not be silently masked just because it shares a call site with a
+// known, narrower issue.
+type paginationFailureSignature struct {
+	duplicateCount int
+	duplicateTypes map[string]int
+	missingCount   int
+	orderMismatch  bool
+}
+
+// onlyDuplicateType reports whether every detected duplicate was of the
+// given event type (and at least one duplicate was found).
+func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
+	if s.duplicateCount == 0 {
+		return false
+	}
+	return len(s.duplicateTypes) == 1 && s.duplicateTypes[eventType] == s.duplicateCount
+}
+
+// matchesForwardPaginationStall matches the confirmed Dendrite-only gap where
+// forward pagination (dir=f) from a start token doesn't advance properly:
+// most pages repeat the previous page's events instead of moving on,
+// producing either many duplicates or, at small limits, entirely missing
+// expected messages.
+func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
+	return sig.duplicateCount > 0 || sig.missingCount > 0
+}
+
+// matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
+// where backward pagination duplicates the room's m.room.create event once,
+// at the final page boundary, with nothing else wrong.
+func matchesRoomCreateBoundaryDuplicate(sig paginationFailureSignature) bool {
+	return sig.duplicateCount == 1 && sig.onlyDuplicateType("m.room.create") && sig.missingCount == 0 && !sig.orderMismatch
+}
+
+// matchesBackfillGap matches the confirmed Synapse+Dendrite gap where
+// backward pagination stops well short of the room's full history, reporting
+// expected messages as missing.
+func matchesBackfillGap(sig paginationFailureSignature) bool {
+	return sig.missingCount > 0
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
 // treats a failure as a skip (rather than a fatal test failure) when running against
-// one of knownFailureHomeservers. The same verbose diagnostic logging still happens
-// either way.
+// one of knownFailureHomeservers AND matchesKnownFailure confirms the failure actually
+// has the documented shape. The same verbose diagnostic logging still happens either way.
 func assertPaginationIntegrityKnownIssue(
 	t *testing.T,
 	user *client.CSAPI,
 	roomID string,
 	expectedMessageEventIDs []string,
 	limit int,
+	matchesKnownFailure func(paginationFailureSignature) bool,
 	knownFailureHomeservers ...string,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", knownFailureHomeservers)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", knownFailureHomeservers, matchesKnownFailure)
 }
 
 // assertPaginationIntegrityWithDir paginates a room in the given direction and
@@ -1242,15 +1305,17 @@ func assertPaginationIntegrityWithDir(
 	dir string,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "", nil)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "", nil, nil)
 }
 
 // assertPaginationIntegrityWithDirFrom is the same as assertPaginationIntegrityWithDir
 // but accepts an initial pagination token (e.g. a start-of-room token for forward pagination).
 //
-// If knownFailureHomeservers is non-empty and the currently running homeserver is one
-// of them, a failure is reported via t.Skipf (after logging all the same diagnostics)
-// instead of failing the test outright.
+// If knownFailureHomeservers is non-empty, the currently running homeserver is one
+// of them, AND matchesKnownFailure(sig) returns true for the detected failure
+// signature, the failure is reported via t.Skipf (after logging all the same
+// diagnostics) instead of failing the test outright. matchesKnownFailure may be nil
+// only when knownFailureHomeservers is also empty/nil.
 func assertPaginationIntegrityWithDirFrom(
 	t *testing.T,
 	user *client.CSAPI,
@@ -1260,6 +1325,7 @@ func assertPaginationIntegrityWithDirFrom(
 	dir string,
 	initialToken string,
 	knownFailureHomeservers []string,
+	matchesKnownFailure func(paginationFailureSignature) bool,
 ) {
 	t.Helper()
 
@@ -1272,6 +1338,8 @@ func assertPaginationIntegrityWithDirFrom(
 	// issue on knownFailureHomeservers can be turned into a skip (with the same
 	// diagnostics logged) instead of a hard test failure.
 	var failures []string
+	var sig paginationFailureSignature
+	sig.duplicateTypes = make(map[string]int)
 
 	// =====================================================================
 	// CHECK 1: No duplicate events across pages
@@ -1284,6 +1352,8 @@ func assertPaginationIntegrityWithDirFrom(
 				"  %s appeared at positions %d and %d (type: %s)",
 				eventID, firstIdx, i, result.allEventTypes[i],
 			))
+			sig.duplicateCount++
+			sig.duplicateTypes[result.allEventTypes[i]]++
 		} else {
 			seen[eventID] = i
 		}
@@ -1306,6 +1376,7 @@ func assertPaginationIntegrityWithDirFrom(
 	for i, expectedID := range expectedMessageEventIDs {
 		if _, exists := seen[expectedID]; !exists {
 			missing = append(missing, fmt.Sprintf("  message %d: %s", i, expectedID))
+			sig.missingCount++
 		}
 	}
 	if len(missing) > 0 {
@@ -1348,6 +1419,7 @@ func assertPaginationIntegrityWithDirFrom(
 		if chronological[i] != expectedMessageEventIDs[i] {
 			failures = append(failures, fmt.Sprintf("ORDER MISMATCH at position %d (limit=%d): got %s, want %s",
 				i, limit, chronological[i], expectedMessageEventIDs[i]))
+			sig.orderMismatch = true
 			break
 		}
 	}
@@ -1370,9 +1442,11 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 
 	report := strings.Join(failures, "\n")
-	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) {
+	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) && matchesKnownFailure != nil && matchesKnownFailure(sig) {
 		// Log the same diagnostics as a real failure would, but mark the test as
-		// skipped rather than failed since this is a known issue on this homeserver.
+		// skipped rather than failed since this failure matches the documented
+		// known issue's shape on this homeserver. A failure that doesn't match
+		// (e.g. an unrelated new regression) still fails outright below.
 		t.Skipf("known pagination issue on %s, skipping:\n%s", runtime.Homeserver, report)
 	}
 	for _, failure := range failures {

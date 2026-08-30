@@ -83,7 +83,7 @@ func (d *Deployer) log(str string, args ...interface{}) {
 // This homeserver should be added to the dirty deployment. The hsName should start as 'hs1', then
 // 'hs2' ... 'hsN'.
 func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, error) {
-	networkName, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, "dirty")
+	networkName, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, d.config.RunID, "dirty")
 	if err != nil {
 		return nil, fmt.Errorf("CreateDirtyDeployment: %w", err)
 	}
@@ -152,7 +152,7 @@ func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deploymen
 	if len(images.Items) == 0 {
 		return nil, fmt.Errorf("Deploy: No images have been built for blueprint %s", blueprintName)
 	}
-	networkName, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, blueprintName)
+	networkName, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, d.config.RunID, blueprintName)
 	if err != nil {
 		return nil, fmt.Errorf("Deploy: %w", err)
 	}
