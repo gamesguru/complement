@@ -16,7 +16,6 @@ import (
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 )
@@ -336,7 +335,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 		startToken := findRoomStartToken(t, bob, roomID)
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, nil)
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken)
 			})
 		}
 	})
@@ -1108,23 +1107,7 @@ func assertPaginationIntegrity(
 	limit int,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", nil)
-}
-
-// assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
-// treats a failure as a skip (rather than a fatal test failure) when running against
-// one of knownFailureHomeservers. The same verbose diagnostic logging still happens
-// either way.
-func assertPaginationIntegrityKnownIssue(
-	t *testing.T,
-	user *client.CSAPI,
-	roomID string,
-	expectedMessageEventIDs []string,
-	limit int,
-	knownFailureHomeservers ...string,
-) {
-	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", knownFailureHomeservers)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "")
 }
 
 // assertPaginationIntegrityWithDir paginates a room in the given direction and
@@ -1143,15 +1126,11 @@ func assertPaginationIntegrityWithDir(
 	dir string,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "", nil)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "")
 }
 
 // assertPaginationIntegrityWithDirFrom is the same as assertPaginationIntegrityWithDir
 // but accepts an initial pagination token (e.g. a start-of-room token for forward pagination).
-//
-// If knownFailureHomeservers is non-empty and the currently running homeserver is one
-// of them, a failure is reported via t.Skipf (after logging all the same diagnostics)
-// instead of failing the test outright.
 func assertPaginationIntegrityWithDirFrom(
 	t *testing.T,
 	user *client.CSAPI,
@@ -1160,7 +1139,6 @@ func assertPaginationIntegrityWithDirFrom(
 	limit int,
 	dir string,
 	initialToken string,
-	knownFailureHomeservers []string,
 ) {
 	t.Helper()
 
@@ -1169,9 +1147,7 @@ func assertPaginationIntegrityWithDirFrom(
 	t.Logf("Paginated with limit=%d: %d requests, %d total events, pages: %v",
 		limit, result.requestCount, len(result.allEventIDs), result.eventsPerPage)
 
-	// Failures are collected rather than reported immediately, so that a known
-	// issue on knownFailureHomeservers can be turned into a skip (with the same
-	// diagnostics logged) instead of a hard test failure.
+	// Failures are collected so diagnostics for all integrity checks are reported together.
 	var failures []string
 
 	// =====================================================================
@@ -1270,12 +1246,6 @@ func assertPaginationIntegrityWithDirFrom(
 		return
 	}
 
-	report := strings.Join(failures, "\n")
-	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) {
-		// Log the same diagnostics as a real failure would, but mark the test as
-		// skipped rather than failed since this is a known issue on this homeserver.
-		t.Skipf("known pagination issue on %s, skipping:\n%s", runtime.Homeserver, report)
-	}
 	for _, failure := range failures {
 		t.Error(failure)
 	}
