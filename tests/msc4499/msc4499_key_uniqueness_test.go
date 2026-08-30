@@ -1736,7 +1736,15 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	must.NotError(t, "failed to build backdated event A", err)
 	serverRoom.AddEvent(eventA)
 
-	fedClient := srv.FederationClient(deployment)
+	// The PDU's own signature (above) intentionally uses keyIDExpired, since
+	// that's what's under test. The transport-level federation request
+	// (X-Matrix Authorization header) is a separate signature and MUST be
+	// made with a key the origin currently publishes as active — a receiving
+	// server has no obligation to trust a live request authenticated by a
+	// key that only appears in old_verify_keys. Use a client bound to the
+	// still-active identity for that, independent of srv.KeyID/srv.Priv
+	// (which get reassigned below for building event B's content).
+	fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), keyIDActive, privKeyActive)
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
 
@@ -3108,15 +3116,23 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 			_, _ = w.Write(responseBytes)
 		}).Methods("GET")
 
-		lostKeyFedClient := federationClientWithSigningKey(
+		// historicalEvent's own signature (above, via buildEventWithSigningKey)
+		// intentionally uses keyIDLost, since that's what's under test. The
+		// transport-level federation request (X-Matrix Authorization header)
+		// is a separate signature and MUST be made with a key the origin
+		// currently publishes as active — a receiving server has no
+		// obligation to trust a live request authenticated by a key it
+		// never (or no longer) considers valid. Use the still-current
+		// identity for that.
+		fedClient := federationClientWithSigningKey(
 			deployment,
 			spec.ServerName(srv.ServerName()),
-			keyIDLost,
-			privKeyLost,
+			keyIDCurrent,
+			privKeyCurrent,
 		)
 		ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCtx()
-		historicalResp, historicalErr := lostKeyFedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+		historicalResp, historicalErr := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
 			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-historical-%d", time.Now().UnixNano())),
 			Origin:        spec.ServerName(srv.ServerName()),
 			Destination:   "hs1",
@@ -3142,7 +3158,9 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 			}
 		}
 
-		fedClient := srv.FederationClient(deployment)
+		// currentEvent was signed by keyIDCurrent (via srv.MustCreateEvent
+		// above, since srv.KeyID/srv.Priv are never reassigned in this
+		// function), so the same fedClient identity is correct here too.
 		ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancelCtx2()
 		currentResp, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
