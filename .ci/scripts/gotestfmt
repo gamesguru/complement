@@ -1,21 +1,31 @@
 #!/bin/bash
 #
-# wraps `gotestfmt`, hiding output from successful packages unless
-# all tests passed.
+# wraps `gotestfmt`, giving a quick hidden-successful-packages view live,
+# then always dumping the full results afterwards regardless of outcome.
 
 set -o pipefail
-set -e
 
 # tee the test results to a log, whilst also piping them into gotestfmt,
 # telling it to hide successful results, so that we can clearly see
-# unsuccessful results.
+# unsuccessful results as they happen.
 tee complement.log | gotestfmt -hide successful-packages
+test_exit_code=$?
 
-# gotestfmt will exit non-zero if there were any failures, so if we got to this
-# point, we must have had a successful result.
-echo "All tests successful; showing all test results"
+# Always show the full results afterwards, even if there were failures.
+# Without this, a single failure anywhere in the run would make gotestfmt
+# exit non-zero above, and (with `set -e`) the script would stop right
+# there - meaning any package that itself passed in full would never be
+# shown at all, since the first pass hides successful packages.
+if [ "$test_exit_code" -eq 0 ]; then
+  echo "All tests successful; showing all test results"
+else
+  echo "Some tests failed; showing all test results (including passing packages hidden above)"
+fi
 
 # Pipe the test results back through gotestfmt, showing all results.
 # The log file consists of JSON lines giving the test results, interspersed
 # with regular stdout lines (including reports of downloaded packages).
 grep '^{"Time":' complement.log | gotestfmt
+
+# Preserve the original test run's exit code so CI still reports failure/success correctly.
+exit "$test_exit_code"
