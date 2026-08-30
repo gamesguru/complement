@@ -13,6 +13,8 @@ import (
 )
 
 func TestJson(t *testing.T) {
+	// Venator: does not support room version 6 (>=v10 only)
+	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -188,6 +190,8 @@ func TestFilter(t *testing.T) {
 
 // sytest: Event size limits
 func TestEvent(t *testing.T) {
+	// Venator: does not support room version 6 (>=v10 only)
+	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
