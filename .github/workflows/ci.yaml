@@ -129,10 +129,23 @@ jobs:
 
       - run: |
           set -o pipefail &&
-          ${{ matrix.env }} go test -v -json -tags "${{ matrix.tags }}" -timeout "${{ matrix.timeout }}" ./tests ./tests/csapi ${{ matrix.packages }} | .ci/scripts/gotestfmt
+          ${{ matrix.env }} go test -v -json -tags "${{ matrix.tags }}" -timeout "${{ matrix.timeout }}" ./tests ./tests/csapi | .ci/scripts/gotestfmt
 
         shell: bash # required for pipefail to be A Thing. pipefail is required to stop gotestfmt swallowing non-zero exit codes
-        name: Run Complement Tests
+        name: Run Complement Tests (core)
+        env:
+          COMPLEMENT_BASE_IMAGE: homeserver
+          DOCKER_BUILDKIT: 1
+
+      # Run in a separate step from the core suite above so this (much shorter)
+      # output gets its own log section in the Actions UI, instead of being
+      # buried after the core suite's large per-request CSAPI/federation dumps.
+      - run: |
+          set -o pipefail &&
+          ${{ matrix.env }} go test -v -json -tags "${{ matrix.tags }}" -timeout "${{ matrix.timeout }}" ${{ matrix.packages }} | .ci/scripts/gotestfmt
+
+        shell: bash # required for pipefail to be A Thing. pipefail is required to stop gotestfmt swallowing non-zero exit codes
+        name: Run Complement Tests (MSCs)
         env:
           COMPLEMENT_BASE_IMAGE: homeserver
           DOCKER_BUILDKIT: 1
