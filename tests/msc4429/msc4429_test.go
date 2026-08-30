@@ -42,11 +42,17 @@ func TestMSC4429ProfileUpdates(t *testing.T) {
 		filter := mustBuildMSC4429Filter(t, []string{"m.status"})
 
 		// We should see the m.status profile update, and NOT a displayname
-		// profile update, in the same response.
-		alice.MustSyncUntil(t, client.SyncReq{Filter: filter}, syncHasProfileUpdateWithoutFields(bob.UserID, "m.status", map[string]interface{}{
+		// profile update, in this same initial sync response. Assert against
+		// a single MustSync call (rather than MustSyncUntil) since a retry
+		// there would silently promote to an incremental sync, which isn't
+		// what this test claims to exercise.
+		res, _ := alice.MustSync(t, client.SyncReq{Filter: filter})
+		if err := syncHasProfileUpdateWithoutFields(bob.UserID, "m.status", map[string]interface{}{
 			"text":  "busy",
 			"emoji": "🛑",
-		}, "displayname"))
+		}, "displayname")(alice.UserID, res); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	// Receiving profile updates are an opt-in mechanism, according to MSC4429.
