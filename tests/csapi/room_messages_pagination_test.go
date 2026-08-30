@@ -48,8 +48,6 @@ func TestMessagesPaginationStress(t *testing.T) {
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -82,8 +80,18 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// limit=1 is a known conformance gap on both reference
+				// homeservers: Synapse (pre-existing) and Dendrite (confirmed
+				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908
+				// — backward pagination stops after essentially one request,
+				// missing the rest of the room's history: e.g.
+				// "Paginated with limit=1: 2 requests, 1 total events, pages: [1 0]"
+				// against 100 expected messages). Report it as a skip only when
+				// the failure actually reproduces, so a fix on either
+				// homeserver is caught rather than masked.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
 			})
@@ -250,8 +258,11 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// See the limit=1 note in "Clean messages only" above — same
+				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
@@ -306,8 +317,11 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// See the limit=1 note in "Clean messages only" above — same
+				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse, runtime.Dendrite)
+					return
 				}
 				// limit=3 is a known-flaky gap on Synapse (see
 				// https://github.com/gamesguru/complement/actions/runs/33318084346/job/99275077895?pr=23);
