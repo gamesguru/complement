@@ -28,8 +28,6 @@ import (
 )
 
 func TestJumpToDateEndpoint(t *testing.T) {
-	// Venator: does not yet implement federation
-	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.OldDeploy(t, b.BlueprintHSWithApplicationService)
 	defer deployment.Destroy(t)
 
@@ -180,6 +178,8 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		})
 
 		t.Run("federation", func(t *testing.T) {
+			// Venator: does not yet implement federation
+			runtime.SkipIf(t, runtime.Venator)
 			t.Run("looking forwards, should be able to find event that was sent before we joined", func(t *testing.T) {
 				t.Parallel()
 				roomID, eventA, _ := createTestRoom(t, alice)
