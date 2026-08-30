@@ -228,6 +228,17 @@ func (d *Deployer) PrintLogs(dep *Deployment) {
 // Destroy a deployment. This will kill all running containers.
 func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName string, failed bool) {
 	for _, hsDep := range dep.HS {
+		// Run the post-test script while the homeserver is still running. In
+		// particular, this lets callers collect live database statistics before
+		// the container is stopped below.
+		result, err := d.executePostScript(hsDep, testName, failed)
+		if err != nil {
+			log.Printf("Failed to execute post test script: %s - %s", err, string(result))
+		}
+		if printServerLogs && err == nil && result != nil {
+			log.Printf("Post test script result: %s", string(result))
+		}
+
 		if printServerLogs {
 			// If we want the logs we gracefully stop the containers to allow
 			// the logs to be flushed.
@@ -245,14 +256,6 @@ func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName strin
 			if err != nil {
 				log.Printf("Destroy: Failed to destroy container %s : %s\n", hsDep.ContainerID, err)
 			}
-		}
-
-		result, err := d.executePostScript(hsDep, testName, failed)
-		if err != nil {
-			log.Printf("Failed to execute post test script: %s - %s", err, string(result))
-		}
-		if printServerLogs && err == nil && result != nil {
-			log.Printf("Post test script result: %s", string(result))
 		}
 
 		err = d.Docker.ContainerRemove(context.Background(), hsDep.ContainerID, container.RemoveOptions{
