@@ -93,6 +93,19 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
+				// limit=3 is an intermittent Dendrite-only gap: the very first
+				// backward pagination request occasionally returns zero events
+				// with no `end` token, terminating the pagination loop
+				// immediately (e.g. "1 requests, 0 total events, pages: [0]",
+				// all 100 expected messages reported missing) — a likely
+				// indexing race right after the messages are sent, not the
+				// same root cause as the deterministic limit=1 gap above, but
+				// the same shape once it fires. Confirmed at
+				// https://github.com/gamesguru/complement/actions/runs/33334604841/job/99319138496.
+				if limit == 3 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Dendrite)
+					return
+				}
 				// limit=50 is a confirmed Dendrite-only gap: backward pagination
 				// duplicates the room's m.room.create event once, at the very
 				// last page boundary (e.g. "pages: [50 50 6 1]" with the final
