@@ -48,8 +48,6 @@ func TestMessagesPaginationStress(t *testing.T) {
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -82,9 +80,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
-				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
 			})
 		}
@@ -250,9 +245,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
-				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
 		}
@@ -260,7 +252,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 	// Test re-join scenario (the one that originally failed)
 	t.Run("Re-join with activity during absence", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Synapse)
 		roomID := alice.MustCreateRoom(t, map[string]interface{}{
 			"preset": "public_chat",
 		})
@@ -307,17 +298,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
-				}
-				// limit=3 is a known-flaky gap on Synapse (see
-				// https://github.com/gamesguru/complement/actions/runs/33318084346/job/99275077895?pr=23);
-				// report it as a skip rather than a failure, while keeping the same
-				// verbose diagnostics.
-				if limit == 3 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse)
-					return
-				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
 		}
@@ -330,8 +310,6 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 // pagination — forward tokens, forward ordering, and the interaction between
 // "find the oldest token" and "paginate forward from it".
 func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -574,8 +552,6 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 //   - Duplicates appear at the token boundary
 //   - New membership/state events confuse the token position
 func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -841,8 +817,6 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 // events. This catches bugs where pagination tokens encode limit-dependent
 // state that breaks when clients retry with different parameters.
 func testMessagesPaginationStressTokenStability(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
