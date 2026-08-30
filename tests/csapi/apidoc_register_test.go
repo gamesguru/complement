@@ -93,7 +93,7 @@ func TestRegistration(t *testing.T) {
 		t.Run("POST /register returns the same device_id as that in the request", func(t *testing.T) {
 			t.Parallel()
 			deviceID := "my_device_id"
-			reqBody, _ := startUIASession(t, unauthedClient, "user-device", deviceID, map[string]any{"device_id": deviceID})
+			reqBody, _ := startUIASession(t, unauthedClient, "user-device", "sUp3rs3kr1t", map[string]any{"device_id": deviceID})
 			res := unauthedClient.Do(t, "POST", []string{"_matrix", "client", "v3", "register"}, client.WithJSONBody(t, reqBody))
 			must.MatchResponse(t, res, match.HTTPResponse{
 				StatusCode: 200,
@@ -370,7 +370,7 @@ func startUIASession(t *testing.T, c *client.CSAPI, user, pass string, extra map
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := client.GetJSONFieldStr(t, body, "session")
+	session := gjson.GetBytes(body, "session").Str
 	reqBody["auth"] = map[string]any{"session": session, "type": "m.login.dummy"}
 	if session == "" {
 		delete(reqBody["auth"].(map[string]any), "session")

@@ -581,7 +581,7 @@ func findPortBinding(p network.PortMap, hsPortBindingIP string, port int) (netwo
 			// `0.0.0.0` means "all interfaces", so we can assume that this will be listening
 			// for connections from `hsPortBindingIP` as well.
 			return getPortBinding(hsPortBindingIP, pb.HostPort)
-		} else if pbHostIP == "" && hsPortBindingIP == "127.0.0.1" {
+		} else if !pb.HostIP.IsValid() && hsPortBindingIP == "127.0.0.1" {
 			// `HostIP` can be empty in certain environments (observed with podman v4.3.1). We
 			// will assume this is only a binding for `127.0.0.1`.
 			return getPortBinding(hsPortBindingIP, pb.HostPort)

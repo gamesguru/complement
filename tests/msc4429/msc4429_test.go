@@ -40,16 +40,13 @@ func TestMSC4429ProfileUpdates(t *testing.T) {
 		// Alice /sync's, but only asks for "m.status" changes.
 		// Exclude 'displayname'.
 		filter := mustBuildMSC4429Filter(t, []string{"m.status"})
-		res, _ := alice.MustSync(t, client.SyncReq{Filter: filter})
 
-		// We should see the m.status profile update.
-		alice.MustSyncUntil(t, client.SyncReq{Filter: filter}, syncHasProfileUpdate(bob.UserID, "m.status", map[string]interface{}{
+		// We should see the m.status profile update, and NOT a displayname
+		// profile update, in the same response.
+		alice.MustSyncUntil(t, client.SyncReq{Filter: filter}, syncHasProfileUpdateWithoutFields(bob.UserID, "m.status", map[string]interface{}{
 			"text":  "busy",
 			"emoji": "🛑",
-		}))
-
-		// We should NOT see a displayname profile update.
-		assertNoProfileUpdate(t, res, bob.UserID, "displayname")
+		}, "displayname"))
 	})
 
 	// Receiving profile updates are an opt-in mechanism, according to MSC4429.
@@ -112,7 +109,7 @@ func TestMSC4429ProfileUpdates(t *testing.T) {
 		// Bob updates a third profile field.
 		bob.MustSetDisplayName(t, "Bob Widened")
 
-		// Alice should only receive the `displayname` update.`
+		// Alice should only receive the `displayname` update.
 		filter = mustBuildMSC4429Filter(t, []string{madeUpProfileField, "m.status", "displayname"})
 		alice.MustSyncUntil(
 			t,

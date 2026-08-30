@@ -105,8 +105,6 @@ func TestMediaWithoutFileName(t *testing.T) {
 
 // same test as above, but for the new _matrix/client/v1/media endpoint
 func TestMediaWithoutFileNameCSMediaV1(t *testing.T) {
-	// Venator: does not yet implement federation
-	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -152,6 +150,8 @@ func TestMediaWithoutFileNameCSMediaV1(t *testing.T) {
 		})
 		// sytest: Can download without a file name over federation
 		t.Run("Can download without a file name over federation", func(t *testing.T) {
+			// Venator: does not yet implement federation
+			runtime.SkipIf(t, runtime.Venator)
 			t.Parallel()
 
 			mxc := hs1.UploadContent(t, file, fileName, contentType)

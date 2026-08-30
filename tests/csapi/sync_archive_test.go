@@ -71,6 +71,8 @@ func TestSyncLeaveSection(t *testing.T) {
 
 	// sytest: Newly left rooms appear in the leave section of incremental sync
 	t.Run("Newly left rooms appear in the leave section of incremental sync", func(t *testing.T) {
+		// Venator: rooms are automatically forgotten on leave, which results in conflicting behaviour
+		runtime.SkipIf(t, runtime.Venator)
 		alice.MustSyncUntil(t, client.SyncReq{
 			Since: incrementalSince,
 		}, client.SyncLeftFrom(alice.UserID, roomID))
