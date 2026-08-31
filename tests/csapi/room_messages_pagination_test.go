@@ -537,6 +537,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				var forwardTypes []string
 				fromToken = startToken
 				requestCount := 0
+				nonAdvancingToken := false
 
 				for {
 					queryParams := url.Values{
@@ -561,7 +562,12 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 					if !endToken.Exists() {
 						break
 					}
-					fromToken = endToken.Str
+					nextToken := endToken.Str
+					if nextToken == fromToken {
+						nonAdvancingToken = true
+						break
+					}
+					fromToken = nextToken
 
 					if requestCount > 500 {
 						t.Fatalf("forward pagination did not terminate after %d requests", requestCount)
@@ -641,11 +647,16 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				if len(failures) == 0 {
 					return
 				}
+				sig := paginationFailureSignature{
+					duplicateCount:       len(duplicates),
+					missingCount:         len(missing),
+					expectedMessageCount: len(eventIDs),
+					nonAdvancingToken:    nonAdvancingToken,
+				}
 				// Only skip when the failure actually matches the documented
-				// forward-pagination-stall shape (duplicates and/or missing
-				// events) — an order-only mismatch with no duplicates and no
-				// missing events is a different bug and must still fail.
-				if runtime.Homeserver == runtime.Dendrite && (len(duplicates) > 0 || len(missing) > 0) {
+				// forward-pagination-stall shape. A single duplicate or missing
+				// event from another regression must still fail.
+				if runtime.Homeserver == runtime.Dendrite && matchesForwardPaginationStall(sig) {
 					t.Skipf("known Dendrite forward-pagination gap, skipping:\n%s", strings.Join(failures, "\n"))
 				}
 				for _, failure := range failures {
@@ -1234,6 +1245,7 @@ func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit 
 		nextToken := endTokenRes.Str
 		if nextToken == fromToken {
 			result.nonAdvancingToken = true
+			return result
 		}
 		fromToken = nextToken
 
@@ -1489,18 +1501,25 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 	// If dir == "f", it's already chronological
 
-	// Find first out-of-order event
-	minLen := len(chronological)
-	if len(expectedMessageEventIDs) < minLen {
-		minLen = len(expectedMessageEventIDs)
+	// A missing event does not itself prove reordering: A,C is still ordered
+	// relative to A,B,C. Report an order mismatch only when two returned,
+	// expected messages are inverted.
+	expectedIndex := make(map[string]int, len(expectedMessageEventIDs))
+	for i, eventID := range expectedMessageEventIDs {
+		expectedIndex[eventID] = i
 	}
-	for i := 0; i < minLen; i++ {
-		if chronological[i] != expectedMessageEventIDs[i] {
-			failures = append(failures, fmt.Sprintf("ORDER MISMATCH at position %d (limit=%d): got %s, want %s",
-				i, limit, chronological[i], expectedMessageEventIDs[i]))
+	lastExpectedIndex := -1
+	for _, eventID := range chronological {
+		index, expected := expectedIndex[eventID]
+		if !expected {
+			continue
+		}
+		if index < lastExpectedIndex {
+			failures = append(failures, fmt.Sprintf("ORDER MISMATCH (limit=%d): %s appeared after a later expected message", limit, eventID))
 			sig.orderMismatch = true
 			break
 		}
+		lastExpectedIndex = index
 	}
 
 	// =====================================================================

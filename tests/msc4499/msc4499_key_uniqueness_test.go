@@ -29,6 +29,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/internal/docker"
@@ -701,10 +702,6 @@ func TestMSC4499Key(t *testing.T) {
 			t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
 		})
 
-		t.Run("§4", func(t *testing.T) {
-			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
-		})
-
 		t.Run("§6", func(t *testing.T) {
 			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 		})
@@ -731,6 +728,13 @@ func TestMSC4499Key(t *testing.T) {
 			})
 		})
 	})
+}
+
+// TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart remains a flat entry
+// point for downstream CI filters which select this persistence regression by
+// its documented name.
+func TestMSC4499Key_PersistentFirstSeenWinsAcrossRestart(t *testing.T) {
+	testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t)
 }
 
 // testFederationRequestAuthenticationKeyScope keeps X-Matrix request
@@ -1014,16 +1018,7 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	// happen is learning or serving colliding key B after restart.
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
-	if foundKey == pubKeyBBase64 {
-		// Confirmed on Dendrite and Synapse — same failure message reproduced
-		// in CI on both. For Synapse, confirmed via a clean re-fetch trace in
-		// the server's own log (ServerKeyFetcher completed 200 OK with no
-		// error nearby) at
-		// https://github.com/gamesguru/complement/actions/runs/33349998401/job/99361341769
-		// — ruling out the TLS "bad record MAC" noise elsewhere in that job
-		// (incidental restart/SIGTERM connection debris) as the cause.
-		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
-	}
+	returnedCollidingKey := foundKey == pubKeyBBase64
 
 	mockKeyServer.mu.Lock()
 	reqCount := mockKeyServer.requestCount
@@ -1033,8 +1028,20 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	}
 
 	// Follow up with an unconstrained lookup to prove the restart did not poison
-	// or forget the first-seen binding.
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+	// or forget the first-seen binding. This must run before the known-gap skip:
+	// serving B again is a distinct, more serious cache-poisoning failure.
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
+	if foundKey != pubKeyABase64 {
+		t.Fatalf("hs1 cache was poisoned after the colliding re-fetch — expected key A %s, got %s", pubKeyABase64, foundKey)
+	}
+	if returnedCollidingKey {
+		// Confirmed on Dendrite and Synapse — same failure message reproduced
+		// in CI on both. For Synapse, confirmed via a clean re-fetch trace in
+		// the server's own log (ServerKeyFetcher completed 200 OK with no
+		// error nearby) at
+		// https://github.com/gamesguru/complement/actions/runs/33349998401/job/99361341769.
+		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
+	}
 }
 
 // Test that a notary faced with a colliding key response does not locally
@@ -3206,7 +3213,10 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 		srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 			vars := mux.Vars(req)
 			if vars["roomID"] != serverRoom.RoomID {
-				t.Fatalf("unexpected /state_ids request for room %s", vars["roomID"])
+				ct.Errorf(t, "unexpected /state_ids request for room %s", vars["roomID"])
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("{}"))
+				return
 			}
 			roomState := serverRoom.AllCurrentState()
 			stateEventIDs := make([]string, 0, len(roomState))
