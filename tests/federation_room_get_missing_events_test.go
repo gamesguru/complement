@@ -1510,11 +1510,10 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			w.Write([]byte(`{"events":[`))
 			return
 		}
+		writeFallback(w)
 		if callNum == 2 {
 			gmeRetryWaiter.Finish()
 		}
-
-		writeFallback(w)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool

@@ -914,14 +914,16 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 
+	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
+	// (i.e., the cache was not poisoned by the colliding key B). Run this before
+	// skipKnownGap below, since t.Skip would otherwise abort the subtest and
+	// this cache-poisoning check would never run.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
+
 	if foundKey == pubKeyBBase64 {
 		// Confirmed on Dendrite too — same failure message reproduced in CI.
 		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch")
 	}
-
-	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
-	// (i.e., the cache was not poisoned by the colliding key B).
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
 }
 
 // Test that a permanent key-ID binding learned via direct fetch survives a

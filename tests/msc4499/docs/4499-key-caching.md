@@ -897,11 +897,14 @@ accumulate for the full lifetime of a key ID even after its verification
 material is pruned, but still small and fixed (at ~315 bytes/record, roughly 10
 MiB per origin per bucket at the recommended cap). Implementations MUST reject a
 key ID longer than 255 UTF-8 bytes before allocating or persisting a
-digest-binding record. A different fixed value has no wire-visible effect as
-long as it is enforced deterministically and consistently; the requirement that
-matters for interoperability is that reaching _some_ fixed ceiling for a given
-`(origin, source category)` bucket is itself the anomaly signal, not the exact
-number.
+digest-binding record. The wire schema is unchanged regardless of the fixed
+value chosen; however, the cap is not merely a local resource limit — because
+it determines which key IDs get a digest binding at all, two implementations
+enforcing different caps can diverge on `server_keys` results and on whether a
+given signature is accepted once a bucket reaches its cap. Interoperability
+therefore requires either a common cap across implementations, or accepting
+that divergence as the anomaly signal reaching _some_ fixed ceiling for a given
+`(origin, source category)` bucket is meant to produce.
 
 A key ID observed for the first time for a given `(origin, source category)`
 bucket after that bucket's digest-binding set is already at the cap MUST be
