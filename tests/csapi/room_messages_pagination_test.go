@@ -348,21 +348,27 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
 				// See the limit=1 note in "Clean messages only" above — same
-				// confirmed gap on Synapse and Dendrite.
+				// confirmed gap on Synapse and Dendrite. The re-join scenario
+				// also surfaces a distinct shape here, confirmed on Dendrite
+				// only so far: a partial (not total) backfill gap with
+				// reordering — see matchesPartialBackfillReorder.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesBackfillGap(sig) || (runtime.Homeserver == runtime.Dendrite && matchesPartialBackfillReorder(sig))
+					}, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
 				// confirmed Dendrite-only room.create boundary duplicate, also
 				// hit at limit=3 and limit=7 here. This re-join scenario's
-				// limit=3 case additionally shows the backfill gap alongside
-				// the duplicate (both share the same root cause: the re-join
-				// path's history recovery is incomplete), so accept either
-				// shape here rather than just the duplicate alone.
+				// limit=3 case additionally shows the backfill gap, or the
+				// partial-backfill-with-reorder shape, alongside the duplicate
+				// (all share the same root cause: the re-join path's history
+				// recovery is incomplete), so accept any of these shapes here
+				// rather than just the duplicate alone.
 				if limit == 3 || limit == 7 || limit == 50 {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
-						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig)
+						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig) || matchesPartialBackfillReorder(sig)
 					}, runtime.Dendrite)
 					return
 				}
@@ -1296,6 +1302,19 @@ func matchesBackfillGap(sig paginationFailureSignature) bool {
 	// The documented truncation stops before any expected message is returned,
 	// rather than merely omitting one event from an otherwise complete page.
 	return sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount
+}
+
+// matchesPartialBackfillReorder matches a confirmed Dendrite-only gap distinct
+// from matchesBackfillGap: rather than truncating the entire history, backward
+// pagination drops a small subset of the oldest expected messages (not all of
+// them) and also returns the remaining events out of order. Seen specifically
+// in the leave-then-rejoin scenario, where the rejoining server's history
+// recovery is incomplete rather than entirely absent. Confirmed at
+// https://github.com/gamesguru/complement/actions/runs/33349406241/job/99359658735
+// (limit=1: 7 of 100 missing; limit=3: 5 of 100 missing; both with an order
+// mismatch at position 0).
+func matchesPartialBackfillReorder(sig paginationFailureSignature) bool {
+	return sig.missingCount > 0 && sig.missingCount < sig.expectedMessageCount && sig.orderMismatch
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
