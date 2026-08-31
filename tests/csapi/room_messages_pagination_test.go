@@ -289,9 +289,15 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// See the limit=50 note in "Clean messages only" above — same
 				// confirmed Dendrite-only room.create boundary duplicate, also
 				// hit at limit=3 and limit=7 here (this room's total event
-				// count lands the final page at size 1 for all three).
+				// count lands the final page at size 1 for all three). limit=3
+				// also intermittently hits the separate Dendrite-only
+				// zero-events-first-page backfill gap (pages: [0], 100/100
+				// missing) documented in "Clean messages only" above, so
+				// accept either shape here too.
 				if limit == 3 || limit == 7 || limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig)
+					}, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
