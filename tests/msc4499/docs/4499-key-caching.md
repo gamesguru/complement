@@ -459,11 +459,11 @@ unrecoverable database failure without backup):
    an explicit local operator action grounded in independently verified evidence
    — never by asking a notary to vouch for the retirement after the fact, which
    no implementation may treat as corroboration.
-   <!-- synapse-derived: complement coverage currently exercises this
-   behavior against Synapse in
-   TestMSC4499Key/LostKeyPublicationHistoricalVerification/
-   FullyLostKeyRemainsUnverifiableToColdPeers -->
-   <!-- /synapse-derived -->
+    <!-- synapse-derived: complement coverage currently exercises this
+    behavior against Synapse in
+    TestMSC4499Key/LostKeyPublicationHistoricalVerification/
+    FullyLostKeyRemainsUnverifiableToColdPeers -->
+    <!-- /synapse-derived -->
 3. **If the public key material is completely lost**, the administrator must
    accept that historical events signed by the lost key may fail verification on
    servers that never cached it. By design there is no protocol-level recovery
@@ -486,12 +486,12 @@ This manual eviction MUST atomically remove or replace the retained digest
 binding together with the relevant cached verification material, so a
 replacement body can be learned only as one deliberate operator action. It MUST
 be logged loudly by the homeserver, including both the server name and the
-fingerprints of the evicted keys. This is an intentionally
-manual, operator-gated ability to perform cache merges or manual overrides. It
-must not be automated or triggered via inbound/outbound federation traffic; room
-ACLs and other federation-visible mechanisms MUST NOT be able to force eviction
-or bypass First Seen Wins. This includes any third-party forensic or attestation
-evidence about a key binding, however cryptographically strong — for example, a
+fingerprints of the evicted keys. This is an intentionally manual,
+operator-gated ability to perform cache merges or manual overrides. It must not
+be automated or triggered via inbound/outbound federation traffic; room ACLs and
+other federation-visible mechanisms MUST NOT be able to force eviction or bypass
+First Seen Wins. This includes any third-party forensic or attestation evidence
+about a key binding, however cryptographically strong — for example, a
 cross-server equivocation proof a future proposal might define. Such evidence
 remains advisory and MUST NOT automatically trigger eviction, rebinding, or any
 other deviation from First Seen Wins on a receiving server. It may inform the
@@ -741,10 +741,13 @@ believe they were following the room version.
 Mandating indefinite storage of key-body bindings introduces a storage
 exhaustion vector if an attacker forces a server to fetch and permanently store
 millions of unique key IDs. Homeservers MUST enforce a cumulative maximum of
-3,000 retired key IDs (`old_verify_keys` entries) per remote server name. This
-is a retained-storage ceiling, distinct from the per-response validation
-ceiling above; current `verify_keys` (bounded separately at 50) are active keys
-and are exempt from and not counted against this retired-key ceiling. If a remote server
+3,000 retired bindings per remote server name — both explicitly-published
+`old_verify_keys` entries and keys inferred as retired (a key previously
+observed active that later disappears from the origin's responses without ever
+appearing in `old_verify_keys`) count toward this same ceiling. This is a
+retained-storage ceiling, distinct from the per-response validation ceiling
+above; current `verify_keys` (bounded separately at 50) are active keys and are
+exempt from and not counted against this retired-key ceiling. If a remote server
 reaches this quota, receiving servers MUST NOT ignore new key IDs permanently;
 instead, they MUST evict retired keys according to the deterministic ordering
 below — never by recency or least-recently-used heuristics, which would make
@@ -867,19 +870,21 @@ or Cuckoo Cycle.
 ### Digest-binding cap
 
 The digest binding is deliberately minimal: a `key_id` limited to 255 UTF-8
-bytes, a 32-byte `SHA-256` digest
-of the key body, and a `first_seen` timestamp recording when the receiver itself
-established the binding — kept for operator forensics and for a future proposal
-to build eviction or corroboration policy on top of without a schema change;
-this MSC's own rules do not read it — on the order of 315 bytes per record,
-far smaller than a retained verification entry. It exists to survive eviction of
-retired-key verification material so a future body reusing an evicted key ID is
-still checked against what was first seen, closing the collision-blind window
-that motivates permanent retention in the first place. Because that guarantee
-depends on the binding never being evicted for a genuinely-seen key ID, it MUST
-NOT be pruned the way retired-key verification material is — evicting a digest
-binding to make room for a new one reopens exactly the TOFU window this record
-exists to close.
+bytes and a 32-byte `SHA-256` digest of the key body — on the order of 315 bytes
+per record, far smaller than a retained verification entry. It exists to survive
+eviction of retired-key verification material so a future body reusing an
+evicted key ID is still checked against what was first seen, closing the
+collision-blind window that motivates permanent retention in the first place:
+the digest itself is normative, and every later body observed for the same
+`(server_name, algorithm, key_id)` MUST match the stored digest. The binding
+also carries a `first_seen` timestamp recording when the receiver itself
+established it — kept for operator forensics and for a future proposal to build
+eviction or corroboration policy on top of without a schema change; this MSC's
+own rules do not read the `first_seen` timestamp, only the digest. Because that
+guarantee depends on the binding never being evicted for a genuinely-seen key
+ID, it MUST NOT be pruned the way retired-key verification material is —
+evicting a digest binding to make room for a new one reopens exactly the TOFU
+window this record exists to close.
 
 That means the digest-binding set cannot be bounded by eviction; it MUST instead
 be bounded by refusing new entries once a fixed cap is reached. Implementations
@@ -889,13 +894,13 @@ or notary-observed, RECOMMENDED at 30,000 for each bucket — an order of
 magnitude above the 3,000-entry retired-key ceiling, since digest bindings
 accumulate for the full lifetime of a key ID even after its verification
 material is pruned, but still small and fixed (at ~315 bytes/record, roughly 10
-MiB per origin per bucket at the recommended cap). Implementations MUST reject
-a key ID longer than 255 UTF-8 bytes before allocating or persisting a
-digest-binding record. A different fixed value has
-no wire-visible effect as long as it is enforced deterministically and
-consistently; the requirement that matters for interoperability is that reaching
-_some_ fixed ceiling for a given `(origin, source category)` bucket is itself
-the anomaly signal, not the exact number.
+MiB per origin per bucket at the recommended cap). Implementations MUST reject a
+key ID longer than 255 UTF-8 bytes before allocating or persisting a
+digest-binding record. A different fixed value has no wire-visible effect as
+long as it is enforced deterministically and consistently; the requirement that
+matters for interoperability is that reaching _some_ fixed ceiling for a given
+`(origin, source category)` bucket is itself the anomaly signal, not the exact
+number.
 
 A key ID observed for the first time for a given `(origin, source category)`
 bucket after that bucket's digest-binding set is already at the cap MUST be

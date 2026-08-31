@@ -1457,6 +1457,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	t.Logf("event for /send: %s", sendTxnEvent.EventID())
 
 	gmeWaiter := helpers.NewWaiter()
+	gmeRetryWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	var gmeCallCount atomic.Int32
 	// Serve a valid fallback response. Used both for unrelated /get_missing_events
@@ -1508,6 +1509,9 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			w.WriteHeader(200)
 			w.Write([]byte(`{"events":[`))
 			return
+		}
+		if callNum == 2 {
+			gmeRetryWaiter.Finish()
 		}
 
 		writeFallback(w)
@@ -1613,6 +1617,13 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		w.Wait(t, 5*time.Second)
 		t.Logf("individually fetched %s", eid)
 	}
+	// The point of this test is retry recovery specifically: without this
+	// wait, the final assertion below could pass via some other recovery
+	// path (e.g. individual /state_ids or /event fetches) even if the
+	// homeserver never actually retried /get_missing_events after the
+	// malformed first response, leaving the retry behavior itself unverified.
+	gmeRetryWaiter.Wait(t, 5*time.Second)
+	must.Equal(t, gmeCallCount.Load() >= 2, true, "/get_missing_events was never retried after the malformed first response")
 
 	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:   "m.room.message",

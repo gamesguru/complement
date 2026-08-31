@@ -374,12 +374,18 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// limit=3 case additionally shows the backfill gap, or the
 				// partial-backfill-with-reorder shape, alongside the duplicate
 				// (all share the same root cause: the re-join path's history
-				// recovery is incomplete), so accept any of these shapes here
-				// rather than just the duplicate alone.
-				if limit == 3 || limit == 7 || limit == 50 {
+				// recovery is incomplete) — but only limit=3 has actually
+				// shown those two shapes; limit=7 and limit=50 have only ever
+				// shown the plain duplicate, so don't extend the broader
+				// tolerance to them without evidence.
+				if limit == 3 {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
 						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig) || matchesPartialBackfillReorder(sig)
 					}, runtime.Dendrite)
+					return
+				}
+				if limit == 7 || limit == 50 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
