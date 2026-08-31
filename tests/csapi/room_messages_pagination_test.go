@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -685,20 +683,6 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
 		LocalpartSuffix: "bob",
 	})
-	// Under a postgres+workers deployment (SYNAPSE_COMPLEMENT_USE_WORKERS=true),
-	// cross-worker event replication (event_persister -> synchrotron via
-	// Redis/postgres) legitimately takes longer than complement's default
-	// 5s SyncUntilTimeout to propagate this test's ~50-event pre-away burst
-	// to bob's /sync. Confirmed at exactly that boundary (timed out at
-	// ~5.1-5.2s) on two separate runs:
-	// https://github.com/gamesguru/sithnapse/actions/runs/33349808853/job/99361289349
-	// https://github.com/gamesguru/sithnapse/actions/runs/33349808853/job/99361289336
-	// This isn't a behavioral gap to skip around — it just needs more time
-	// under this deployment shape, so extend the timeout instead of losing
-	// coverage via a skip.
-	if isPostgresWorkersDeployment() {
-		bob.SyncUntilTimeout = 20 * time.Second
-	}
 	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{
 		LocalpartSuffix: "charlie",
 	})
@@ -724,6 +708,18 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			bob.MustJoinRoom(t, roomID, []spec.ServerName{
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
+			// Wait for bob's partial-state join to fully resync before flooding
+			// the room. Sending events into a still-partial-stated room races
+			// the un-partial-state transition: inbound federation events land
+			// mid-resync, get rejected with "room has been un-partial stated",
+			// and get retried one at a time instead of batched, serializing
+			// event_persister throughput for several seconds afterward.
+			// Confirmed in CI (postgres+workers) — the room this raced in
+			// showed a solid ~3.7s stretch of batch-of-1 persister throughput
+			// immediately following the retry. Waiting for resync to complete
+			// first (~480ms) avoids that collision entirely, rather than
+			// papering over the resulting slowdown with a longer sync timeout.
+			bob.MustAwaitPartialStateJoinCompletion(t, roomID)
 
 			// === PRE-AWAY PHASE: Initial room activity ===
 			var allTrackedEventIDs []string
@@ -1304,22 +1300,6 @@ func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
 		return false
 	}
 	return len(s.duplicateTypes) == 1 && s.duplicateTypes[eventType] == s.duplicateCount
-}
-
-// isPostgresWorkersDeployment reports whether this run is using Synapse's
-// postgres+workers deployment (SYNAPSE_COMPLEMENT_USE_WORKERS=true), which
-// legitimately has higher cross-worker event-propagation latency than a
-// monolith deployment. Complement shares host env vars matching
-// COMPLEMENT_SHARE_ENV_PREFIX into the homeserver container, but the CI step
-// that sets them exports them as plain process env vars first, so they're
-// also visible here directly.
-func isPostgresWorkersDeployment() bool {
-	for _, key := range []string{"SYNAPSE_COMPLEMENT_USE_WORKERS", "PASS_SYNAPSE_COMPLEMENT_USE_WORKERS"} {
-		if v := os.Getenv(key); v != "" && v != "0" && v != "false" {
-			return true
-		}
-	}
-	return false
 }
 
 // matchesForwardPaginationStall matches the confirmed Dendrite-only gap where
