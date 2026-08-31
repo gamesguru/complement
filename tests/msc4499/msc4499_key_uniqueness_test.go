@@ -927,11 +927,6 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 // enough that a restart does not allow the same `(server_name, algorithm,
 // key_id)` to be rebound to a different key body.
 func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
-	// This builds directly on the direct-fetch collision behavior above. A
-	// homeserver that already fails First Seen Wins on re-fetch cannot tell us
-	// anything meaningful about whether that binding also survives restart.
-	runtime.SkipIf(t, runtime.Synapse)
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1060,12 +1055,6 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 // the signature (computed by the origin over a different body) would fail to
 // verify against the mutated body, catching the violation deterministically.
 func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
-	// No specific failure recorded for this one from a past Synapse run — skipped
-	// on the general basis that this branch's Synapse image has no MSC4499
-	// support at all (element-hq/synapse has no msc4499-edge-cases branch for
-	// CI to build from, so it falls back to develop). Needs a fresh Synapse run
-	// to confirm/replace this with the actual failure mode.
-	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2087,11 +2076,6 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // Test that duplicate JSON keys are rejected even when they appear inside a
 // nested object rather than directly in verify_keys.
 func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
-	// No specific failure recorded for this one from a past Synapse run — skipped
-	// on the general basis that this branch's Synapse image has no MSC4499
-	// support (see note on testMSC4499KeyIDFirstSeenWinsDirect). Needs a fresh
-	// Synapse run to confirm/replace this with the actual failure mode.
-	runtime.SkipIf(t, runtime.Synapse)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
