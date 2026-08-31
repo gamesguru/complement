@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -677,6 +679,20 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{
 		LocalpartSuffix: "bob",
 	})
+	// Under a postgres+workers deployment (SYNAPSE_COMPLEMENT_USE_WORKERS=true),
+	// cross-worker event replication (event_persister -> synchrotron via
+	// Redis/postgres) legitimately takes longer than complement's default
+	// 5s SyncUntilTimeout to propagate this test's ~50-event pre-away burst
+	// to bob's /sync. Confirmed at exactly that boundary (timed out at
+	// ~5.1-5.2s) on two separate runs:
+	// https://github.com/gamesguru/sithnapse/actions/runs/33349808853/job/99361289349
+	// https://github.com/gamesguru/sithnapse/actions/runs/33349808853/job/99361289336
+	// This isn't a behavioral gap to skip around — it just needs more time
+	// under this deployment shape, so extend the timeout instead of losing
+	// coverage via a skip.
+	if isPostgresWorkersDeployment() {
+		bob.SyncUntilTimeout = 20 * time.Second
+	}
 	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{
 		LocalpartSuffix: "charlie",
 	})
@@ -1282,6 +1298,22 @@ func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
 		return false
 	}
 	return len(s.duplicateTypes) == 1 && s.duplicateTypes[eventType] == s.duplicateCount
+}
+
+// isPostgresWorkersDeployment reports whether this run is using Synapse's
+// postgres+workers deployment (SYNAPSE_COMPLEMENT_USE_WORKERS=true), which
+// legitimately has higher cross-worker event-propagation latency than a
+// monolith deployment. Complement shares host env vars matching
+// COMPLEMENT_SHARE_ENV_PREFIX into the homeserver container, but the CI step
+// that sets them exports them as plain process env vars first, so they're
+// also visible here directly.
+func isPostgresWorkersDeployment() bool {
+	for _, key := range []string{"SYNAPSE_COMPLEMENT_USE_WORKERS", "PASS_SYNAPSE_COMPLEMENT_USE_WORKERS"} {
+		if v := os.Getenv(key); v != "" && v != "0" && v != "false" {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesForwardPaginationStall matches the confirmed Dendrite-only gap where
