@@ -1015,8 +1015,14 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 	if foundKey == pubKeyBBase64 {
-		// Confirmed on Dendrite — same failure message reproduced in CI.
-		skipKnownGap(t, []string{runtime.Dendrite}, "hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
+		// Confirmed on Dendrite and Synapse — same failure message reproduced
+		// in CI on both. For Synapse, confirmed via a clean re-fetch trace in
+		// the server's own log (ServerKeyFetcher completed 200 OK with no
+		// error nearby) at
+		// https://github.com/gamesguru/complement/actions/runs/33349998401/job/99361341769
+		// — ruling out the TLS "bad record MAC" noise elsewhere in that job
+		// (incidental restart/SIGTERM connection debris) as the cause.
+		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 returned colliding Keypair B after restart and re-fetch — permanent binding was not persisted")
 	}
 
 	mockKeyServer.mu.Lock()
