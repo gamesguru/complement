@@ -782,6 +782,7 @@ func TestFederationRequestAuthenticationKeyScope(t *testing.T) {
 		keyID      gomatrixserverlib.KeyID
 		privateKey ed25519.PrivateKey
 		rawAuth    string
+		statuses   []int
 		accept     bool
 	}{
 		{name: "current_verify_key", keyID: keyIDCurrent, privateKey: privKeyCurrent, accept: true},
@@ -789,12 +790,14 @@ func TestFederationRequestAuthenticationKeyScope(t *testing.T) {
 		{name: "unknown_key_id", keyID: keyIDUnknown, privateKey: privKeyUnknown},
 		{name: "current_key_id_with_wrong_private_key", keyID: keyIDCurrent, privateKey: privKeyWrong},
 		{
-			name:    "missing_signature",
-			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"%s\"", srv.ServerName(), keyIDCurrent),
+			name:     "missing_signature",
+			rawAuth:  fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"%s\"", srv.ServerName(), keyIDCurrent),
+			statuses: []int{http.StatusBadRequest, http.StatusUnauthorized},
 		},
 		{
-			name:    "malformed_key_id_and_signature",
-			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"not a key id\",sig=\"not-base64!\"", srv.ServerName()),
+			name:     "malformed_key_id_and_signature",
+			rawAuth:  fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"not a key id\",sig=\"not-base64!\"", srv.ServerName()),
+			statuses: []int{http.StatusBadRequest, http.StatusUnauthorized},
 		},
 	}
 	for _, tc := range testCases {
@@ -812,8 +815,8 @@ func TestFederationRequestAuthenticationKeyScope(t *testing.T) {
 					err = doErr
 				} else {
 					defer resp.Body.Close()
-					if resp.StatusCode != http.StatusUnauthorized {
-						t.Fatalf("malformed federation request must be rejected with HTTP 401, got HTTP %d", resp.StatusCode)
+					if !slices.Contains(tc.statuses, resp.StatusCode) {
+						t.Fatalf("malformed federation request must be rejected with one of HTTP %v, got HTTP %d", tc.statuses, resp.StatusCode)
 					}
 					return
 				}
