@@ -1303,6 +1303,11 @@ type paginationFailureSignature struct {
 	expectedMessageCount int
 	orderMismatch        bool
 	nonAdvancingToken    bool
+	// missingIsPrefixOfOldest is true when every missing expected message is
+	// among the oldest N (i.e. the missing set is exactly the first
+	// sig.missingCount entries of the expected list), rather than scattered
+	// gaps throughout.
+	missingIsPrefixOfOldest bool
 }
 
 // onlyDuplicateType reports whether every detected duplicate was of the
@@ -1351,14 +1356,23 @@ func matchesBackfillGap(sig paginationFailureSignature) bool {
 // matchesPartialBackfillReorder matches a confirmed Dendrite-only gap distinct
 // from matchesBackfillGap: rather than truncating the entire history, backward
 // pagination drops a small subset of the oldest expected messages (not all of
-// them) and also returns the remaining events out of order. Seen specifically
-// in the leave-then-rejoin scenario, where the rejoining server's history
-// recovery is incomplete rather than entirely absent. Confirmed at
+// them). Seen specifically in the leave-then-rejoin scenario, where the
+// rejoining server's history recovery is incomplete rather than entirely
+// absent. Confirmed at
 // https://github.com/gamesguru/complement/actions/runs/33349406241/job/99359658735
-// (limit=1: 7 of 100 missing; limit=3: 5 of 100 missing; both with an order
-// mismatch at position 0).
+// (limit=1: 7 of 100 missing; limit=3: 5 of 100 missing) and again at
+// https://github.com/gamesguru/complement/actions/runs/33362873101/job/99397538757
+// with the identical missing counts. The first run's cruder order check also
+// flagged an order mismatch at position 0; the second, under the corrected
+// relative-index inversion check (see CHECK 3 above), does not — the missing
+// messages are simply the oldest N with no true inversion among the events
+// that were returned. Both runs are the same underlying non-conformance (the
+// rejoining server's recovered history is missing its oldest slice), so match
+// on either signal: an actual reordering, or the missing set being exactly
+// that oldest prefix.
 func matchesPartialBackfillReorder(sig paginationFailureSignature) bool {
-	return sig.missingCount > 0 && sig.missingCount < sig.expectedMessageCount && sig.orderMismatch
+	return sig.missingCount > 0 && sig.missingCount < sig.expectedMessageCount &&
+		(sig.orderMismatch || sig.missingIsPrefixOfOldest)
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
@@ -1464,11 +1478,22 @@ func assertPaginationIntegrityWithDirFrom(
 	// CHECK 2: No missing message events
 	// =====================================================================
 	var missing []string
+	sig.missingIsPrefixOfOldest = true
 	for i, expectedID := range expectedMessageEventIDs {
 		if _, exists := seen[expectedID]; !exists {
 			missing = append(missing, fmt.Sprintf("  message %d: %s", i, expectedID))
+			// A missing prefix means every missing message's index equals its
+			// position in missing-so-far, i.e. the missing set is exactly
+			// {0, 1, ..., sig.missingCount}: the oldest N expected messages,
+			// with no gaps once messages start being found.
+			if i != sig.missingCount {
+				sig.missingIsPrefixOfOldest = false
+			}
 			sig.missingCount++
 		}
+	}
+	if sig.missingCount == 0 {
+		sig.missingIsPrefixOfOldest = false
 	}
 	if len(missing) > 0 {
 		// Show at most 20 missing to avoid flooding
