@@ -459,11 +459,13 @@ unrecoverable database failure without backup):
    an explicit local operator action grounded in independently verified evidence
    — never by asking a notary to vouch for the retirement after the fact, which
    no implementation may treat as corroboration.
-    <!-- synapse-derived: complement coverage currently exercises this
-    behavior against Synapse in
-    TestMSC4499Key/LostKeyPublicationHistoricalVerification/
-    FullyLostKeyRemainsUnverifiableToColdPeers -->
-    <!-- /synapse-derived -->
+
+<!-- synapse-derived: complement coverage currently exercises this
+     behavior against Synapse in
+     TestMSC4499Key/LostKeyPublicationHistoricalVerification/
+     FullyLostKeyRemainsUnverifiableToColdPeers -->
+<!-- /synapse-derived -->
+
 3. **If the public key material is completely lost**, the administrator must
    accept that historical events signed by the lost key may fail verification on
    servers that never cached it. By design there is no protocol-level recovery
@@ -876,15 +878,14 @@ eviction of retired-key verification material so a future body reusing an
 evicted key ID is still checked against what was first seen, closing the
 collision-blind window that motivates permanent retention in the first place:
 the digest itself is normative, and every later body observed for the same
-`(server_name, algorithm, key_id)` MUST match the stored digest. The binding
-also carries a `first_seen` timestamp recording when the receiver itself
-established it — kept for operator forensics and for a future proposal to build
-eviction or corroboration policy on top of without a schema change; this MSC's
-own rules do not read the `first_seen` timestamp, only the digest. Because that
-guarantee depends on the binding never being evicted for a genuinely-seen key
-ID, it MUST NOT be pruned the way retired-key verification material is —
-evicting a digest binding to make room for a new one reopens exactly the TOFU
-window this record exists to close.
+`(server_name, algorithm, key_id)` MUST match the stored digest. The digest is
+normative; only the `first_seen` timestamp, which records when the receiver
+established the binding, is non-normative metadata kept for operator forensics
+and a future proposal to build eviction or corroboration policy on top of
+without a schema change. Because that guarantee depends on the binding never
+being evicted for a genuinely-seen key ID, it MUST NOT be pruned the way
+retired-key verification material is — evicting a digest binding to make room
+for a new one reopens exactly the TOFU window this record exists to close.
 
 That means the digest-binding set cannot be bounded by eviction; it MUST instead
 be bounded by refusing new entries once a fixed cap is reached. Implementations
