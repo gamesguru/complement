@@ -826,6 +826,7 @@ func testFederationRequestAuthenticationKeyScope(t *testing.T) {
 					TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("request-auth-%s-%d", tc.name, time.Now().UnixNano())),
 					Origin:        spec.ServerName(srv.ServerName()),
 					Destination:   "hs1",
+					PDUs:          []json.RawMessage{},
 				})
 			}
 
