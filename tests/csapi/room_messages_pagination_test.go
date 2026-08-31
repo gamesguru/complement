@@ -269,9 +269,11 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		t.Logf("Total tracked message events: %d", len(trackedEventIDs))
-		t.Logf("Room should also contain: ~5 creation events, 3 topic changes, " +
-			"1 room name, 1 power level change, ~8 membership changes, 5 reactions = " +
-			"~23 non-message events interspersed throughout the timeline")
+		t.Logf("Room should also contain: 5 initial state events from room creation " +
+			"(create, member, power_levels, join_rules, history_visibility), 3 topic " +
+			"changes, 1 room name change, 1 additional power level change, 6 membership " +
+			"changes (charlie/dana/eve join+leave churn), 5 reactions = " +
+			"~21 non-message events interspersed throughout the timeline")
 
 		// Now bob joins from a federated server and paginates through all of it
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
