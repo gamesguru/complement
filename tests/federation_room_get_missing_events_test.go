@@ -1129,14 +1129,18 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	// Serve a valid fallback response, both for unrelated /get_missing_events
 	// traffic from the padded room and for the real request under test.
 	writeFallback := func(w http.ResponseWriter) {
-		w.WriteHeader(200)
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
 			Events: []gomatrixserverlib.PDU{gmeEvent},
 		}
 		responseBytes, err := json.Marshal(&res)
-		must.NotError(t, "failed to marshal response", err)
+		if err != nil {
+			ct.Errorf(t, "failed to marshal response: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		w.Write(responseBytes)
 	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
@@ -1215,6 +1219,9 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		eventD.EventID(): helpers.NewWaiter(),
 		eventE.EventID(): helpers.NewWaiter(),
 	}
+	eventFetched := map[string]*atomic.Bool{
+		eventA.EventID(): {}, eventB.EventID(): {}, eventC.EventID(): {}, eventD.EventID(): {}, eventE.EventID(): {},
+	}
 	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
 		eventID := vars["eventID"]
@@ -1225,8 +1232,10 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 				break
 			}
 		}
-		if waiter, ok := eventWaiters[eventID]; ok {
-			waiter.Finish()
+		if eventWaiter, ok := eventWaiters[eventID]; ok {
+			if !eventFetched[eventID].Swap(true) {
+				eventWaiter.Finish()
+			}
 		}
 
 		if event == nil {
@@ -1454,7 +1463,6 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	// traffic (the padded room generates backfill we don't care about) and for the
 	// successful retry after the malformed first response.
 	writeFallback := func(w http.ResponseWriter) {
-		w.WriteHeader(200)
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
@@ -1462,11 +1470,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		}
 		responseBytes, err := json.Marshal(&res)
 		if err != nil {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
 			return
 		}
-		must.NotError(t, "failed to marshal response", err)
+		w.WriteHeader(http.StatusOK)
 		w.Write(responseBytes)
 	}
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
@@ -1552,6 +1560,9 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		eventD.EventID(): helpers.NewWaiter(),
 		eventE.EventID(): helpers.NewWaiter(),
 	}
+	eventFetched := map[string]*atomic.Bool{
+		eventA.EventID(): {}, eventB.EventID(): {}, eventC.EventID(): {}, eventD.EventID(): {}, eventE.EventID(): {},
+	}
 	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		vars := mux.Vars(req)
 		eventID := vars["eventID"]
@@ -1562,8 +1573,10 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 				break
 			}
 		}
-		if waiter, ok := eventWaiters[eventID]; ok {
-			waiter.Finish()
+		if eventWaiter, ok := eventWaiters[eventID]; ok {
+			if !eventFetched[eventID].Swap(true) {
+				eventWaiter.Finish()
+			}
 		}
 
 		if event == nil {

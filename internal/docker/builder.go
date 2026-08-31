@@ -80,6 +80,7 @@ func (d *Builder) removeNetworks() error {
 		Filters: label(
 			complementLabel,
 			"complement_pkg="+d.Config.PackageNamespace,
+			"complement_run="+d.Config.RunID,
 		),
 	})
 	if err != nil {

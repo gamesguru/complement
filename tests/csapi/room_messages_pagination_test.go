@@ -1048,6 +1048,8 @@ type paginationResult struct {
 	requestCount int
 	// Events per page (for diagnostics)
 	eventsPerPage []int
+	// True when a response repeats the token it was asked to paginate from.
+	nonAdvancingToken bool
 }
 
 type forwardExtremitiesResponse struct {
@@ -1197,7 +1199,11 @@ func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit 
 		if !endTokenRes.Exists() {
 			break
 		}
-		fromToken = endTokenRes.Str
+		nextToken := endTokenRes.Str
+		if nextToken == fromToken {
+			result.nonAdvancingToken = true
+		}
+		fromToken = nextToken
 
 		// Safety valve: don't loop forever
 		if result.requestCount > 500 {
@@ -1247,10 +1253,12 @@ func assertPaginationIntegrity(
 // must not be silently masked just because it shares a call site with a
 // known, narrower issue.
 type paginationFailureSignature struct {
-	duplicateCount int
-	duplicateTypes map[string]int
-	missingCount   int
-	orderMismatch  bool
+	duplicateCount       int
+	duplicateTypes       map[string]int
+	missingCount         int
+	expectedMessageCount int
+	orderMismatch        bool
+	nonAdvancingToken    bool
 }
 
 // onlyDuplicateType reports whether every detected duplicate was of the
@@ -1268,7 +1276,10 @@ func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
 // producing either many duplicates or, at small limits, entirely missing
 // expected messages.
 func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
-	return sig.duplicateCount > 0 || sig.missingCount > 0
+	// A lone duplicate or missing event is not this issue. The known failure
+	// either returns the same pagination token, or repeats enough pages to
+	// produce multiple duplicates (or drops the entire requested message set).
+	return sig.nonAdvancingToken || sig.duplicateCount >= 2 || (sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount)
 }
 
 // matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
@@ -1282,7 +1293,9 @@ func matchesRoomCreateBoundaryDuplicate(sig paginationFailureSignature) bool {
 // backward pagination stops well short of the room's full history, reporting
 // expected messages as missing.
 func matchesBackfillGap(sig paginationFailureSignature) bool {
-	return sig.missingCount > 0
+	// The documented truncation stops before any expected message is returned,
+	// rather than merely omitting one event from an otherwise complete page.
+	return sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
@@ -1353,6 +1366,8 @@ func assertPaginationIntegrityWithDirFrom(
 	var failures []string
 	var sig paginationFailureSignature
 	sig.duplicateTypes = make(map[string]int)
+	sig.expectedMessageCount = len(expectedMessageEventIDs)
+	sig.nonAdvancingToken = result.nonAdvancingToken
 
 	// =====================================================================
 	// CHECK 1: No duplicate events across pages

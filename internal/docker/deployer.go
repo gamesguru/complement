@@ -352,22 +352,28 @@ func deployImage(
 		lastDeployment = deployment
 		lastErr = err
 		if !isRetryableDeployBootstrapError(err) {
+			removeFailedDeployment(docker, containerName, deployment, contextStr)
 			return deployment, err
 		}
 		if attempt == maxAttempts {
+			removeFailedDeployment(docker, containerName, deployment, contextStr)
 			break
 		}
-		if deployment != nil && deployment.ContainerID != "" {
-			if _, rmErr := docker.ContainerRemove(context.Background(), deployment.ContainerID, client.ContainerRemoveOptions{Force: true}); rmErr != nil {
-				log.Printf("%s: failed to remove failed container %s before retry: %s", contextStr, deployment.ContainerID, rmErr)
-			}
-		} else {
-			removeContainersByName(docker, containerName)
-		}
+		removeFailedDeployment(docker, containerName, deployment, contextStr)
 		log.Printf("%s: deploy attempt %d/%d failed, retrying: %v", contextStr, attempt, maxAttempts, err)
 		time.Sleep(250 * time.Millisecond)
 	}
 	return lastDeployment, lastErr
+}
+
+func removeFailedDeployment(docker *client.Client, containerName string, deployment *HomeserverDeployment, contextStr string) {
+	if deployment != nil && deployment.ContainerID != "" {
+		if _, err := docker.ContainerRemove(context.Background(), deployment.ContainerID, client.ContainerRemoveOptions{Force: true}); err != nil {
+			log.Printf("%s: failed to remove failed container %s: %s", contextStr, deployment.ContainerID, err)
+		}
+		return
+	}
+	removeContainersByName(docker, containerName)
 }
 
 func isRetryableDeployBootstrapError(err error) bool {
@@ -673,6 +679,16 @@ func removeContainersByName(docker *client.Client, containerName string) {
 		return
 	}
 	for _, c := range result.Items {
+		matchesName := false
+		for _, name := range c.Names {
+			if name == "/"+containerName {
+				matchesName = true
+				break
+			}
+		}
+		if !matchesName {
+			continue
+		}
 		if _, err := docker.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
 			log.Printf("%s: failed to remove stale container %s during retry cleanup: %s", containerName, c.ID, err)
 		}
