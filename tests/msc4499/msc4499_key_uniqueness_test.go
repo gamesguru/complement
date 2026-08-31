@@ -742,6 +742,8 @@ func testFederationRequestAuthenticationKeyScope(t *testing.T) {
 	defer deployment.Destroy(t)
 
 	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
 
 	pubKeyCurrent, privKeyCurrent, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate current signing key", err)
@@ -777,8 +779,6 @@ func testFederationRequestAuthenticationKeyScope(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
-	cancel := srv.Listen()
-	defer cancel()
 
 	testCases := []struct {
 		name       string
