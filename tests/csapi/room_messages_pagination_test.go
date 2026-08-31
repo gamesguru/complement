@@ -1280,12 +1280,18 @@ func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
 // forward pagination (dir=f) from a start token doesn't advance properly:
 // most pages repeat the previous page's events instead of moving on,
 // producing either many duplicates or, at small limits, entirely missing
-// expected messages.
+// expected messages. At limit=1 the stall can consume one slot as a
+// duplicate before repeating, so the missing count comes in one short of the
+// full expected set rather than exactly matching it (e.g. 99 of 100, pages
+// [1 1 1], 1 duplicate) — still the same stall shape, so account for that
+// duplicate-consumed slot rather than requiring an exact missingCount match.
 func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
-	// A lone duplicate or missing event is not this issue. The known failure
-	// either returns the same pagination token, or repeats enough pages to
-	// produce multiple duplicates (or drops the entire requested message set).
-	return sig.nonAdvancingToken || sig.duplicateCount >= 2 || (sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount)
+	// A lone duplicate or missing event on its own is not this issue. The
+	// known failure either returns the same pagination token, repeats enough
+	// pages to produce multiple duplicates, or drops the entire requested
+	// message set (short by no more than the slots its own duplicates ate).
+	return sig.nonAdvancingToken || sig.duplicateCount >= 2 ||
+		(sig.missingCount > 0 && sig.missingCount >= sig.expectedMessageCount-sig.duplicateCount)
 }
 
 // matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
