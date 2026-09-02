@@ -368,7 +368,7 @@ func deployImage(
 
 func removeFailedDeployment(docker *client.Client, containerName string, deployment *HomeserverDeployment, contextStr string) {
 	if deployment != nil && deployment.ContainerID != "" {
-		if _, err := docker.ContainerRemove(context.Background(), deployment.ContainerID, client.ContainerRemoveOptions{Force: true}); err != nil {
+		if _, err := docker.ContainerRemove(context.Background(), deployment.ContainerID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 			log.Printf("%s: failed to remove failed container %s: %s", contextStr, deployment.ContainerID, err)
 		}
 		return
@@ -689,7 +689,7 @@ func removeContainersByName(docker *client.Client, containerName string) {
 		if !matchesName {
 			continue
 		}
-		if _, err := docker.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true}); err != nil {
+		if _, err := docker.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true}); err != nil {
 			log.Printf("%s: failed to remove stale container %s during retry cleanup: %s", containerName, c.ID, err)
 		}
 	}

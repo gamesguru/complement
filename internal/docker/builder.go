@@ -253,7 +253,8 @@ func (d *Builder) construct(bprint b.Blueprint) (errs []error) {
 				printLogs(d.Docker, res.containerID, res.contextStr)
 			}
 			if _, delErr := d.Docker.ContainerRemove(context.Background(), res.containerID, client.ContainerRemoveOptions{
-				Force: true,
+				Force:         true,
+				RemoveVolumes: true,
 			}); delErr != nil {
 				d.log("%s: failed to remove container which failed to deploy: %s", res.contextStr, delErr)
 			}
