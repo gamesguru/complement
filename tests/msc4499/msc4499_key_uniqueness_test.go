@@ -721,7 +721,7 @@ func TestMSC4499Key(t *testing.T) {
 		// reason.
 		t.Run("§9", func(t *testing.T) {
 			t.Run("CorroborationTierRetention", func(t *testing.T) {
-				deployment := deployMSC4499TrustedNotary(t)
+				deployment := complement.Deploy(t, 1)
 				defer deployment.Destroy(t)
 				testMSC4499KeyCorroborationTierRetention(t, deployment)
 			})
@@ -1832,11 +1832,11 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		ExpiredTS: spec.AsTimestamp(expiredTS), // expired 1 hour ago
 	}
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
-	mockKeyServer.validUntil = time.Now().Add(1 * time.Second)
+	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
 
 	// Small sleep to let valid_until_ts expire so hs1 will re-fetch
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// === Event A: Backdated origin_server_ts BEFORE expired_ts → MUST ACCEPT ===
 	// This is the legitimate "historical event verification" case: an event that was
@@ -2354,7 +2354,7 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 // total over it.
 func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
-		Timeout:   90 * time.Second, // larger timeout for bulk payload against a heavier storage backend
+		Timeout:   30 * time.Second,
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -2482,7 +2482,7 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.De
 // uncorroborated retired keys, regardless of effective retirement timestamp.
 func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
-		Timeout:   90 * time.Second, // larger timeout for bulk payload over the two-hop trusted-notary path
+		Timeout:   30 * time.Second,
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -2522,7 +2522,7 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 				ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
 			},
 		},
-		validUntil: time.Now().Add(2 * time.Second),
+		validUntil: time.Now().Add(500 * time.Millisecond),
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
@@ -2532,7 +2532,7 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyIDA), 0, pubKeyABase64)
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 2: Rotate the origin to a new active key and publish a full
 	// 3,000-entry old_verify_keys payload: corroborated retired key A plus
@@ -2716,7 +2716,7 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 	// Wait for backoff to expire. Implementations should configure a short
 	// backoff for testing (e.g., 2s via msc4499_backoff_secs). The spec mandates
 	// ≥60s in production, but that's too slow for CI.
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 3: Query again — mock is now healthy, should succeed and clear backoff
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
@@ -2783,7 +2783,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 			keyID: pubKeyA,
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
-		validUntil:    time.Now().Add(2 * time.Second),
+		validUntil:    time.Now().Add(500 * time.Millisecond),
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
@@ -2796,7 +2796,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
 	// Phase 2: Wait for valid_until_ts to expire
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 3: Switch mock to serve key B for the same key ID.
 	// Set far-future valid_until so the re-fetch satisfies any constraint.
