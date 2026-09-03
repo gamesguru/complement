@@ -200,10 +200,14 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 
 	// This is the deficiency: Alice accepted a state DAG that omitted the
 	// join_rules change. Her current state has regressed from "invite" to
-	// whatever was in Bob's incomplete state DAG.
-	if joinRule != "invite" {
-		t.Logf("DEFICIENCY CONFIRMED: Alice's join_rules regressed from 'invite' to '%s' after accepting buggy state DAG", joinRule)
-	}
+	// whatever was in Bob's incomplete state DAG. Assert the (bad) outcome
+	// directly instead of only logging it: if a future fix makes Alice
+	// detect the omission and refuse to regress, this test should start
+	// failing here so it gets updated, not silently keep passing regardless
+	// of which way the implementation behaves.
+	must.Equal(t, joinRule, "public", "DEFICIENCY: expected Alice's join_rules to have regressed "+
+		"from 'invite' to 'public' after accepting a buggy/incomplete state DAG that omitted the "+
+		"invite change; if this now holds, the omission is detected and this test needs updating")
 }
 
 // DIVERGENCE01 (STATE11): Differential rejection between servers with divergent state DAG views.
@@ -395,14 +399,16 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 		}
 	}
 
-	// Send Alice's topic event to Bob. Its prev_state_events reference state
-	// that includes the ban — which Bob doesn't have.
-	// In the real protocol, Alice would send this via /send, and Bob would
-	// need to fill the state DAG. But Bob's state DAG is on a different branch.
-	topicEventJSON := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "events", topicEventID})
-	topicRaw := client.ParseJSON(t, topicEventJSON)
-	topicBytes, _ := json.Marshal(topicRaw)
-	_ = topicBytes
+	// NOTE: srv (Bob) is complement's mock federation server, a stub that
+	// records events handed to it — it does not run real state-DAG-walking
+	// or auth logic, so we cannot assert what "Bob" would do on receipt of
+	// Alice's topic event the way we assert Alice's (real, under-test)
+	// behavior above. The remaining commentary documents the reasoning for
+	// why reconvergence is architecturally not guaranteed here; it is not
+	// itself an assertion. A real bidirectional version of this test needs
+	// two real homeservers (see DIVERGENCE02, which stays entirely on
+	// Alice's real server and can assert directly).
+	must.NotEqual(t, topicEventID, "", "topic event should have been created")
 
 	// The deficiency: Bob's state DAG is internally consistent. He has no
 	// mechanism to discover that Alice's branch exists and needs to be merged,
@@ -439,4 +445,164 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 	// The deficiency is documented in the t.Log statements above.
 	// A correct implementation would detect the divergence and reconcile,
 	// but the current MSC4242 model doesn't guarantee this.
+}
+
+// DIVERGENCE02: Offline server accepts a malicious fork, then has concrete
+// security consequences from it, and does not self-heal when the honest
+// branch it forked away from later re-arrives.
+//
+// This is the exact scenario from the "state dags difficult divergence"
+// session: a server goes offline, comes back to a malicious/buggy fork
+// (DIVERGENCE00's mechanism), and the open question is whether that server
+// then (a) suffers a real authorization consequence from the corrupted
+// state, and (b) can ever reconverge once an event citing the true,
+// un-corrupted state (which it already possesses locally — this isn't even
+// a missing-event case) arrives.
+//
+// Unlike DIVERGENCE00/01, this stays entirely on Alice's real homeserver
+// (the only side complement can actually assert behavior for — srv/Bob is
+// a mock stub, not a real state-DAG-walking implementation) so both halves
+// are real assertions, not narration.
+//
+// NOTE: the expected outcomes below encode the deficiency as currently
+// believed to reproduce, following the same pattern as DIVERGENCE00. They
+// have not been confirmed against a live run of this suite in this session.
+// If a run flips either assertion, that is itself the answer to "do we
+// implement all this?" for the corresponding half, and the assertion should
+// be updated to match, not silently loosened.
+func testMSC4242DIVERGENCE02OfflineServerAcceptsMaliciousForkThenCannotSelfHeal(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	bob := srv.UserID("bob")
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob,
+		federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID))
+
+	// Baseline: Alice locks the room down to invite-only.
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"join_rule": "invite",
+	}))
+	var inviteJoinRulesID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomJoinRules && r.Get("content.join_rule").Str == "invite" {
+			inviteJoinRulesID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// === Alice "goes offline": Bob (buggy/malicious peer) builds a branch
+	// citing the pre-lockdown (public) join_rules, exactly as in DIVERGENCE00. ===
+	bobSetName := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomName,
+			StateKey:   &empty,
+			Sender:     bob,
+			Content:    map[string]interface{}{"name": "Bob's Room"},
+			PrevEvents: []string{room.CurrentState(spec.MRoomMember, bob).EventID()},
+		},
+		PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
+	})
+	bobMsg := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:    "m.room.message",
+			Sender:  bob,
+			Content: map[string]interface{}{"msgtype": "m.text", "body": "Hello from partition"},
+		},
+	})
+
+	var getMissingEventsStateDAGHandler func(w http.ResponseWriter, req *fclient.MissingEvents)
+	var getMissingEventsEventDAGHandler func(w http.ResponseWriter, req *fclient.MissingEvents)
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		body, err := extractGetMissingEventsRequest(room.RoomID, req)
+		if err != nil {
+			ct.Errorf(t, "failed to read get_missing_events req body: %s", err)
+			w.WriteHeader(500)
+			return
+		}
+		if body.StateDAG {
+			getMissingEventsStateDAGHandler(w, body)
+		} else {
+			getMissingEventsEventDAGHandler(w, body)
+		}
+	})
+	getMissingEventsStateDAGHandler = func(w http.ResponseWriter, _ *fclient.MissingEvents) {
+		stateEvents := []gomatrixserverlib.PDU{
+			room.CurrentState(spec.MRoomCreate, ""),
+			room.CurrentState(spec.MRoomPowerLevels, ""),
+			room.CurrentState(spec.MRoomJoinRules, ""), // stale public join_rules, NOT inviteJoinRulesID
+			room.CurrentState(spec.MRoomMember, bob),
+			room.CurrentState(spec.MRoomMember, alice.UserID),
+			bobSetName,
+		}
+		w.WriteHeader(200)
+		resp := fclient.RespMissingEvents{Events: gomatrixserverlib.NewEventJSONsFromEvents(stateEvents)}
+		must.NotError(t, "failed to encode response", json.NewEncoder(w).Encode(&resp))
+	}
+	getMissingEventsEventDAGHandler = func(w http.ResponseWriter, req *fclient.MissingEvents) {
+		w.WriteHeader(200)
+		resp := fclient.RespMissingEvents{Events: gomatrixserverlib.NewEventJSONsFromEvents([]gomatrixserverlib.PDU{bobSetName, bobMsg})}
+		must.NotError(t, "failed to encode response", json.NewEncoder(w).Encode(&resp))
+	}
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobSetName, bobMsg}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, bobMsg.EventID()))
+
+	jrResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, ""})
+	must.Equal(t, gjson.GetBytes(client.ParseJSON(t, jrResp), "join_rule").Str, "public",
+		"DEFICIENCY precondition: Alice's join_rules must have regressed to 'public' for the rest of this test to be meaningful")
+
+	// (a) Concrete consequence: because Alice's live join_rules are now
+	// "public" (not the "invite" she actually set), a stranger with no
+	// invite — a fresh local user on Alice's own server, enforced entirely
+	// by Alice's own (corrupted) current state — can join right now.
+	mallory2 := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	joinRes := mallory2.JoinRoom(t, roomID, nil)
+	must.Equal(t, joinRes.StatusCode, 200, "DEFICIENCY: expected a fresh, uninvited local user to be able to "+
+		"join under Alice's corrupted public join_rules; if this now fails (403), the corrupted state is no "+
+		"longer being enforced and this test needs updating")
+
+	// (b) Self-healing check: send a follow-up event whose prev_state_events
+	// directly cites inviteJoinRulesID — the TRUE, correct state, which
+	// Alice already holds locally (she created it before going offline).
+	// This is not even a missing-event case: does receiving a correctly
+	// rooted continuation cause Alice's current join_rules to reconverge to
+	// "invite", or does the corrupted state persist regardless?
+	correction := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     bob,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "honest continuation citing the real lockdown"},
+			PrevEvents: []string{bobMsg.EventID()},
+		},
+		PrevStateEvents: []string{inviteJoinRulesID},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{correction}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, correction.EventID()))
+
+	jrResp2 := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, ""})
+	joinRuleAfterCorrection := gjson.GetBytes(client.ParseJSON(t, jrResp2), "join_rule").Str
+	must.Equal(t, joinRuleAfterCorrection, "public",
+		"DEFICIENCY: expected Alice's join_rules to remain stuck at 'public' even after an event citing the "+
+			"true invite state (already held locally, not even a fetch) arrived — i.e. no automatic self-healing; "+
+			"if this now reads 'invite', reconvergence is happening and this test needs updating to match")
 }

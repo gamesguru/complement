@@ -51,4 +51,5 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("STATE09: Asymmetric 3-way partition eventual consistency and rolling heal", testMSC4242STATE09AsymmetricPartitionEventualConsistency)
 	t.Run("DIVERGENCE00: Partitioned server accepts incomplete state DAG from buggy peer", testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG)
 	t.Run("DIVERGENCE01: Differential rejection after partition with divergent state DAGs", testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition)
+	t.Run("DIVERGENCE02: Offline server accepts malicious fork, then cannot self-heal", testMSC4242DIVERGENCE02OfflineServerAcceptsMaliciousForkThenCannotSelfHeal)
 }
