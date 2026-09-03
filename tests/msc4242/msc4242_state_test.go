@@ -843,7 +843,11 @@ func testMSC4242STATE03ConcurrentLosingStateEvent(t *testing.T) {
 		}
 		return false
 	}))
-	_ = basePLID
+	// Wait for the mock federation server to process the PL grant before
+	// constructing events rooted in it — Alice seeing it in /sync does not
+	// guarantee the mock has processed the outbound transaction.
+	plGrantAtController := room.WaiterForEvent(basePLID)
+	plGrantAtController.Waitf(t, 10*time.Second, "controller did not receive PL grant for Bob")
 
 	// Baseline state
 	initialName := srv.MustCreateEvent(t, room, federation.Event{
