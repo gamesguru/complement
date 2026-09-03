@@ -271,7 +271,7 @@ var faultyEventTestCases = []FaultyEventTestCase{
 		Name:       "Redacted auth event in DAG does not break state DAG traversal",
 		CodeSuffix: "J",
 		GenerateEvents: func(t ct.TestLike, srv *federation.Server, room *federation.ServerRoom, sender string) []gomatrixserverlib.PDU {
-			// Create a power levels update, redact it, then issue a subsequent message.
+			// Create a power levels update, redact it, then issue a subsequent state event.
 			plEvent := mustCreateEvent(t, srv, room, MSC4242Event{
 				Event: federation.Event{
 					Type:     spec.MRoomPowerLevels,

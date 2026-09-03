@@ -823,6 +823,28 @@ func testMSC4242STATE03ConcurrentLosingStateEvent(t *testing.T) {
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoinEvent}), nil)
 	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
 
+	// Grant Bob PL 50 so his concurrent state event actually participates in
+	// state resolution (otherwise at PL 0 he can't create state events in a
+	// public_chat room where state_default is 50, and the test would pass
+	// vacuously because hs1 rejects his event before state res runs).
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var basePLID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			basePLID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	_ = basePLID
+
 	// Baseline state
 	initialName := srv.MustCreateEvent(t, room, federation.Event{
 		Type:     spec.MRoomName,
@@ -1120,8 +1142,10 @@ func testMSC4242STATE06ConcurrentBanAndKickDominance(t *testing.T) {
 
 // STATE07: Phantom join rules lockdown (Port of rezzy anomaly 03).
 // Alice switches join_rules to invite on Branch 1.
-// Concurrently on Branch 2, Charlie attempts to join against public join_rules.
-// When merged, Charlie's join MUST be rejected because it fails authorization against the resolved state.
+// Concurrently on Branch 2, Charlie creates a join event citing public join_rules.
+// When merged, join_rules resolves to invite (Alice wins), but Charlie IS joined
+// because join authorization is per-event — Charlie's join was authorized by the
+// public join rules at his event's auth state, not by the post-resolution state.
 func testMSC4242STATE07PhantomJoinRulesLockdown(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1188,26 +1212,27 @@ func testMSC4242STATE07PhantomJoinRulesLockdown(t *testing.T) {
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieDirectJoin, sentinel}), nil)
 	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()))
 
-	// Verify resolved state: join_rules is invite, and Charlie is NOT joined
+	// Verify resolved state: join_rules is invite (Alice's branch wins state res),
+	// but Charlie IS joined because his join was authorized by the public join rules
+	// at the state he cited. Join authorization is per-event (checked against the
+	// event's own prev_state_events), not against the post-resolution room state.
 	jrResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, ""})
 	jrBody := client.ParseJSON(t, jrResp)
 	must.Equal(t, gjson.GetBytes(jrBody, "join_rule").Str, "invite", "join_rules should be invite")
 
-	charlieResp := alice.Do(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
-	if charlieResp.StatusCode == 200 {
-		charlieBody := client.ParseJSON(t, charlieResp)
-		if gjson.GetBytes(charlieBody, "membership").Str == "join" {
-			ct.Fatalf(t, "Charlie's phantom join succeeded despite room being invite-only")
-		}
-	}
+	charlieResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
+	charlieBody := client.ParseJSON(t, charlieResp)
+	must.Equal(t, gjson.GetBytes(charlieBody, "membership").Str, "join",
+		"Charlie's join is accepted because it was authorized by the public join rules at his event's auth state; join authorization is per-event, not per-room-state")
 }
 
 // STATE08: Redaction of state event in state DAG (Port of rezzy anomaly 14).
 // Tests that when a state event in the state DAG is redacted:
-// 1. The redaction strips state content according to room version redaction rules.
-// 2. Pre-redaction actions authorized against the state event remain valid in the timeline.
-// 3. Current state correctly reflects the redacted event (default power levels).
-// 4. State DAG continues to function and resolve state deterministically through redacted state nodes.
+//  1. The redaction event is accepted and linked in the state DAG.
+//  2. Pre-redaction actions authorized against the state event remain valid in the timeline.
+//  3. Current state correctly reflects the redacted event (per spec, the users map
+//     in m.room.power_levels is retained, so the PL grant persists).
+//  4. State DAG continues to function and resolve state deterministically through redacted state nodes.
 func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1275,7 +1300,9 @@ func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
 		PrevStateEvents: []string{plGrantEventID},
 	})
 
-	// Sentinel message merging Branch 1 and Branch 2
+	// Sentinel message merging Branch 1 and Branch 2.
+	// PrevStateEvents must contain only state events — bobAuthorizedMsg is a
+	// non-state m.room.message, so it is excluded.
 	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
 		Event: federation.Event{
 			Type:       "m.room.message",
@@ -1283,41 +1310,42 @@ func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
 			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Merge after redaction"},
 			PrevEvents: []string{redactionEventID, bobAuthorizedMsg.EventID()},
 		},
-		PrevStateEvents: []string{plGrantEventID, bobAuthorizedMsg.EventID()},
+		PrevStateEvents: []string{plGrantEventID},
 	})
 
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobAuthorizedMsg, sentinel}), nil)
 	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()), client.SyncTimelineHasEventID(roomID, bobAuthorizedMsg.EventID()))
 
-	// Verify that the redacted PL event no longer grants Bob PL 50 (users map is stripped/reset)
+	// Verify that the redacted PL event still grants Bob PL 50: per the Matrix
+	// redaction spec, redacting an m.room.power_levels event retains the users
+	// key (along with users_default, events, etc.), so the grant persists.
 	plStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""})
 	plBody := client.ParseJSON(t, plStateResp)
 	bobPL := gjson.GetBytes(plBody, "users."+client.GjsonEscape(bob)).Int()
-	must.Equal(t, bobPL, int64(0), "Bob's PL should revert to default 0 after redaction of the PL grant event")
+	must.Equal(t, bobPL, int64(50), "Bob's PL 50 grant persists after redaction: the users map is retained per the redaction spec")
 }
 
-// STATE09: Asymmetric 3-way partition eventual consistency and rolling heal.
-// Tests the acid test for State DAGs eventual consistency across 3 isolated clusters:
+// STATE09: Asymmetric 3-way state DAG merge and resolution.
+// Tests state resolution across a manually assembled DAG with three concurrent
+// branches (simulating what would happen after a 3-way partition heals):
 //
-//	Cluster A (Alice on hs1): demotes Bob to PL 0, updates topic to "Topic A"
-//	Cluster B (Bob on srv): (unaware of demotion) grants Eve PL 50, updates room name to "Name B"
-//	Cluster C (Charlie on srv): updates topic to "Topic C", invites Dave
+//	Branch A (Alice on hs1): demotes Bob to PL 0, updates topic to "Topic A"
+//	Branch B (Bob on srv): grants Eve PL 50, updates room name to "Name B"
+//	Branch C (Charlie on srv): updates topic to "Topic C", invites Dave
 //
-// Rolling heal:
-//  1. Cluster B merges with Cluster C via a sentinel event.
-//  2. Cluster (B+C) merges with Cluster A on hs1 via a federated transaction.
+// Merge strategy:
+//  1. Branches B and C merge via a sentinel event.
+//  2. Merged (B+C) merges with Branch A via a federated transaction.
 //
-// Assertions for eventual consistency:
+// Assertions for state resolution:
 //   - Alice's demotion of Bob (PL 100) dominates Bob's concurrent PL grant to Eve => Bob PL 0, Eve PL 0.
 //   - Alice's topic update dominates Charlie's topic update => Topic is "Topic A".
 //   - Bob's non-conflicting room name is preserved => Room name is "Name B".
 //   - Charlie's invite of Dave is preserved => Dave is invited.
 //
-// Protocol considerations & assists:
-//   - MSC4500 (LtHash16 state_hashes on txns) prevents silent divergence across indirect relays.
-//   - MSC4511A (/topology_query) provides LCA and hop distance routing hints for sliced spines.
-//   - MSC4511C (Merkle roots) proves pre-demotion authority across partitions.
-//   - MSC4521 (PinSketch algebraic reconciliation) resolves frontier differences in O(d) bandwidth.
+// NOTE: This is NOT a real partition test — all branches are manually constructed
+// in a single mock federation room and delivered in one transaction. It exercises
+// state resolution of a complex DAG, not isolation or rolling reconnection.
 func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -1351,13 +1379,14 @@ func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
 	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
 
-	// Baseline state: Alice gives Bob PL 50, sets baseline topic and room name
+	// Baseline state: Alice gives Bob and Charlie PL 50, sets baseline topic and room name
 	alice.MustDo(t, "PUT", []string{
 		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
 	}, client.WithJSONBody(t, map[string]any{
 		"users": map[string]int{
 			alice.UserID: 100,
 			bob:          50,
+			charlie:      50,
 		},
 	}))
 	var basePLID string
@@ -1497,7 +1526,9 @@ func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 		PrevStateEvents: []string{bobGrantsEvePL.EventID(), bobNameB.EventID(), charlieTopicC.EventID(), charlieInvitesDave.EventID()},
 	})
 
-	// Phase 2: Merged Cluster (B+C) connects to Cluster A on hs1 via a top-level merge sentinel
+	// Phase 2: Merged Cluster (B+C) connects to Cluster A on hs1 via a top-level merge sentinel.
+	// PrevStateEvents must list only state events — sentinelBC is a non-state
+	// m.room.message, so the state frontier is the latest state events from each branch.
 	sentinelABC := mustCreateEvent(t, srv, room, MSC4242Event{
 		Event: federation.Event{
 			Type:       "m.room.message",
@@ -1505,7 +1536,7 @@ func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Full partition heal A + (B + C)"},
 			PrevEvents: []string{aliceTopicAID, sentinelBC.EventID()},
 		},
-		PrevStateEvents: []string{aliceDemoteBobID, aliceTopicAID, sentinelBC.EventID()},
+		PrevStateEvents: []string{aliceDemoteBobID, aliceTopicAID, bobGrantsEvePL.EventID(), bobNameB.EventID(), charlieTopicC.EventID(), charlieInvitesDave.EventID()},
 	})
 
 	// Send all partition events and merge sentinels in transaction to hs1
