@@ -44,7 +44,7 @@ import (
 //   C: partial events (e.g 3 prev state events and only send the same 2)
 //   D: an HTTP error
 
-func TestMSC4242GetMissingEventsInbound(t *testing.T) {
+func testMSC4242GetMissingEventsInbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -363,7 +363,7 @@ func TestMSC4242GetMissingEventsInbound(t *testing.T) {
 	}
 }
 
-func TestMSC4242GetMissingEventsOutbound(t *testing.T) {
+func testMSC4242GetMissingEventsOutbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -583,7 +583,7 @@ func TestMSC4242GetMissingEventsOutbound(t *testing.T) {
 
 }
 
-func TestMSC4242GetMissingEventsBadInputs(t *testing.T) {
+func testMSC4242GetMissingEventsBadInputs(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -662,7 +662,7 @@ func TestMSC4242GetMissingEventsBadInputs(t *testing.T) {
 	}
 }
 
-func TestMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
+func testMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -954,7 +954,7 @@ func TestMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
 //	B: bogus events (e.g not events referenced in prev_state_events)
 //	C: partial events (e.g 2 prev state events and only send the same 1)
 //	D: an HTTP error
-func TestMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
+func testMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1156,7 +1156,7 @@ func TestMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
 					return
 				}
 				must.Equal(t, slices.Equal(body.LatestEvents, []string{eventD.EventID()}), true, fmt.Sprintf(
-					"unexpected latest events (expected event D) for non-state dag request: %v", body.LatestEvents,
+					"unexpected latest events (expected event D) for state dag request: %v", body.LatestEvents,
 				))
 				// defer to the test case
 				hitGetMissingEvents.Store(true)

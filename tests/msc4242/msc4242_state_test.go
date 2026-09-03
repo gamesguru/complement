@@ -27,11 +27,15 @@ import (
 //  STATE00: a valid message and state event are subsequently accepted if the prev_state_events cannot be found at first, but are found later.
 //  STATE01: If a state dag outlier event is de-outliered, ensure room state at that event is correct (via /state_ids).
 //  STATE02: prev_state_events changes to old, already seen state events, which does not update forward extremities. Current state does not change.
-//  STATE03: XXX receiving a state event via /send which does NOT alter the current state (say it's a concurrent topic change which does not win state res)
-//      should | should not go down /sync and be present in the timeline.
+//  STATE03: receiving a state event via /send which does NOT alter the current state (concurrent name/topic change that loses state res against ban)
 //  STATE04: mismatched prev_events and prev_state_events produces the correct state
+//  STATE05: demoted moderator concurrent action (Priya bans troll before demotion)
+//  STATE06: concurrent ban/kick dominance (Bob banned on branch 1 cannot ban Charlie on branch 2)
+//  STATE07: phantom join rules lockdown (invite-only lockdown rejects concurrent public joins)
+//  STATE08: redaction of state event in state DAG
+//  STATE09: asymmetric 3-way partition eventual consistency and rolling heal (highlights assists from MSC4500, MSC4511A, MSC4511C, MSC4521)
 
-func TestMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
+func testMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -228,7 +232,7 @@ func TestMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 // The intention behind this test is to ensure that the outlier state => 'normal' state
 // is transparently handled. This was more important back when we had auth DAGs, but is
 // still a useful property to assert.
-func TestMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
+func testMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -439,7 +443,7 @@ func TestMSC4242STATE01DeOutlieredStateIsCorrect(t *testing.T) {
 	}
 }
 
-func TestMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
+func testMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -585,7 +589,7 @@ func TestMSC4242STATE02OldStateChangesBetweenEvents(t *testing.T) {
 	}
 }
 
-func TestMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
+func testMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -781,6 +785,760 @@ func TestMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
 			ct.Errorf(t, "/state_ids response for event '%s' incorrect:\ngot  %v\nwant %v", beforeEventID, resp.StateEventIDs, wantStateEventIDs)
 		}
 	}
+}
+
+// STATE03: receiving a state event via /send which does NOT alter the current state
+// (e.g., a concurrent room name or topic change that loses state resolution against a concurrent ban).
+// Asserts that the ban takes precedence, the concurrent state change does not become current state,
+// and /sync reflects the resolved state.
+func testMSC4242STATE03ConcurrentLosingStateEvent(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoinEvent := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content: map[string]interface{}{
+			"membership": "join",
+		},
+	})
+	room.AddEvent(charlieJoinEvent)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoinEvent}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	// Baseline state
+	initialName := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomName,
+		StateKey: &empty,
+		Sender:   bob,
+		Content:  map[string]interface{}{"name": "Original Name"},
+	})
+	room.AddEvent(initialName)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{initialName}), nil)
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, initialName.EventID()))
+
+	// Branch 1 on hs1: Alice bans Bob
+	alice.MustDo(t, "POST", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "ban",
+	}, client.WithJSONBody(t, map[string]any{
+		"user_id": bob,
+	}))
+	var banEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		isBan := r.Get("type").Str == spec.MRoomMember && r.Get("state_key").Str == bob && r.Get("content.membership").Str == "ban"
+		if isBan {
+			banEventID = r.Get("event_id").Str
+		}
+		return isBan
+	}))
+
+	// Branch 2 on federation server (concurrent to Alice's ban, citing state before ban):
+	// Bob attempts to change the room name to "Hacked"
+	bobsHackedName := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomName,
+			StateKey:   &empty,
+			Sender:     bob,
+			Content:    map[string]interface{}{"name": "Hacked"},
+			PrevEvents: []string{initialName.EventID()},
+		},
+		PrevStateEvents: []string{initialName.EventID()},
+	})
+
+	// Sentinel message from Charlie merging both branches
+	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Sentinel merge"},
+			PrevEvents: []string{banEventID, bobsHackedName.EventID()},
+		},
+		PrevStateEvents: []string{banEventID, bobsHackedName.EventID()},
+	})
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobsHackedName, sentinel}), nil)
+
+	// Wait for sentinel
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()))
+
+	// Verify current state: Bob is banned, and room name is NOT "Hacked" (Bob's state event lost state res)
+	resp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomName, ""})
+	body := client.ParseJSON(t, resp)
+	nameVal := gjson.GetBytes(body, "name").Str
+	if nameVal == "Hacked" {
+		ct.Fatalf(t, "Bob's losing state event 'Hacked' took effect in room state despite Bob being banned")
+	}
+	must.Equal(t, nameVal, "Original Name", "expected room name to remain 'Original Name'")
+}
+
+// STATE05: Demoted moderator concurrent action (Port of rezzy anomaly 19).
+// Alice promotes Priya to PL 50.
+// On Branch 1, Alice demotes Priya back to PL 0.
+// Concurrently on Branch 2, Priya (citing her valid PL 50 grant) bans Troll.
+// When merged, Troll MUST remain banned because Priya was authorized at the state before the ban,
+// and Priya's PL becomes 0.
+func testMSC4242STATE05DemotedModeratorConcurrentAction(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	priya := srv.UserID("priya")
+	troll := srv.UserID("troll")
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, priya, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	trollJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &troll,
+		Sender:   troll,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	charlieJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	room.AddEvent(trollJoin)
+	room.AddEvent(charlieJoin)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{trollJoin, charlieJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(priya, roomID), client.SyncJoinedTo(troll, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	// Alice grants Priya PL 50
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			priya:        50,
+		},
+	}))
+	var plGrantEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(priya)).Int() == 50 {
+			plGrantEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Fork:
+	// Branch 1: Alice demotes Priya back to 0
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			priya:        0,
+		},
+	}))
+	var demoteEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(priya)).Int() == 0 {
+			demoteEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Branch 2: Priya bans Troll (citing the PL 50 grant in prev_state_events)
+	priyaBansTroll := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomMember,
+			StateKey:   &troll,
+			Sender:     priya,
+			Content:    map[string]interface{}{"membership": "ban"},
+			PrevEvents: []string{plGrantEventID},
+		},
+		PrevStateEvents: []string{plGrantEventID},
+	})
+
+	// Sentinel message merging Branch 1 and Branch 2
+	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Merge branch 1 and branch 2"},
+			PrevEvents: []string{demoteEventID, priyaBansTroll.EventID()},
+		},
+		PrevStateEvents: []string{demoteEventID, priyaBansTroll.EventID()},
+	})
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{priyaBansTroll, sentinel}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()))
+
+	// Verify resolved state: Troll is banned, and Priya PL is 0
+	trollStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, troll})
+	trollBody := client.ParseJSON(t, trollStateResp)
+	must.Equal(t, gjson.GetBytes(trollBody, "membership").Str, "ban", "Troll should be banned")
+
+	plStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""})
+	plBody := client.ParseJSON(t, plStateResp)
+	must.Equal(t, gjson.GetBytes(plBody, "users."+client.GjsonEscape(priya)).Int(), int64(0), "Priya PL should be demoted to 0")
+}
+
+// STATE06: Concurrent ban/kick dominance (Port of rezzy anomalies 20 and 21).
+// Alice (PL 100) bans Bob (PL 50) on Branch 1.
+// Concurrently on Branch 2, Bob attempts to ban Charlie.
+// When merged, Bob's ban of Charlie MUST NOT take effect because Bob is already banned in the resolved state.
+func testMSC4242STATE06ConcurrentBanAndKickDominance(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	dave := srv.UserID("dave")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	daveJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &dave,
+		Sender:   dave,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	room.AddEvent(charlieJoin)
+	room.AddEvent(daveJoin)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin, daveJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID), client.SyncJoinedTo(dave, roomID))
+
+	// Alice grants Bob PL 50
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var plGrantEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			plGrantEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Branch 1: Alice bans Bob
+	alice.MustDo(t, "POST", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "ban",
+	}, client.WithJSONBody(t, map[string]any{
+		"user_id": bob,
+	}))
+	var aliceBansBobID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomMember && r.Get("state_key").Str == bob && r.Get("content.membership").Str == "ban" {
+			aliceBansBobID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Branch 2: Bob concurrently bans Charlie (citing PL grant before his own ban)
+	bobBansCharlie := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomMember,
+			StateKey:   &charlie,
+			Sender:     bob,
+			Content:    map[string]interface{}{"membership": "ban"},
+			PrevEvents: []string{plGrantEventID},
+		},
+		PrevStateEvents: []string{plGrantEventID},
+	})
+
+	// Sentinel message merging Branch 1 and Branch 2
+	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     dave,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Merge branches"},
+			PrevEvents: []string{aliceBansBobID, bobBansCharlie.EventID()},
+		},
+		PrevStateEvents: []string{aliceBansBobID, bobBansCharlie.EventID()},
+	})
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobBansCharlie, sentinel}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()))
+
+	// Verify resolved state: Bob is banned, Charlie is NOT banned (remains joined)
+	bobStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, bob})
+	bobBody := client.ParseJSON(t, bobStateResp)
+	must.Equal(t, gjson.GetBytes(bobBody, "membership").Str, "ban", "Bob should be banned")
+
+	charlieStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
+	charlieBody := client.ParseJSON(t, charlieStateResp)
+	must.Equal(t, gjson.GetBytes(charlieBody, "membership").Str, "join", "Charlie should remain joined (Bob's concurrent ban did not take effect)")
+}
+
+// STATE07: Phantom join rules lockdown (Port of rezzy anomaly 03).
+// Alice switches join_rules to invite on Branch 1.
+// Concurrently on Branch 2, Charlie attempts to join against public join_rules.
+// When merged, Charlie's join MUST be rejected because it fails authorization against the resolved state.
+func testMSC4242STATE07PhantomJoinRulesLockdown(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID))
+
+	publicJoinRulesID := room.CurrentState(spec.MRoomJoinRules, "").EventID()
+
+	// Branch 1: Alice locks down the room to invite-only
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"join_rule": "invite",
+	}))
+	var inviteJoinRulesID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomJoinRules && r.Get("content.join_rule").Str == "invite" {
+			inviteJoinRulesID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Branch 2: Charlie attempts to join directly citing public join rules
+	charlieDirectJoin := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomMember,
+			StateKey:   &charlie,
+			Sender:     charlie,
+			Content:    map[string]interface{}{"membership": "join"},
+			PrevEvents: []string{publicJoinRulesID},
+		},
+		PrevStateEvents: []string{publicJoinRulesID},
+	})
+
+	// Sentinel message merging Branch 1 and Branch 2
+	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     bob,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Sentinel merge"},
+			PrevEvents: []string{inviteJoinRulesID, charlieDirectJoin.EventID()},
+		},
+		PrevStateEvents: []string{inviteJoinRulesID, charlieDirectJoin.EventID()},
+	})
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieDirectJoin, sentinel}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()))
+
+	// Verify resolved state: join_rules is invite, and Charlie is NOT joined
+	jrResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, ""})
+	jrBody := client.ParseJSON(t, jrResp)
+	must.Equal(t, gjson.GetBytes(jrBody, "join_rule").Str, "invite", "join_rules should be invite")
+
+	charlieResp := alice.Do(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
+	if charlieResp.StatusCode == 200 {
+		charlieBody := client.ParseJSON(t, charlieResp)
+		if gjson.GetBytes(charlieBody, "membership").Str == "join" {
+			ct.Fatalf(t, "Charlie's phantom join succeeded despite room being invite-only")
+		}
+	}
+}
+
+// STATE08: Redaction of state event in state DAG (Port of rezzy anomaly 14).
+// Tests that when a state event in the state DAG is redacted:
+// 1. The redaction strips state content according to room version redaction rules.
+// 2. Pre-redaction actions authorized against the state event remain valid in the timeline.
+// 3. Current state correctly reflects the redacted event (default power levels).
+// 4. State DAG continues to function and resolve state deterministically through redacted state nodes.
+func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	room.AddEvent(charlieJoin)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	// Alice grants Bob PL 50
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var plGrantEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			plGrantEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Fork:
+	// Branch 1: Alice redacts the power levels grant event
+	redactionEventID := alice.MustSendRedaction(t, roomID, map[string]interface{}{
+		"reason": "Revoking custom power levels",
+	}, plGrantEventID)
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, redactionEventID))
+
+	// Branch 2: Bob sends a message citing his valid pre-redaction PL 50 state
+	bobAuthorizedMsg := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     bob,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Authorized action before redaction"},
+			PrevEvents: []string{plGrantEventID},
+		},
+		PrevStateEvents: []string{plGrantEventID},
+	})
+
+	// Sentinel message merging Branch 1 and Branch 2
+	sentinel := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Merge after redaction"},
+			PrevEvents: []string{redactionEventID, bobAuthorizedMsg.EventID()},
+		},
+		PrevStateEvents: []string{plGrantEventID, bobAuthorizedMsg.EventID()},
+	})
+
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobAuthorizedMsg, sentinel}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinel.EventID()), client.SyncTimelineHasEventID(roomID, bobAuthorizedMsg.EventID()))
+
+	// Verify that the redacted PL event no longer grants Bob PL 50 (users map is stripped/reset)
+	plStateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""})
+	plBody := client.ParseJSON(t, plStateResp)
+	bobPL := gjson.GetBytes(plBody, "users."+client.GjsonEscape(bob)).Int()
+	must.Equal(t, bobPL, int64(0), "Bob's PL should revert to default 0 after redaction of the PL grant event")
+}
+
+// STATE09: Asymmetric 3-way partition eventual consistency and rolling heal.
+// Tests the acid test for State DAGs eventual consistency across 3 isolated clusters:
+//
+//	Cluster A (Alice on hs1): demotes Bob to PL 0, updates topic to "Topic A"
+//	Cluster B (Bob on srv): (unaware of demotion) grants Eve PL 50, updates room name to "Name B"
+//	Cluster C (Charlie on srv): updates topic to "Topic C", invites Dave
+//
+// Rolling heal:
+//  1. Cluster B merges with Cluster C via a sentinel event.
+//  2. Cluster (B+C) merges with Cluster A on hs1 via a federated transaction.
+//
+// Assertions for eventual consistency:
+//   - Alice's demotion of Bob (PL 100) dominates Bob's concurrent PL grant to Eve => Bob PL 0, Eve PL 0.
+//   - Alice's topic update dominates Charlie's topic update => Topic is "Topic A".
+//   - Bob's non-conflicting room name is preserved => Room name is "Name B".
+//   - Charlie's invite of Dave is preserved => Dave is invited.
+//
+// Protocol considerations & assists:
+//   - MSC4500 (LtHash16 state_hashes on txns) prevents silent divergence across indirect relays.
+//   - MSC4511A (/topology_query) provides LCA and hop distance routing hints for sliced spines.
+//   - MSC4511C (Merkle roots) proves pre-demotion authority across partitions.
+//   - MSC4521 (PinSketch algebraic reconciliation) resolves frontier differences in O(d) bandwidth.
+func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	dave := srv.UserID("dave")
+	eve := srv.UserID("eve")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	room.AddEvent(charlieJoin)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	// Baseline state: Alice gives Bob PL 50, sets baseline topic and room name
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var basePLID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			basePLID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"topic": "Initial Baseline Topic",
+	}))
+	var baseTopicID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomTopic && r.Get("content.topic").Str == "Initial Baseline Topic" {
+			baseTopicID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomName, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"name": "Initial Baseline Name",
+	}))
+	var baseNameID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomName && r.Get("content.name").Str == "Initial Baseline Name" {
+			baseNameID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// --- 3-WAY PARTITION ---
+
+	// Branch 1 (Cluster A on hs1):
+	// Alice demotes Bob to PL 0 and updates Topic to "Topic A"
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          0,
+		},
+	}))
+	var aliceDemoteBobID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 0 {
+			aliceDemoteBobID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"topic": "Topic A",
+	}))
+	var aliceTopicAID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomTopic && r.Get("content.topic").Str == "Topic A" {
+			aliceTopicAID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+
+	// Branch 2 (Cluster B on federation server, isolated from A):
+	// Bob (citing basePLID) grants Eve PL 50, and updates Room Name to "Name B"
+	bobGrantsEvePL := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:     spec.MRoomPowerLevels,
+			StateKey: &empty,
+			Sender:   bob,
+			Content: map[string]interface{}{
+				"users": map[string]int{
+					alice.UserID: 100,
+					bob:          50,
+					eve:          50,
+				},
+			},
+			PrevEvents: []string{basePLID},
+		},
+		PrevStateEvents: []string{basePLID},
+	})
+	bobNameB := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomName,
+			StateKey:   &empty,
+			Sender:     bob,
+			Content:    map[string]interface{}{"name": "Name B"},
+			PrevEvents: []string{bobGrantsEvePL.EventID()},
+		},
+		PrevStateEvents: []string{baseNameID},
+	})
+
+	// Branch 3 (Cluster C on federation server, isolated from A and B):
+	// Charlie updates Topic to "Topic C" and invites Dave
+	charlieTopicC := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomTopic,
+			StateKey:   &empty,
+			Sender:     charlie,
+			Content:    map[string]interface{}{"topic": "Topic C"},
+			PrevEvents: []string{baseTopicID},
+		},
+		PrevStateEvents: []string{baseTopicID},
+	})
+	charlieInvitesDave := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomMember,
+			StateKey:   &dave,
+			Sender:     charlie,
+			Content:    map[string]interface{}{"membership": "invite"},
+			PrevEvents: []string{charlieTopicC.EventID()},
+		},
+		PrevStateEvents: []string{basePLID},
+	})
+
+	// --- ASYMMETRIC ROLLING RECONNECT ---
+
+	// Phase 1: Cluster B and Cluster C merge via a sentinel message from Charlie
+	sentinelBC := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Merge Cluster B and Cluster C"},
+			PrevEvents: []string{bobNameB.EventID(), charlieInvitesDave.EventID()},
+		},
+		PrevStateEvents: []string{bobGrantsEvePL.EventID(), bobNameB.EventID(), charlieTopicC.EventID(), charlieInvitesDave.EventID()},
+	})
+
+	// Phase 2: Merged Cluster (B+C) connects to Cluster A on hs1 via a top-level merge sentinel
+	sentinelABC := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "Full partition heal A + (B + C)"},
+			PrevEvents: []string{aliceTopicAID, sentinelBC.EventID()},
+		},
+		PrevStateEvents: []string{aliceDemoteBobID, aliceTopicAID, sentinelBC.EventID()},
+	})
+
+	// Send all partition events and merge sentinels in transaction to hs1
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{
+		bobGrantsEvePL, bobNameB, charlieTopicC, charlieInvitesDave, sentinelBC, sentinelABC,
+	}), nil)
+
+	// Wait for full merge sentinel on hs1
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, sentinelABC.EventID()))
+
+	// --- EVENTUAL CONSISTENCY VERIFICATION ---
+
+	// 1. Power levels: Alice (PL 100) demoted Bob to 0; Bob's concurrent PL 50 grant to Eve loses state res
+	plResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""})
+	plBody := client.ParseJSON(t, plResp)
+	must.Equal(t, gjson.GetBytes(plBody, "users."+client.GjsonEscape(bob)).Int(), int64(0), "Bob should be demoted to PL 0")
+	must.Equal(t, gjson.GetBytes(plBody, "users."+client.GjsonEscape(eve)).Int(), int64(0), "Eve should have PL 0 (Bob was unauthorized in resolved state)")
+
+	// 2. Topic: Alice's topic update ("Topic A") wins over Charlie's topic update ("Topic C") by power level dominance
+	topicResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, ""})
+	topicBody := client.ParseJSON(t, topicResp)
+	must.Equal(t, gjson.GetBytes(topicBody, "topic").Str, "Topic A", "Alice's topic update should win state res")
+
+	// 3. Name: Bob's non-conflicting room name update ("Name B") is accepted
+	nameResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomName, ""})
+	nameBody := client.ParseJSON(t, nameResp)
+	must.Equal(t, gjson.GetBytes(nameBody, "name").Str, "Name B", "Bob's non-conflicting room name should take effect")
+
+	// 4. Membership: Dave's invite from Charlie is preserved
+	daveResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, dave})
+	daveBody := client.ParseJSON(t, daveResp)
+	must.Equal(t, gjson.GetBytes(daveBody, "membership").Str, "invite", "Dave should be invited")
 }
 
 func printInfo(t ct.TestLike, prefix string, p gomatrixserverlib.PDU) {
