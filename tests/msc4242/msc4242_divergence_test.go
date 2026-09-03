@@ -2,10 +2,6 @@ package tests
 
 // DIVERGENCE: Tests for state DAG divergence and re-convergence limitations.
 //
-// These tests encode known behavioral deficiencies in the state DAG model:
-// partitions with buggy/incomplete peers can cause permanent divergence,
-// and differential rejections can prevent re-convergence.
-//
 // DIVERGENCE00 (STATE10): A partitioned server that receives an incomplete
 //   state DAG from a buggy peer ends up with a corrupted state view. The
 //   "detectable omission" claim depends on receiving a later event that
@@ -13,17 +9,19 @@ package tests
 //   never references the omitted events, the gap is invisible.
 //
 // DIVERGENCE01 (STATE11): Two servers that diverge during a partition and
-//   each build a locally-consistent but mutually-incompatible state DAG
-//   will reject each other's events upon reconnection, because each
-//   server's state DAG is internally valid but the other server's events
-//   reference state that doesn't exist in this server's DAG view.
+//   each build a locally-consistent but mutually-incompatible state DAG.
+//   Tests whether the divergent server can backfill the missing events
+//   from the correct server upon reconnection.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
@@ -218,35 +216,184 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 	must.Equal(t, joinRule, "public", "DEFICIENCY: expected Alice's join_rules to have regressed "+
 		"from 'invite' to 'public' after accepting a buggy/incomplete state DAG that omitted the "+
 		"invite change; if this now holds, the omission is detected and this test needs updating")
+
+	// Concrete consequence: because Alice's live join_rules are now "public"
+	// (not the "invite" she actually set), a stranger with no invite can join.
+	mallory2 := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	joinRes := mallory2.JoinRoom(t, roomID, nil)
+	must.Equal(t, joinRes.StatusCode, 200, "DEFICIENCY: expected a fresh, uninvited local user to be able to "+
+		"join under Alice's corrupted public join_rules; if this now fails (403), the corrupted state is no "+
+		"longer being enforced and this test needs updating")
+
+	// Self-healing check: send a follow-up event whose prev_state_events
+	// directly cites inviteJoinRulesID — the TRUE, correct state, which
+	// Alice already holds locally. Does receiving a correctly rooted
+	// continuation cause Alice's join_rules to reconverge to "invite", or
+	// does the corruption persist?
+	correction := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     bob,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "honest continuation citing the real lockdown"},
+			PrevEvents: []string{bobMsg.EventID()},
+		},
+		PrevStateEvents: []string{inviteJoinRulesID},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{correction}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, correction.EventID()))
+
+	jrResp2 := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomJoinRules, ""})
+	joinRuleAfterCorrection := gjson.GetBytes(client.ParseJSON(t, jrResp2), "join_rule").Str
+	must.Equal(t, joinRuleAfterCorrection, "public",
+		"DEFICIENCY: expected Alice's join_rules to remain stuck at 'public' even after an event citing the "+
+			"true invite state (already held locally, not even a fetch) arrived — i.e. no automatic self-healing; "+
+			"if this now reads 'invite', reconvergence is happening and this test needs updating to match")
 }
 
-// DIVERGENCE01 (STATE11): Differential rejection between servers with divergent state DAG views.
+// DIVERGENCE01 (STATE11): Differential handling between servers with divergent state DAG views.
 //
-// Documentary only — this test cannot assert the deficiency because complement's
-// mock federation server (srv/Bob) does not run real state-DAG-walking or auth
-// logic. A real bidirectional version requires two homeservers under test.
-//
-// Scenario:
-//  1. Alice (hs1) and Bob (srv) are in a room.
-//  2. Partition: Alice bans Bob on her branch. Bob sets room name on his branch.
-//  3. They merge: Bob sends his branch to Alice, including a sentinel that merges
-//     both branches. State resolution picks the ban (Alice wins). Alice is correct.
-//  4. Now consider Bob's perspective: he never received Alice's ban. His state DAG
-//     is internally consistent but doesn't contain the ban.
-//  5. If Alice later sends Bob events that reference state from her branch (which
-//     includes the ban), Bob can't validate them because his state DAG doesn't have
-//     the ban event.
-//  6. Bob needs to fetch the missing events from Alice via /get_missing_events.
-//     But Bob's state DAG is internally consistent — he doesn't know he's missing
-//     anything unless an incoming event's prev_state_events references something
-//     he doesn't have.
-//
-// The deficiency: Bob has no proactive mechanism to discover that his state DAG
-// is incomplete. He only discovers it reactively when an incoming event references
-// missing state. If Alice's events don't reference the ban's state (e.g., they're
-// messages citing older state), Bob never learns about the ban.
+// The Complement server is deliberately only the federation traffic controller
+// here. Both recipients are real homeservers: Alice has the ban branch, while
+// Bob has remained on the pre-ban branch. A probe event whose state DAG cites
+// the ban must therefore be accepted by Alice and make Bob perform state-DAG
+// recovery. The latter is made to fail by the controller, so the /send response
+// is Bob's real rejection rather than a decision made by Complement's mock.
 func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
-	t.Skip("documentary only: requires bidirectional real homeserver assertions; complement mock srv cannot run state DAG logic")
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie,
+		federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	bob.MustJoinRoom(t, roomID, []spec.ServerName{deployment.GetFullyQualifiedHomeserverName(t, "hs1")})
+
+	// Ensure the common pre-partition state is visible on Alice before isolating
+	// Bob. The two real homeservers now have an identical state DAG.
+	sinceAlice := alice.MustSyncUntil(t, client.SyncReq{},
+		client.SyncJoinedTo(bob.UserID, roomID),
+		client.SyncJoinedTo(charlie, roomID),
+	)
+
+	// hs2 cannot receive Alice's ban. Stop hs1 before bringing hs2 back so its
+	// queued transaction cannot heal the partition behind the test's back.
+	deployment.StopServer(t, "hs2")
+	alice.MustDo(t, "POST", []string{"_matrix", "client", "v3", "rooms", roomID, "ban"},
+		client.WithJSONBody(t, map[string]any{"user_id": bob.UserID}))
+	var banEventID string
+	sinceAlice = alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomMember && r.Get("state_key").Str == bob.UserID && r.Get("content.membership").Str == "ban" {
+			banEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	banAtController := room.WaiterForEvent(banEventID)
+	banAtController.Waitf(t, 10*time.Second, "controller did not receive Alice's ban")
+	deployment.StopServer(t, "hs1")
+
+	// Bob is still joined according to hs2's pre-ban state and can extend that
+	// branch. Its existence is important: Bob is not merely offline; it has a
+	// locally consistent, incompatible DAG view.
+	deployment.StartServer(t, "hs2")
+	bobNameID := bob.SendEventSynced(t, roomID, b.Event{
+		Type:     spec.MRoomName,
+		StateKey: &empty,
+		Content:  map[string]interface{}{"name": "Bob's partition branch"},
+	})
+	must.NotEqual(t, bobNameID, "", "Bob should be able to extend his pre-ban branch")
+	deployment.StopServer(t, "hs2")
+
+	// Alice has the ban, so this controller-authored event is valid for her.
+	// Its prev_state_events deliberately gives hs2 the one reference absent from
+	// Bob's otherwise internally consistent state DAG.
+	deployment.StartServer(t, "hs1")
+	probe := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.message",
+			Sender:     charlie,
+			Content:    map[string]interface{}{"msgtype": "m.text", "body": "state-DAG divergence probe"},
+			PrevEvents: []string{banEventID},
+		},
+		PrevStateEvents: []string{banEventID},
+	})
+	srv.MustSendTransaction(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), AsEventJSONs([]gomatrixserverlib.PDU{probe}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHasEventID(roomID, probe.EventID()))
+	deployment.StopServer(t, "hs1")
+
+	// A state-DAG recovery request is the observable proof that the real hs2
+	// noticed the missing ban. Deliberately fail recovery: this makes the /send
+	// result below an assertion of hs2's own rejection path.
+	missingStateDAG := helpers.NewWaiter()
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		body, err := extractGetMissingEventsRequest(roomID, req)
+		if err != nil {
+			ct.Errorf(t, "failed to read hs2 /get_missing_events request: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if body.StateDAG {
+			missingStateDAG.Finish()
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	})
+
+	deployment.StartServer(t, "hs2")
+	resp, err := srv.FederationClient(deployment).SendTransaction(context.Background(), gomatrixserverlib.Transaction{
+		TransactionID: "divergence01-probe",
+		Origin:        srv.ServerName(),
+		Destination:   deployment.GetFullyQualifiedHomeserverName(t, "hs2"),
+		PDUs:          AsEventJSONs([]gomatrixserverlib.PDU{probe}),
+	})
+	must.NotError(t, "send divergence probe to hs2", err)
+	missingStateDAG.Waitf(t, 10*time.Second, "hs2 did not request the missing state-DAG event")
+	must.NotEqual(t, resp.PDUs[probe.EventID()].Error, "", "hs2 should reject the probe when state-DAG recovery fails")
+}
+
+// documentaryMSC4242DIVERGENCE01DifferentialRejectionAfterPartition preserves
+// the original mock-Bob sketch as background. It is intentionally not registered:
+// the executable test above exercises the behavior with two real homeservers.
+func documentaryMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
+	//
+	// Documentary only — this test cannot assert the deficiency because complement's
+	// mock federation server (srv/Bob) does not run real state-DAG-walking or auth
+	// logic. A real bidirectional version requires two homeservers under test.
+	//
+	// Scenario:
+	//  1. Alice (hs1) and Bob (srv) are in a room.
+	//  2. Partition: Alice bans Bob on her branch. Bob sets room name on his branch.
+	//  3. They merge: Bob sends his branch to Alice, including a sentinel that merges
+	//     both branches. State resolution picks the ban (Alice wins). Alice is correct.
+	//  4. Now consider Bob's perspective: he never received Alice's ban. His state DAG
+	//     is internally consistent but doesn't contain the ban.
+	//  5. If Alice later sends Bob events that reference state from her branch (which
+	//     includes the ban), Bob can't validate them because his state DAG doesn't have
+	//     the ban event.
+	//  6. Bob needs to fetch the missing events from Alice via /get_missing_events.
+	//     But Bob's state DAG is internally consistent — he doesn't know he's missing
+	//     anything unless an incoming event's prev_state_events references something
+	//     he doesn't have.
+	//
+	// The deficiency: Bob has no proactive mechanism to discover that his state DAG
+	// is incomplete. He only discovers it reactively when an incoming event references
+	// missing state. If Alice's events don't reference the ban's state (e.g., they're
+	// messages citing older state), Bob never learns about the ban.
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
