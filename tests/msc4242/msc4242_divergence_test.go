@@ -293,7 +293,7 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 
 	// hs2 cannot receive Alice's ban. Stop hs1 before bringing hs2 back so its
 	// queued transaction cannot heal the partition behind the test's back.
-	deployment.StopServer(t, "hs2")
+	deployment.PauseServer(t, "hs2")
 	alice.MustDo(t, "POST", []string{"_matrix", "client", "v3", "rooms", roomID, "ban"},
 		client.WithJSONBody(t, map[string]any{"user_id": bob.UserID}))
 	var banEventID string
@@ -306,24 +306,24 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 	}))
 	banAtController := room.WaiterForEvent(banEventID)
 	banAtController.Waitf(t, 10*time.Second, "controller did not receive Alice's ban")
-	deployment.StopServer(t, "hs1")
+	deployment.PauseServer(t, "hs1")
 
 	// Bob is still joined according to hs2's pre-ban state and can extend that
 	// branch. Its existence is important: Bob is not merely offline; it has a
 	// locally consistent, incompatible DAG view.
-	deployment.StartServer(t, "hs2")
+	deployment.UnpauseServer(t, "hs2")
 	bobNameID := bob.SendEventSynced(t, roomID, b.Event{
 		Type:     spec.MRoomName,
 		StateKey: &empty,
 		Content:  map[string]interface{}{"name": "Bob's partition branch"},
 	})
 	must.NotEqual(t, bobNameID, "", "Bob should be able to extend his pre-ban branch")
-	deployment.StopServer(t, "hs2")
+	deployment.PauseServer(t, "hs2")
 
 	// Alice has the ban, so this controller-authored event is valid for her.
 	// Its prev_state_events deliberately gives hs2 the one reference absent from
 	// Bob's otherwise internally consistent state DAG.
-	deployment.StartServer(t, "hs1")
+	deployment.UnpauseServer(t, "hs1")
 	probe := mustCreateEvent(t, srv, room, MSC4242Event{
 		Event: federation.Event{
 			Type:       "m.room.message",
@@ -335,7 +335,7 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 	})
 	srv.MustSendTransaction(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), AsEventJSONs([]gomatrixserverlib.PDU{probe}), nil)
 	alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHasEventID(roomID, probe.EventID()))
-	deployment.StopServer(t, "hs1")
+	deployment.PauseServer(t, "hs1")
 
 	// A state-DAG recovery request is the observable proof that the real hs2
 	// noticed the missing ban. Deliberately fail recovery: this makes the /send
@@ -354,7 +354,7 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 		w.WriteHeader(http.StatusBadGateway)
 	})
 
-	deployment.StartServer(t, "hs2")
+	deployment.UnpauseServer(t, "hs2")
 	resp, err := srv.FederationClient(deployment).SendTransaction(context.Background(), gomatrixserverlib.Transaction{
 		TransactionID: "divergence01-probe",
 		Origin:        srv.ServerName(),
