@@ -49,4 +49,6 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("STATE07: Phantom join rules lockdown", testMSC4242STATE07PhantomJoinRulesLockdown)
 	t.Run("STATE08: Redaction of state event", testMSC4242STATE08RedactionOfStateEvent)
 	t.Run("STATE09: Asymmetric 3-way partition eventual consistency and rolling heal", testMSC4242STATE09AsymmetricPartitionEventualConsistency)
+	t.Run("DIVERGENCE00: Partitioned server accepts incomplete state DAG from buggy peer", testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG)
+	t.Run("DIVERGENCE01: Differential rejection after partition with divergent state DAGs", testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition)
 }
