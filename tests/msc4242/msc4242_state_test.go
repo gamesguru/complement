@@ -789,8 +789,7 @@ func testMSC4242STATE04MismatchedPrevStateEventsVsPrevEvents(t *testing.T) {
 
 // STATE03: receiving a state event via /send which does NOT alter the current state
 // (e.g., a concurrent room name or topic change that loses state resolution against a concurrent ban).
-// Asserts that the ban takes precedence, the concurrent state change does not become current state,
-// and /sync reflects the resolved state.
+// Asserts that the ban takes precedence and the concurrent state change does not become current state.
 func testMSC4242STATE03ConcurrentLosingStateEvent(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

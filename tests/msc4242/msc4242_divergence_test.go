@@ -37,6 +37,11 @@ import (
 
 // DIVERGENCE00 (STATE10): Partitioned server accepts incomplete state DAG from buggy peer.
 //
+// TRIPWIRE: This test asserts a known deficiency. If the implementation is
+// fixed so that Alice detects the omission and refuses to regress, this test
+// will fail — that is intentional. Update the assertion to match the new
+// correct behavior, do not silently loosen it.
+//
 // Scenario:
 //  1. Alice (hs1) and Bob (srv) are in a room. Alice changes join_rules to "invite".
 //  2. Alice goes offline (partition).
@@ -49,6 +54,11 @@ import (
 //  6. Alice accepts the events (the path checks out locally against what she has).
 //  7. Alice's current state has regressed: her join_rules reverted from "invite"
 //     to the initial "public" because the buggy state DAG omitted the change.
+//  8. Concrete consequence: a fresh uninvited local user can join under the
+//     corrupted "public" join_rules.
+//  9. Self-healing check: an event citing the TRUE invite state (which Alice
+//     already holds locally) arrives. Does Alice's join_rules reconverge to
+//     "invite", or does the corruption persist?
 //
 // This demonstrates that "detectable omission" requires a reference to the missing
 // event. If the buggy peer's branch never references the omitted event, the gap
@@ -212,6 +222,10 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 
 // DIVERGENCE01 (STATE11): Differential rejection between servers with divergent state DAG views.
 //
+// Documentary only — this test cannot assert the deficiency because complement's
+// mock federation server (srv/Bob) does not run real state-DAG-walking or auth
+// logic. A real bidirectional version requires two homeservers under test.
+//
 // Scenario:
 //  1. Alice (hs1) and Bob (srv) are in a room.
 //  2. Partition: Alice bans Bob on her branch. Bob sets room name on his branch.
@@ -232,6 +246,7 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 // missing state. If Alice's events don't reference the ban's state (e.g., they're
 // messages citing older state), Bob never learns about the ban.
 func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
+	t.Skip("documentary only: requires bidirectional real homeserver assertions; complement mock srv cannot run state DAG logic")
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
