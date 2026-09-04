@@ -654,6 +654,31 @@ func testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecess
 
 	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID))
 
+	// Grant Bob PL 50 so his concurrent m.room.name event is authorized
+	// (state_default is 50 in public_chat preset; at PL 0 Bob can't send
+	// state events, making the test pass vacuously through authorization
+	// rejection rather than state resolution).
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var basePLID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			basePLID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	// Wait for the mock federation server to process the PL grant before
+	// constructing events rooted in it.
+	plGrantAtController := room.WaiterForEvent(basePLID)
+	plGrantAtController.Waitf(t, 10*time.Second, "controller did not receive PL grant for Bob")
+
 	// Alice sets the room name.
 	alice.MustDo(t, "PUT", []string{
 		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomName, "",

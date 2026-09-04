@@ -28,10 +28,10 @@ const faultyStateEventType = "faulty.state.event"
 func generateRedactedStateRef(t ct.TestLike, srv *federation.Server, room *federation.ServerRoom, sender string, redactedType string, redactedContent map[string]interface{}) []gomatrixserverlib.PDU {
 	stateToRedact := mustCreateEvent(t, srv, room, MSC4242Event{
 		Event: federation.Event{
-			Type:     redactedType,
-			Sender:   sender,
-			StateKey: &empty,
-			Content:  redactedContent,
+			Type:       redactedType,
+			Sender:     sender,
+			StateKey:   &empty,
+			Content:    redactedContent,
 			PrevEvents: []string{room.CurrentState(spec.MRoomMember, sender).EventID()},
 		},
 		PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
