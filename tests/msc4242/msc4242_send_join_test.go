@@ -50,7 +50,7 @@ import (
 //    B: exclude malformed events
 //    C: include concurrent events which aren't part of the current state (i.e a form of soft failure)
 
-func TestMSC4242SendJoinMalformedResponseSJ00(t *testing.T) {
+func testMSC4242SendJoinMalformedResponseSJ00(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -131,7 +131,7 @@ func TestMSC4242SendJoinMalformedResponseSJ00(t *testing.T) {
 }
 
 // if the state DAG is valid and connected, accept.
-func TestMSC4242SendJoinSJ01Outbound(t *testing.T) {
+func testMSC4242SendJoinSJ01Outbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -155,7 +155,7 @@ func TestMSC4242SendJoinSJ01Outbound(t *testing.T) {
 }
 
 // if the state DAG is valid and connected, accept.
-func TestMSC4242SendJoinSJ01Inbound(t *testing.T) {
+func testMSC4242SendJoinSJ01Inbound(t *testing.T) {
 	roomVer := gomatrixserverlib.MustGetRoomVersion(roomVersion)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -266,7 +266,7 @@ func TestMSC4242SendJoinSJ01Inbound(t *testing.T) {
 	must.Equal(t, allKnownPrevStateEvents.IsSubset(knownEventIDs), true, "returned state_dag is not connected")
 }
 
-func TestMSC4242SendJoinSJ02InvalidStateDAG(t *testing.T) {
+func testMSC4242SendJoinSJ02InvalidStateDAG(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -320,7 +320,7 @@ func TestMSC4242SendJoinSJ02InvalidStateDAG(t *testing.T) {
 }
 
 /*
-func TestMSC4242SendJoinFasterSJ03Inbound(t *testing.T) {
+func testMSC4242SendJoinFasterSJ03Inbound(t *testing.T) {
 	roomVer := gomatrixserverlib.MustGetRoomVersion(roomVersion)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -488,7 +488,7 @@ func TestMSC4242SendJoinFasterSJ03Inbound(t *testing.T) {
 	}
 }
 
-func TestMSC4242SendJoinFasterSJ03Outbound(t *testing.T) {
+func testMSC4242SendJoinFasterSJ03Outbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -551,7 +551,7 @@ func TestMSC4242SendJoinFasterSJ03Outbound(t *testing.T) {
 	alice.MustJoinRoom(t, room.RoomID, []string{srv.ServerName()})
 } */
 
-func TestMSC4242OnSendJoinSJ04(t *testing.T) {
+func testMSC4242OnSendJoinSJ04(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

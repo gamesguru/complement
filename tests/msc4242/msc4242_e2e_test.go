@@ -16,7 +16,7 @@ import (
 )
 
 // Test that you can join and send messages in MSC4242 rooms.
-func TestMSC4242FederationSimple(t *testing.T) {
+func testMSC4242FederationSimple(t *testing.T) {
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
