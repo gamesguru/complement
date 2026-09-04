@@ -1287,7 +1287,11 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			"body":    "finished",
 		},
 		PrevEvents: []string{sendTxnEvent.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
+		// m.room.message events don't require m.room.join_rules in their
+		// auth_events (only create, power_levels, and the sender's
+		// membership are needed); including it makes Synapse 403 the event
+		// ("unexpected auth_event for ('m.room.join_rules', '')").
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), eventE.EventID()},
 	})
 	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
@@ -1453,6 +1457,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	gmeRetryWaiter := helpers.NewWaiter()
 	var gmeRequested atomic.Bool
 	var gmeCallCount atomic.Int32
+	// The event ID of the sentinel event sent at the end of this test, once
+	// known (it's created after this handler is registered). Requests whose
+	// latest_events name it get answered with eventE below, since that's its
+	// real (and only) prev_event -- see the comment on that branch.
+	var sentinelEventID atomic.Value // string
 	// Serve a valid fallback response. Used both for unrelated /get_missing_events
 	// traffic (the padded room generates backfill we don't care about) and for the
 	// successful retry after the malformed first response.
@@ -1483,6 +1492,38 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			}
 		}
 		if !matched {
+			// The sentinel event sent at the end of this test declares
+			// eventE as its sole prev_event. Synapse still walks the
+			// /get_missing_events ladder to double check for a gap before
+			// trusting it (even though eventE was already pulled in as an
+			// outlier by the retry-recovery ladder above), and expects a
+			// response that actually resolves that gap -- i.e. eventE, not
+			// the generic gmeEvent fallback below. Falling through to that
+			// fallback here (as this branch used to do unconditionally)
+			// fed Synapse an event it already had, so it never received
+			// eventE and 403-rejected the sentinel as still missing a
+			// prev_event, which was the true cause of this test's failure
+			// -- not a Synapse retry gap.
+			if id, ok := sentinelEventID.Load().(string); ok {
+				for _, ev := range latestEvents {
+					if ev.String() == id {
+						res := struct {
+							Events []gomatrixserverlib.PDU `json:"events"`
+						}{
+							Events: []gomatrixserverlib.PDU{eventE},
+						}
+						responseBytes, err := json.Marshal(&res)
+						if err != nil {
+							w.WriteHeader(http.StatusInternalServerError)
+							w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+							return
+						}
+						w.WriteHeader(http.StatusOK)
+						w.Write(responseBytes)
+						return
+					}
+				}
+			}
 			// The dense padded room can generate /get_missing_events traffic
 			// unrelated to the sendTxnEvent chain under test (e.g. Synapse's
 			// own backfill/catch-up for the leave/join padding). Don't let it
@@ -1625,8 +1666,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			"body":    "finished",
 		},
 		PrevEvents: []string{eventE.EventID()},
-		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
+		// See the matching comment in TestStateIdsFallbackFetchesFullAuthChain:
+		// m.room.message events don't take m.room.join_rules as an auth event.
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), eventE.EventID()},
 	})
+	sentinelEventID.Store(sentinelEvent.EventID())
 	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
 	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
 
