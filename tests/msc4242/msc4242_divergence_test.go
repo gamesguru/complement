@@ -651,8 +651,6 @@ func testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecess
 		"preset":       "public_chat",
 	})
 	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob)
-	// Use default impl — no prev_state_events, just prev_events.
-	_ = room
 
 	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID))
 
@@ -686,19 +684,14 @@ func testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecess
 	// Query Alice's resolved room name. State resolution should have run
 	// using prev_events as the state-predecessor relation (not
 	// prev_state_events, which doesn't exist in room version "10").
+	// In room version 10, state resolution picks by sender PL ordering:
+	// Alice (PL 100) > Bob (PL 50), so Alice's name wins.
 	nameResp := alice.MustDo(t, "GET", []string{
 		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomName, "",
 	})
 	resolvedName := gjson.GetBytes(client.ParseJSON(t, nameResp), "name").Str
-	must.NotEqual(t, resolvedName, "",
-		"room name should be resolved after fork merge in pre-MSC4242 room")
-
-	// The resolved name must be one of the two concurrent names — state
-	// resolution picked a winner. This proves prev_events-based state
-	// resolution worked (the state-predecessor fallback).
-	if resolvedName != "Alice's Name" && resolvedName != "Bob's Name" {
-		t.Errorf("resolved room name %q is neither concurrent value 'Alice's Name' nor 'Bob's Name'", resolvedName)
-	}
+	must.Equal(t, resolvedName, "Alice's Name",
+		"room name should resolve to Alice's name after fork merge: Alice PL 100 > Bob PL 50 in room version 10 state resolution")
 
 	t.Logf("Pre-MSC4242 state predecessors test passed: resolved name = %q after fork merge via prev_events", resolvedName)
 }

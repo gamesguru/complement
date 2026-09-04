@@ -19,6 +19,49 @@ const faultyStateEventType = "faulty.state.event"
 // faultyEventTestCases are all the ways you can create faulty events.
 // When GenerateEvents is called, the room must be a normal room with the initial creation events only,
 // as the generator makes various assumptions e.g that the sender is joined, that there are join rules, etc.
+
+// generateRedactedStateRef generates three events for cases I and J: a state
+// event to redact, its redaction, and a subsequent state event whose
+// prev_state_events references the redacted event. The redacted event type
+// varies (m.room.name for I, m.room.power_levels for J) to exercise different
+// redaction rules.
+func generateRedactedStateRef(t ct.TestLike, srv *federation.Server, room *federation.ServerRoom, sender string, redactedType string, redactedContent map[string]interface{}) []gomatrixserverlib.PDU {
+	stateToRedact := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:     redactedType,
+			Sender:   sender,
+			StateKey: &empty,
+			Content:  redactedContent,
+			PrevEvents: []string{room.CurrentState(spec.MRoomMember, sender).EventID()},
+		},
+		PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
+	})
+	redactionEvent := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       "m.room.redaction",
+			Sender:     sender,
+			PrevEvents: []string{stateToRedact.EventID()},
+			Redacts:    stateToRedact.EventID(),
+		},
+		PrevStateEvents: []string{stateToRedact.EventID()},
+	})
+	nextState := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:     faultyStateEventType,
+			Sender:   sender,
+			StateKey: &empty,
+			Content: map[string]interface{}{
+				"info": "Valid state referencing redacted state event in prev_state_events",
+			},
+			PrevEvents: []string{redactionEvent.EventID()},
+		},
+		PrevStateEvents: []string{stateToRedact.EventID()},
+	})
+	return []gomatrixserverlib.PDU{
+		stateToRedact, redactionEvent, nextState,
+	}
+}
+
 var faultyEventTestCases = []FaultyEventTestCase{
 	{
 		Name:       "Missing all prev_state_events on an event",
@@ -227,89 +270,16 @@ var faultyEventTestCases = []FaultyEventTestCase{
 		Name:       "Referencing redacted state event in prev_state_events",
 		CodeSuffix: "I",
 		GenerateEvents: func(t ct.TestLike, srv *federation.Server, room *federation.ServerRoom, sender string) []gomatrixserverlib.PDU {
-			// A state event is redacted, then a new valid state event references the redacted state event.
-			// The state DAG must preserve connectivity through redacted state nodes.
-			stateToRedact := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:     spec.MRoomName,
-					Sender:   sender,
-					StateKey: &empty,
-					Content: map[string]interface{}{
-						"name": "State to be redacted",
-					},
-					PrevEvents: []string{room.CurrentState(spec.MRoomMember, sender).EventID()},
-				},
-				PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
-			})
-			redactionEvent := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:       "m.room.redaction",
-					Sender:     sender,
-					PrevEvents: []string{stateToRedact.EventID()},
-					Redacts:    stateToRedact.EventID(),
-				},
-				PrevStateEvents: []string{stateToRedact.EventID()},
-			})
-			nextState := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:     faultyStateEventType,
-					Sender:   sender,
-					StateKey: &empty,
-					Content: map[string]interface{}{
-						"info": "Valid state referencing redacted state event in prev_state_events",
-					},
-					PrevEvents: []string{redactionEvent.EventID()},
-				},
-				PrevStateEvents: []string{stateToRedact.EventID()},
-			})
-			return []gomatrixserverlib.PDU{
-				stateToRedact, redactionEvent, nextState,
-			}
+			return generateRedactedStateRef(t, srv, room, sender, spec.MRoomName,
+				map[string]interface{}{"name": "State to be redacted"})
 		},
 	},
 	{
 		Name:       "Redacted auth event in DAG does not break state DAG traversal",
 		CodeSuffix: "J",
 		GenerateEvents: func(t ct.TestLike, srv *federation.Server, room *federation.ServerRoom, sender string) []gomatrixserverlib.PDU {
-			// Create a power levels update, redact it, then issue a subsequent state event.
-			plEvent := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:     spec.MRoomPowerLevels,
-					Sender:   sender,
-					StateKey: &empty,
-					Content: map[string]interface{}{
-						"users": map[string]int{
-							sender: 100,
-						},
-					},
-					PrevEvents: []string{room.CurrentState(spec.MRoomMember, sender).EventID()},
-				},
-				PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
-			})
-			redactPL := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:       "m.room.redaction",
-					Sender:     sender,
-					PrevEvents: []string{plEvent.EventID()},
-					Redacts:    plEvent.EventID(),
-				},
-				PrevStateEvents: []string{plEvent.EventID()},
-			})
-			subsequentState := mustCreateEvent(t, srv, room, MSC4242Event{
-				Event: federation.Event{
-					Type:     faultyStateEventType,
-					Sender:   sender,
-					StateKey: &empty,
-					Content: map[string]interface{}{
-						"info": "State after redacted power levels",
-					},
-					PrevEvents: []string{redactPL.EventID()},
-				},
-				PrevStateEvents: []string{plEvent.EventID()},
-			})
-			return []gomatrixserverlib.PDU{
-				plEvent, redactPL, subsequentState,
-			}
+			return generateRedactedStateRef(t, srv, room, sender, spec.MRoomPowerLevels,
+				map[string]interface{}{"users": map[string]int{sender: 100}})
 		},
 	},
 }
