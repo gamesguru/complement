@@ -80,6 +80,7 @@ func (d *Builder) removeNetworks() error {
 		Filters: label(
 			complementLabel,
 			"complement_pkg="+d.Config.PackageNamespace,
+			"complement_run="+d.Config.RunID,
 		),
 	})
 	if err != nil {
@@ -236,7 +237,7 @@ func (d *Builder) ConstructBlueprint(bprint b.Blueprint) error {
 func (d *Builder) construct(bprint b.Blueprint) (errs []error) {
 	d.log("Constructing blueprint '%s'", bprint.Name)
 
-	networkName, err := createNetworkIfNotExists(d.Docker, d.Config.PackageNamespace, bprint.Name)
+	networkName, err := createNetworkIfNotExists(d.Docker, d.Config.PackageNamespace, d.Config.RunID, bprint.Name)
 	if err != nil {
 		return []error{err}
 	}
@@ -252,7 +253,8 @@ func (d *Builder) construct(bprint b.Blueprint) (errs []error) {
 				printLogs(d.Docker, res.containerID, res.contextStr)
 			}
 			if _, delErr := d.Docker.ContainerRemove(context.Background(), res.containerID, client.ContainerRemoveOptions{
-				Force: true,
+				Force:         true,
+				RemoveVolumes: true,
 			}); delErr != nil {
 				d.log("%s: failed to remove container which failed to deploy: %s", res.contextStr, delErr)
 			}
@@ -437,11 +439,18 @@ func generateASRegistrationYaml(as b.ApplicationService) string {
 
 // createNetworkIfNotExists creates a docker network and returns its name.
 // Name is guaranteed not to be empty when err == nil
-func createNetworkIfNotExists(docker *client.Client, pkgNamespace, blueprintName string) (networkName string, err error) {
-	// check if a network already exists for this blueprint
+//
+// The network is scoped by runID as well as pkgNamespace/blueprintName: two
+// concurrent Complement runs sharing the same package namespace and
+// blueprint (e.g. two CI jobs running the same test package in parallel)
+// must not resolve to the same docker network, or their containers become
+// mutually DNS-reachable and can cross-talk.
+func createNetworkIfNotExists(docker *client.Client, pkgNamespace, runID, blueprintName string) (networkName string, err error) {
+	// check if a network already exists for this run's blueprint
 	nws, err := docker.NetworkList(context.Background(), client.NetworkListOptions{
 		Filters: label(
 			"complement_pkg="+pkgNamespace,
+			"complement_run="+runID,
 			"complement_blueprint="+blueprintName,
 		),
 	})
@@ -451,17 +460,18 @@ func createNetworkIfNotExists(docker *client.Client, pkgNamespace, blueprintName
 	// return the existing network
 	if len(nws.Items) > 0 {
 		if len(nws.Items) > 1 {
-			log.Printf("WARNING: createNetworkIfNotExists got %d networks for pkg=%s blueprint=%s", len(nws.Items), pkgNamespace, blueprintName)
+			log.Printf("WARNING: createNetworkIfNotExists got %d networks for pkg=%s run=%s blueprint=%s", len(nws.Items), pkgNamespace, runID, blueprintName)
 		}
 		return nws.Items[0].Name, nil
 	}
-	networkName = "complement_" + pkgNamespace + "_" + blueprintName
+	networkName = "complement_" + pkgNamespace + "_" + runID + "_" + blueprintName
 	// make a user-defined network so we get DNS based on the container name
 	nw, err := docker.NetworkCreate(context.Background(), networkName, client.NetworkCreateOptions{
 		Labels: map[string]string{
 			complementLabel:        blueprintName,
 			"complement_blueprint": blueprintName,
 			"complement_pkg":       pkgNamespace,
+			"complement_run":       runID,
 		},
 	})
 	if err != nil {

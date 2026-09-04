@@ -28,8 +28,6 @@ import (
 )
 
 func TestJumpToDateEndpoint(t *testing.T) {
-	// Venator: does not yet implement federation
-	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.OldDeploy(t, b.BlueprintHSWithApplicationService)
 	defer deployment.Destroy(t)
 
@@ -180,6 +178,8 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		})
 
 		t.Run("federation", func(t *testing.T) {
+			// Venator: does not yet implement federation
+			runtime.SkipIf(t, runtime.Venator)
 			t.Run("looking forwards, should be able to find event that was sent before we joined", func(t *testing.T) {
 				t.Parallel()
 				roomID, eventA, _ := createTestRoom(t, alice)
@@ -326,7 +326,6 @@ func TestJumpToDateEndpoint(t *testing.T) {
 						"from":  []string{paginationToken},
 					}),
 				)
-
 				// Make sure both messages are visible
 				must.MatchResponse(t, messagesRes, match.HTTPResponse{
 					JSON: []match.JSON{
@@ -427,6 +426,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 
 	givenTimestamp := makeTimestampFromTime(givenTime)
 	timestampString := strconv.FormatInt(givenTimestamp, 10)
+	t.Logf("timestamp_to_event request room=%s ts=%s dir=%s expected=%s", roomID, timestampString, direction, expectedEventId)
 	timestampToEventRes := c.Do(t, "GET", []string{"_matrix", "client", "v1", "rooms", roomID, "timestamp_to_event"}, client.WithContentType("application/json"), client.WithQueries(url.Values{
 		"ts":  []string{timestampString},
 		"dir": []string{direction},
@@ -442,6 +442,7 @@ func mustCheckEventisReturnedForTime(t *testing.T, c *client.CSAPI, roomID strin
 	} else if timestampToEventRes.StatusCode != 404 || (timestampToEventRes.StatusCode == 404 && expectedEventId != "") {
 		t.Fatalf("mustCheckEventisReturnedForTime: /timestamp_to_event request failed with status=%d body=%s", timestampToEventRes.StatusCode, string(timestampToEventResBody))
 	}
+	t.Logf("timestamp_to_event response room=%s ts=%s dir=%s status=%d actual=%s", roomID, timestampString, direction, timestampToEventRes.StatusCode, actualEventId)
 
 	if actualEventId != expectedEventId {
 		debugMessageList := getDebugMessageListFromMessagesResponse(t, c, roomID, expectedEventId, actualEventId, givenTimestamp)
@@ -473,9 +474,15 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 	if !keyRes.IsArray() {
 		t.Fatalf("key '%s' is not an array (was %s)", wantKey, keyRes.Type)
 	}
+	chunk := keyRes.Array()
+	chunkIDs := make([]string, 0, len(chunk))
+	for _, ev := range chunk {
+		chunkIDs = append(chunkIDs, ev.Get("event_id").String())
+	}
+	t.Logf("debug /messages room=%s status=%d chunk_len=%d event_ids=%v expected=%s actual=%s ts=%d", roomID, messagesRes.StatusCode, len(chunkIDs), chunkIDs, expectedEventId, actualEventId, givenTimestamp)
 
 	// Make the events go from oldest-in-time -> newest-in-time
-	events := keyRes.Array()
+	events := chunk
 	slices.Reverse(events)
 	if len(events) == 0 {
 		t.Fatalf(

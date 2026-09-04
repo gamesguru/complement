@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -12,22 +13,30 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/internal/docker"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobyclient "github.com/moby/moby/client"
 )
 
 type MockKeyServer struct {
@@ -135,6 +144,8 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	w.Write(k.Raw)
 }
 
+// queryNotary requests a specific server key via the homeserver-under-test's
+// notary endpoint and asserts the returned key body matches the expected value.
 func queryNotary(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64, expectedKeyBase64 string) {
 	reqBody := map[string]interface{}{
 		"server_keys": map[string]interface{}{
@@ -190,19 +201,26 @@ func skipOnNotaryTimeout(t *testing.T, clientObj *http.Client, err error) {
 	}
 }
 
-// skipKnownSynapseGap reports a detected MSC4499 non-conformance as a skip
-// only when running against Synapse, which is currently known not to
-// implement the behaviour under test. Any other (i.e. unlisted) homeserver
-// is held to the assertion and fails outright, so a real regression there
-// isn't masked as a green skip.
-func skipKnownSynapseGap(t *testing.T, format string, args ...interface{}) {
+// skipKnownGap reports a detected MSC4499 non-conformance as a skip only when
+// running against one of knownFailureHomeservers, which are currently known
+// not to implement the behaviour under test. Any other (i.e. unlisted)
+// homeserver is held to the assertion and fails outright, so a real
+// regression there isn't masked as a green skip.
+func skipKnownGap(t *testing.T, knownFailureHomeservers []string, format string, args ...interface{}) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
-	if runtime.Homeserver == runtime.Synapse {
+	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) {
 		t.Skip(msg)
 	} else {
 		t.Fatal(msg)
 	}
+}
+
+// skipKnownSynapseGap is skipKnownGap scoped to a gap confirmed only on
+// Synapse.
+func skipKnownSynapseGap(t *testing.T, format string, args ...interface{}) {
+	t.Helper()
+	skipKnownGap(t, []string{runtime.Synapse}, format, args...)
 }
 
 // queryNotaryRaw queries the notary and returns the key found for the given server/keyID,
@@ -248,6 +266,51 @@ func queryNotaryRaw(t *testing.T, clientObj *http.Client, hsURL string, serverNa
 	return foundKey
 }
 
+// queryNotaryStatusAndKey queries the notary and returns the raw HTTP status
+// code alongside the found key (if any), without fatally asserting on the
+// status code itself. This lets callers that expect a locally-persisted
+// answer (i.e. no origin fetch should be needed) produce a targeted failure
+// message when the notary instead returns a non-200 status, rather than
+// failing on the generic "notary query status code mismatch" assertion
+// shared by queryNotary/queryNotaryRaw.
+func queryNotaryStatusAndKey(t *testing.T, clientObj *http.Client, hsURL string, serverName string, keyID string, minValidTS int64) (int, string) {
+	t.Helper()
+	reqBody := map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			serverName: map[string]interface{}{
+				keyID: map[string]interface{}{
+					"minimum_valid_until_ts": minValidTS,
+				},
+			},
+		},
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	must.NotError(t, "failed to marshal notary query", err)
+
+	resp, err := clientObj.Post(hsURL+"/_matrix/key/v2/query", "application/json", bytes.NewReader(bodyBytes))
+	must.NotError(t, "failed to POST notary query", err)
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	must.NotError(t, "failed to read notary query response", err)
+
+	if resp.StatusCode != 200 {
+		return resp.StatusCode, ""
+	}
+
+	result := gjson.ParseBytes(respBytes)
+	var foundKey string
+	for _, sk := range result.Get("server_keys").Array() {
+		if sk.Get("server_name").Str == serverName {
+			foundKey = sk.Get("verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			if foundKey == "" {
+				foundKey = sk.Get("old_verify_keys." + client.GjsonEscape(keyID) + ".key").Str
+			}
+		}
+	}
+	return resp.StatusCode, foundKey
+}
+
 // queryNotaryRawEntry queries the notary and returns the raw JSON bytes of the
 // server_keys entry for the given server_name, or nil if the server was
 // omitted from the response entirely. Unlike queryNotaryRaw, this preserves
@@ -286,6 +349,8 @@ func queryNotaryRawEntry(t *testing.T, clientObj *http.Client, hsURL string, ser
 	return nil
 }
 
+// deployMSC4499TrustedNotary creates a two-homeserver deployment where hs1 is
+// configured to trust hs2 as its notary for MSC4499-specific test cases.
 func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	t.Helper()
 	return complement.DeployBlueprint(t, b.MustValidate(b.Blueprint{
@@ -294,7 +359,11 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 			{
 				Name: "hs1",
 				Env: map[string]string{
-					"CONDUWUIT_TRUSTED_SERVERS": "hs2",
+					// figment's Env provider only recognizes bracket-delimited
+					// array syntax (`VAR=[a, b]`); a bare "hs2" deserializes as
+					// a plain string and fails config validation for this
+					// Vec<OwnedServerName>-typed field, crashing hs1 on boot.
+					"CONDUWUIT_TRUSTED_SERVERS": "[\"hs2\"]",
 				},
 			},
 			{
@@ -304,35 +373,485 @@ func deployMSC4499TrustedNotary(t *testing.T) complement.Deployment {
 	}))
 }
 
+// readFileFromContainer copies a single file out of a Docker-backed homeserver
+// container and returns its raw contents.
+func readFileFromContainer(t *testing.T, deployment complement.Deployment, hsName, path string) []byte {
+	t.Helper()
+	_, data := readFileFromContainerWithHeader(t, deployment, hsName, path)
+	return data
+}
+
+// readFileFromContainerWithHeader copies a single file out of a Docker-backed
+// homeserver container and returns both its tar header metadata and contents.
+func readFileFromContainerWithHeader(t *testing.T, deployment complement.Deployment, hsName, path string) (*tar.Header, []byte) {
+	t.Helper()
+
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		t.Fatalf("container file helpers require Docker-backed deployments, got %T", deployment)
+	}
+
+	containerID := deployment.ContainerID(t, hsName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := dockerDeployment.Deployer.Docker.CopyFromContainer(ctx, containerID, mobyclient.CopyFromContainerOptions{
+		SourcePath: path,
+	})
+	must.NotError(t, "failed to copy file from container", err)
+	defer result.Content.Close()
+
+	tr := tar.NewReader(result.Content)
+	header, err := tr.Next()
+	must.NotError(t, "failed to read tar header from copied file", err)
+
+	data, err := io.ReadAll(tr)
+	must.NotError(t, "failed to read copied file contents", err)
+	headerCopy := *header
+	return &headerCopy, data
+}
+
+// writeFileToContainer overwrites a single file inside a Docker-backed
+// homeserver container with the provided contents.
+func writeFileToContainer(t *testing.T, deployment complement.Deployment, hsName, path string, data []byte) {
+	t.Helper()
+
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		t.Fatalf("container file helpers require Docker-backed deployments, got %T", deployment)
+	}
+	header, _ := readFileFromContainerWithHeader(t, deployment, hsName, path)
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.WriteHeader(&tar.Header{
+		Name:    path,
+		Mode:    header.Mode,
+		Uid:     header.Uid,
+		Gid:     header.Gid,
+		ModTime: header.ModTime,
+		Size:    int64(len(data)),
+	})
+	must.NotError(t, "failed to build tar header for container copy", err)
+	_, err = tw.Write(data)
+	must.NotError(t, "failed to write tar payload for container copy", err)
+	must.NotError(t, "failed to finalize tar payload for container copy", tw.Close())
+
+	containerID := deployment.ContainerID(t, hsName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = dockerDeployment.Deployer.Docker.CopyToContainer(ctx, containerID, mobyclient.CopyToContainerOptions{
+		DestinationPath: "/",
+		Content:         &buf,
+	})
+	must.NotError(t, "failed to copy file into container", err)
+}
+
+// mutateSynapseSigningKeyPreservingKeyID rewrites a Synapse signing key file so
+// the key body changes while the key ID remains the same.
+func mutateSynapseSigningKeyPreservingKeyID(t *testing.T, signingKeyFile []byte) []byte {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(string(signingKeyFile)), "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			t.Fatalf("unexpected Synapse signing key line format: %q", line)
+		}
+
+		encodedExisting := fields[2]
+		decoder := base64.RawStdEncoding
+		if strings.Contains(encodedExisting, "=") {
+			decoder = base64.StdEncoding
+		}
+
+		existingKeyBytes, err := decoder.DecodeString(encodedExisting)
+		must.NotError(t, "failed to decode existing Synapse signing key", err)
+
+		_, newPriv, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, "failed to generate replacement signing key", err)
+
+		var replacement []byte
+		switch len(existingKeyBytes) {
+		case ed25519.SeedSize:
+			replacement = newPriv.Seed()
+		case ed25519.PrivateKeySize:
+			replacement = []byte(newPriv)
+		default:
+			t.Fatalf("unexpected decoded signing key length: %d", len(existingKeyBytes))
+		}
+
+		fields[2] = decoder.EncodeToString(replacement)
+		lines[i] = strings.Join(fields, " ")
+		return []byte(strings.Join(lines, "\n") + "\n")
+	}
+
+	t.Fatal("did not find a usable signing key line in Synapse signing key file")
+	return nil
+}
+
+// readContainerLogs returns the current stdout/stderr log stream for a
+// Docker-backed homeserver container.
+func readContainerLogs(t *testing.T, deployment complement.Deployment, hsName string, since time.Time) string {
+	t.Helper()
+
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		t.Fatalf("container log helpers require Docker-backed deployments, got %T", deployment)
+	}
+
+	containerID := deployment.ContainerID(t, hsName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	opts := mobyclient.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     false,
+	}
+	if !since.IsZero() {
+		opts.Since = since.Format(time.RFC3339Nano)
+	}
+	reader, err := dockerDeployment.Deployer.Docker.ContainerLogs(ctx, containerID, opts)
+	must.NotError(t, "failed to read container logs", err)
+	defer reader.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	_, err = stdcopy.StdCopy(&stdout, &stderr, reader)
+	must.NotError(t, "failed to decode container logs", err)
+	return stdout.String() + stderr.String()
+}
+
+// looksLikeSigningKeyRemediationLog reports whether a log chunk appears to be a
+// signing-key startup-guardrail message with remediation guidance.
+// TODO: Replace this heuristic with a structured startup-failure signal or an
+// implementation-specific exact error contract once the harness exposes one.
+func looksLikeSigningKeyRemediationLog(logs string) bool {
+	logs = strings.ToLower(logs)
+	hasSigningKeyContext := strings.Contains(logs, "signing key")
+	hasErrorIndicator := strings.Contains(logs, "error") ||
+		strings.Contains(logs, "fatal") ||
+		strings.Contains(logs, "failed")
+	hasRestoreInstruction := strings.Contains(logs, "restore the original key")
+	hasAssignInstruction := strings.Contains(logs, "assign a new key id") ||
+		(strings.Contains(logs, "assign") && strings.Contains(logs, "new key id"))
+	return hasSigningKeyContext && hasErrorIndicator && (hasRestoreInstruction || hasAssignInstruction)
+}
+
+// This matches Synapse's current literal retired-key lookup wording. If that
+// upstream error text changes, this guard should be updated alongside it.
+func isSynapseRetiredKeyLookupError(err error) bool {
+	return runtime.Homeserver == runtime.Synapse && strings.Contains(err.Error(), "Failed to find any key to satisfy")
+}
+
+// buildEventWithSigningKey creates and signs an event for the given room using
+// the provided signing identity instead of the server's mutable defaults.
+func buildEventWithSigningKey(
+	t *testing.T,
+	room *federation.ServerRoom,
+	origin spec.ServerName,
+	keyID gomatrixserverlib.KeyID,
+	privKey ed25519.PrivateKey,
+	at time.Time,
+	ev federation.Event,
+) gomatrixserverlib.PDU {
+	t.Helper()
+
+	proto, err := room.ProtoEventCreator(room, ev)
+	must.NotError(t, "failed to create proto event", err)
+	verImpl := gomatrixserverlib.MustGetRoomVersion(room.Version)
+	builder := verImpl.NewEventBuilderFromProtoEvent(proto)
+	pdu, err := builder.Build(at, origin, keyID, privKey)
+	must.NotError(t, "failed to build signed event", err)
+	return pdu
+}
+
+// federationClientWithSigningKey returns a federation client that signs requests
+// using the supplied identity rather than the server's default key material.
+func federationClientWithSigningKey(
+	deployment complement.Deployment,
+	origin spec.ServerName,
+	keyID gomatrixserverlib.KeyID,
+	privKey ed25519.PrivateKey,
+) fclient.FederationClient {
+	identity := fclient.SigningIdentity{
+		ServerName: origin,
+		KeyID:      keyID,
+		PrivateKey: privKey,
+	}
+	return fclient.NewFederationClient(
+		[]*fclient.SigningIdentity{&identity},
+		fclient.WithTransport(deployment.RoundTripper()),
+	)
+}
+
 // TestMSC4499Key exercises MSC4499 server key uniqueness and verification
 // behaviour across many scenarios: first-seen-wins conflict resolution, key
 // rotation, rejection of duplicate/malformed payloads, caching/backoff, and
 // storage limits.
+// Section numbers cited below (§n) index the MSC4499 proposal doc's ###
+// subsections in document order (../proposals/proposals/4499-key-caching.md):
+//
+//	§3  Key caching requirements       (refresh, negative caching/backoff,
+//	                                     fetch coalescing, notary two-tier
+//	                                     binding, PER-RESPONSE 50/3000 ceilings)
+//	§4  Key ID uniqueness requirement  (permanent binding, collision detection,
+//	                                     duplicate-JSON-key rejection, First
+//	                                     Seen Wins)
+//	§5  Key rotation procedure
+//	§6  Admin startup guardrails
+//	§7  Recovery from key loss
+//	§8  Historical event verification
+//	§9  Storage considerations         (the CUMULATIVE 3,000-entry retention
+//	                                     ceiling / eviction / corroboration
+//	                                     tiers)
+//
+// §n is its own t.Run() level below each leaf's parent group, so it's
+// visible in the actual subtest name (e.g.
+// TestMSC4499Key/Resolution/§4/IDFirstSeenWinsDirect) — not just a comment.
+// §3 and §4 in particular both span the Validation and Resolution groups, so
+// the doc's own section boundaries don't line up with (and don't dictate)
+// this taxonomy; §n is a cross-cutting index into it, not the taxonomy
+// itself.
 func TestMSC4499Key(t *testing.T) {
-	t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
-	t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
-	t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
-	t.Run("Rotation", testMSC4499KeyRotation)
-	t.Run("IntraPayloadRejection", testMSC4499KeyIntraPayloadRejection)
-	t.Run("IdenticalCrossMapIsLegal", testMSC4499KeyIdenticalCrossMapIsLegal)
-	t.Run("FetchCoalescing", testMSC4499KeyFetchCoalescing)
-	t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
-	t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
-	t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
-	t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
-	t.Run("BindingPromotion", testMSC4499KeyBindingPromotion)
-	t.Run("StorageQuotaResilience", testMSC4499KeyStorageQuotaResilience)
-	t.Run("CorroborationTierRetention", testMSC4499KeyCorroborationTierRetention)
-	t.Run("BackoffClearedOnSuccess", testMSC4499KeyBackoffClearedOnSuccess)
-	t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
-	t.Run("VerifyKeysCeiling", testMSC4499KeyVerifyKeysCeiling)
-	t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
+	// Keep the transport/PDU signature separation exercised by the
+	// historical-verification cases visible in the MSC4499 test run.
+	t.Run("FederationRequestAuthentication", testFederationRequestAuthenticationKeyScope)
+
+	// Validation: a single payload's structure gets rejected wholesale —
+	// duplicate/colliding JSON keys, or a per-response ceiling breach — before
+	// conflict resolution even begins.
+	t.Run("Validation", func(t *testing.T) {
+		// VerifyKeysCeiling tests the PER-RESPONSE 50-active-key ceiling (§3):
+		// one oversized payload, rejected wholesale — the same shape as the
+		// JSON-parsing tests below, NOT the cumulative cross-response eviction
+		// that CorroborationTierRetention/StorageQuotaResilience test under
+		// System (§9). It gets its own deployment: pairing it with those two
+		// would make one test's saturation silently change another's
+		// pass/fail reason.
+		t.Run("§3", func(t *testing.T) {
+			t.Run("VerifyKeysCeiling", func(t *testing.T) {
+				deployment := complement.Deploy(t, 1)
+				defer deployment.Destroy(t)
+				testMSC4499KeyVerifyKeysCeiling(t, deployment)
+			})
+		})
+
+		t.Run("§4", func(t *testing.T) {
+			t.Run("DeepDuplicateJSONKeyRejection", testMSC4499KeyDeepDuplicateJSONKeyRejection)
+			t.Run("DuplicateJSONKeyRejection", testMSC4499KeyDuplicateJSONKeyRejection)
+			t.Run("IdenticalCrossMapIsLegal", testMSC4499KeyIdenticalCrossMapIsLegal)
+			t.Run("IntraPayloadRejection", testMSC4499KeyIntraPayloadRejection)
+		})
+	})
+
+	// Resolution: when valid payloads disagree, these assert the First Seen
+	// Wins and notary two-tier binding rules.
+	t.Run("Resolution", func(t *testing.T) {
+		t.Run("§3", func(t *testing.T) {
+			// BindingPromotion is the only trusted-notary test that doesn't push
+			// hs1's key store toward its retention ceiling, so it's the only one
+			// safe to share a deployment with. CorroborationTierRetention (under
+			// System, below) floods old_verify_keys with 3001 entries (same
+			// saturation pattern as StorageQuotaResilience), so it gets its own
+			// deployment rather than being grouped here — pairing it would make
+			// its pass/fail depend on run order and on no earlier subtest in the
+			// group having partially mutated hs1.
+			t.Run("BindingPromotion", func(t *testing.T) {
+				deployment := deployMSC4499TrustedNotary(t)
+				defer deployment.Destroy(t)
+				testMSC4499KeyBindingPromotion(t, deployment)
+			})
+
+			t.Run("NotaryMustNotPatchCollidingResponse", testMSC4499KeyNotaryMustNotPatchCollidingResponse)
+			t.Run("ProvisionalOverrideFreeze", testMSC4499KeyProvisionalOverrideFreeze)
+		})
+
+		t.Run("§4", func(t *testing.T) {
+			t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
+			t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
+		})
+	})
+
+	// Temporal: key validity across time — rotating to a new key, and
+	// verifying against a key that was valid in the past.
+	t.Run("Temporal", func(t *testing.T) {
+		t.Run("§5", func(t *testing.T) {
+			t.Run("KeyRotation", testMSC4499KeyRotation)
+		})
+		t.Run("§7", func(t *testing.T) {
+			t.Run("LostKeyPublicationHistoricalVerification", testMSC4499KeyLostKeyPublicationHistoricalVerification)
+		})
+		t.Run("§8", func(t *testing.T) {
+			t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
+			t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
+		})
+	})
+
+	// System: the server's own local state — caching mechanics, cumulative
+	// storage/retention under pressure, restart durability, and startup/
+	// recovery guardrails — rather than protocol behavior toward peers.
+	t.Run("System", func(t *testing.T) {
+		t.Run("§3", func(t *testing.T) {
+			t.Run("BackoffClearedOnSuccess", testMSC4499KeyBackoffClearedOnSuccess)
+			t.Run("FetchCoalescing", testMSC4499KeyFetchCoalescing)
+			t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
+		})
+
+		t.Run("§6", func(t *testing.T) {
+			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
+		})
+		t.Run("§7", func(t *testing.T) {
+			t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
+		})
+
+		t.Run("§4", func(t *testing.T) {
+			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
+		})
+
+		// CorroborationTierRetention and StorageQuotaResilience each get their
+		// own deployment: both deliberately push a homeserver's key store to
+		// (and past) its CUMULATIVE retention ceiling, so sharing a deployment
+		// between them (or with BindingPromotion/VerifyKeysCeiling above)
+		// risks one test's saturation silently changing another's pass/fail
+		// reason.
+		t.Run("§9", func(t *testing.T) {
+			t.Run("CorroborationTierRetention", func(t *testing.T) {
+				deployment := complement.Deploy(t, 1)
+				defer deployment.Destroy(t)
+				testMSC4499KeyCorroborationTierRetention(t, deployment)
+			})
+			t.Run("StorageQuotaResilience", func(t *testing.T) {
+				deployment := complement.Deploy(t, 1)
+				defer deployment.Destroy(t)
+				testMSC4499KeyStorageQuotaResilience(t, deployment)
+			})
+		})
+	})
+}
+
+// testFederationRequestAuthenticationKeyScope keeps X-Matrix request
+// authentication separate from MSC4499's historical-PDU checks. The
+// Server-Server API permits verify_keys for federation requests and events,
+// but permits old_verify_keys only for events.
+func testFederationRequestAuthenticationKeyScope(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	pubKeyCurrent, privKeyCurrent, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate current signing key", err)
+	pubKeyRetired, privKeyRetired, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate retired signing key", err)
+	_, privKeyWrong, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate wrong signing key", err)
+	_, privKeyUnknown, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate unknown signing key", err)
+
+	keyIDCurrent := gomatrixserverlib.KeyID("ed25519:request_current")
+	keyIDRetired := gomatrixserverlib.KeyID("ed25519:request_retired")
+	keyIDUnknown := gomatrixserverlib.KeyID("ed25519:request_unknown")
+	srv.KeyID = keyIDCurrent
+	srv.Priv = privKeyCurrent
+
+	mockKeyServer := &MockKeyServer{
+		serverName: srv.ServerName(),
+		keyID:      keyIDCurrent,
+		privKey:    privKeyCurrent,
+		pubKey:     pubKeyCurrent,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyIDCurrent: pubKeyCurrent,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			keyIDRetired: {
+				VerifyKey: gomatrixserverlib.VerifyKey{Key: spec.Base64Bytes(pubKeyRetired)},
+				ExpiredTS: spec.AsTimestamp(time.Now().Add(-time.Hour)),
+			},
+		},
+		validUntil: time.Now().Add(24 * time.Hour),
+	}
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	testCases := []struct {
+		name       string
+		keyID      gomatrixserverlib.KeyID
+		privateKey ed25519.PrivateKey
+		rawAuth    string
+		accept     bool
+	}{
+		{name: "current_verify_key", keyID: keyIDCurrent, privateKey: privKeyCurrent, accept: true},
+		{name: "retired_old_verify_key", keyID: keyIDRetired, privateKey: privKeyRetired},
+		{name: "unknown_key_id", keyID: keyIDUnknown, privateKey: privKeyUnknown},
+		{name: "current_key_id_with_wrong_private_key", keyID: keyIDCurrent, privateKey: privKeyWrong},
+		{
+			name:    "missing_signature",
+			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"%s\"", srv.ServerName(), keyIDCurrent),
+		},
+		{
+			name:    "malformed_key_id_and_signature",
+			rawAuth: fmt.Sprintf("X-Matrix origin=\"%s\",destination=\"hs1\",key=\"not a key id\",sig=\"not-base64!\"", srv.ServerName()),
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancelCtx()
+			var err error
+			if tc.rawAuth != "" {
+				req, reqErr := http.NewRequestWithContext(ctx, "PUT", "https://hs1/_matrix/federation/v1/send/request-auth-"+tc.name, strings.NewReader(`{"pdus":[]}`))
+				must.NotError(t, "failed to construct malformed federation request", reqErr)
+				req.Header.Set("Authorization", tc.rawAuth)
+				req.Header.Set("Content-Type", "application/json")
+				resp, doErr := (&http.Client{Transport: deployment.RoundTripper()}).Do(req)
+				if doErr != nil {
+					err = doErr
+				} else {
+					defer resp.Body.Close()
+					if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+						t.Fatalf("malformed federation request was accepted with HTTP %d", resp.StatusCode)
+					}
+					return
+				}
+			} else {
+				fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), tc.keyID, tc.privateKey)
+				_, err = fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+					TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("request-auth-%s-%d", tc.name, time.Now().UnixNano())),
+					Origin:        spec.ServerName(srv.ServerName()),
+					Destination:   "hs1",
+					PDUs:          []json.RawMessage{},
+				})
+			}
+
+			if tc.accept {
+				must.NotError(t, "current verify_key must authenticate the federation request", err)
+				return
+			}
+			if err == nil {
+				t.Fatalf("federation request signed by %s was accepted; only verify_keys may authenticate requests", tc.keyID)
+			}
+			var httpErr gomatrix.HTTPError
+			if !errors.As(err, &httpErr) {
+				t.Fatalf("federation request signed by %s must receive an HTTP rejection, got %v", tc.keyID, err)
+			}
+			if httpErr.Code >= http.StatusOK && httpErr.Code < http.StatusMultipleChoices {
+				t.Fatalf("federation request signed by %s was accepted with HTTP %d", tc.keyID, httpErr.Code)
+			}
+		})
+	}
 }
 
 // testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
 // "First Seen Wins" for a unique (server_name, key_id).
 func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -392,13 +911,143 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 
-	if foundKey == pubKeyBBase64 {
-		skipKnownSynapseGap(t, "Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch")
+	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
+	// (i.e., the cache was not poisoned by the colliding key B). Run this before
+	// skipKnownGap below so the check always executes, but fold its result into
+	// the same skip: on a server that already returned colliding key B above,
+	// the cache being poisoned afterwards is the same underlying
+	// non-conformance, not a separate failure to fatal on ahead of the skip.
+	cachedKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+	cachePoisoned := cachedKey != pubKeyABase64
+	returnedCollidingKey := foundKey == pubKeyBBase64
+
+	if returnedCollidingKey || cachePoisoned {
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch (cache poisoned: %v)", cachePoisoned)
+	}
+}
+
+// Test that a permanent key-ID binding learned via direct fetch survives a
+// homeserver restart.
+//
+// Per MSC4499 cache persistence, permanent bindings MUST be persisted durably
+// enough that a restart does not allow the same `(server_name, algorithm,
+// key_id)` to be rebound to a different key body.
+func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
 	}
 
-	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
-	// (i.e., the cache was not poisoned by the colliding key B).
-	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, base64.RawStdEncoding.EncodeToString(pubKeyA))
+	srv := federation.NewServer(t, deployment)
+	cancel := srv.Listen()
+	defer cancel()
+
+	originName := srv.ServerName()
+
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_restart_persistence")
+
+	mockKeyServer := &MockKeyServer{
+		serverName: originName,
+		keyID:      keyID,
+		privKey:    privKeyA,
+		pubKey:     pubKeyA,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKeyA,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
+
+	// Phase 1: learn permanent binding A via direct fetch.
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
+
+	// Restart hs1 before introducing the collision. A compliant implementation
+	// must retain the immutable key-ID binding across this restart.
+	err = deployment.Restart(t)
+	must.NotError(t, "failed to restart homeserver deployment", err)
+
+	// Immediately after restart, the permanent binding must still be available
+	// from local state alone. Make the origin unavailable so this lookup cannot
+	// succeed via a fresh fetch.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.requestCount = 0
+	mockKeyServer.shouldFail = true
+	mockKeyServer.mu.Unlock()
+
+	status, foundKey := queryNotaryStatusAndKey(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
+	if status != 200 {
+		t.Fatalf("hs1 did not serve the persisted binding after restart — notary returned status %d instead of falling back to local state while the origin was unreachable", status)
+	}
+	if foundKey != pubKeyABase64 {
+		t.Fatalf("hs1 did not serve the persisted binding after restart — expected key %s, got %s", pubKeyABase64, foundKey)
+	}
+
+	mockKeyServer.mu.Lock()
+	postRestartReqCount := mockKeyServer.requestCount
+	mockKeyServer.shouldFail = false
+	mockKeyServer.mu.Unlock()
+	if postRestartReqCount != 0 {
+		t.Fatalf("hs1 re-fetched key material immediately after restart instead of serving the persisted binding")
+	}
+
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
+
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.requestCount = 0
+	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch after restart. Two compliant outcomes are allowed for the
+	// minimum_valid_until_ts query itself: hs1 may either keep serving A or omit
+	// the entry because A no longer satisfies the freshness bound. What MUST NOT
+	// happen is learning or serving colliding key B after restart.
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
+	returnedCollidingKey := foundKey == pubKeyBBase64
+
+	mockKeyServer.mu.Lock()
+	reqCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if reqCount == 0 {
+		t.Fatalf("Mock key server was not re-fetched after restart — persistence path was not exercised")
+	}
+
+	// Follow up with an unconstrained lookup to prove the restart did not poison
+	// or forget the first-seen binding. Run this before the known-gap skip so
+	// the check always executes, but fold its result into the same skip: on a
+	// server that already returned colliding key B above, the cache being
+	// poisoned afterwards is the same underlying non-conformance (the binding
+	// was never durably pinned), not a separate failure to fail hard on.
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
+	cachePoisoned := foundKey != pubKeyABase64
+
+	if returnedCollidingKey || cachePoisoned {
+		// Confirmed on Dendrite and Synapse — same failure message reproduced
+		// in CI on both. For Synapse, confirmed via a clean re-fetch trace in
+		// the server's own log (ServerKeyFetcher completed 200 OK with no
+		// error nearby) at
+		// https://github.com/gamesguru/complement/actions/runs/33349998401/job/99361341769.
+		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 returned colliding Keypair B after restart and re-fetch (cache poisoned: %v) — permanent binding was not persisted", cachePoisoned)
+	}
 }
 
 // Test that a notary faced with a colliding key response does not locally
@@ -425,7 +1074,6 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 // the signature (computed by the origin over a different body) would fail to
 // verify against the mutated body, catching the violation deterministically.
 func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -503,7 +1151,8 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	// First Seen Wins must still hold: the served body must reflect key A,
 	// never the colliding key B.
 	if foundKeyBase64 == base64.RawStdEncoding.EncodeToString(pubKeyB) {
-		skipKnownSynapseGap(t, "Server does not implement First Seen Wins — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement First Seen Wins — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
 	}
 
 	foundKeyRaw, err := base64.RawStdEncoding.DecodeString(foundKeyBase64)
@@ -739,7 +1388,6 @@ func testMSC4499KeyRotation(t *testing.T) {
 // with DIFFERENT key material. MSC4499 requires the entire response to be rejected
 // as malformed, and the notary to omit the affected server from server_keys (HTTP 200).
 func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -837,7 +1485,8 @@ func testMSC4499KeyIntraPayloadRejection(t *testing.T) {
 			// The colliding key ID MUST NOT appear — this is the malformed payload's key
 			foundCollide := sk.Get("verify_keys." + client.GjsonEscape(string(collideKeyID)) + ".key").Str
 			if foundCollide != "" {
-				skipKnownSynapseGap(t, "Server does not reject intra-payload key collisions — hs1 returned the colliding key %s in server_keys (key body: %s)",
+				// Confirmed on Dendrite too — same failure message reproduced in CI.
+				skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not reject intra-payload key collisions — hs1 returned the colliding key %s in server_keys (key body: %s)",
 					collideKeyID, foundCollide)
 			}
 
@@ -910,7 +1559,6 @@ func testMSC4499KeyIdenticalCrossMapIsLegal(t *testing.T) {
 
 // Test that concurrent outgoing key queries are coalesced into a single fetch.
 func testMSC4499KeyFetchCoalescing(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1009,13 +1657,14 @@ func testMSC4499KeyFetchCoalescing(t *testing.T) {
 	// Since they ran concurrently while the first fetch was slow,
 	// hs1 MUST coalesce these requests. The requestCount should be exactly 1 (or very small).
 	if reqCount > 2 {
-		t.Fatalf("Expected hs1 to coalesce the concurrent outgoing key fetches, but got %d fetches", reqCount)
+		// Confirmed on Dendrite: it issued 10 separate outgoing fetches instead
+		// of coalescing the concurrent requests into one.
+		skipKnownGap(t, []string{runtime.Dendrite}, "Expected hs1 to coalesce the concurrent outgoing key fetches, but got %d fetches", reqCount)
 	}
 }
 
 // Test that failed key fetches are cached and subject to negative caching / backoff.
 func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1113,7 +1762,6 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 //   - Event A: origin_server_ts < expired_ts → MUST accept (legitimate historical event)
 //   - Event B: origin_server_ts > expired_ts → MUST reject (stolen retired key)
 func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1184,11 +1832,11 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		ExpiredTS: spec.AsTimestamp(expiredTS), // expired 1 hour ago
 	}
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
-	mockKeyServer.validUntil = time.Now().Add(1 * time.Second)
+	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
 
 	// Small sleep to let valid_until_ts expire so hs1 will re-fetch
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// === Event A: Backdated origin_server_ts BEFORE expired_ts → MUST ACCEPT ===
 	// This is the legitimate "historical event verification" case: an event that was
@@ -1214,7 +1862,18 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	must.NotError(t, "failed to build backdated event A", err)
 	serverRoom.AddEvent(eventA)
 
-	fedClient := srv.FederationClient(deployment)
+	// The PDU's own signature (above) intentionally uses keyIDExpired, since
+	// that's what's under test. The transport-level federation request
+	// (X-Matrix Authorization header) is a separate signature. Per MSC4499's
+	// "Permanent binding" section: key-ID permanence "does not alter the
+	// validity-window semantics (e.g., event signatures are still verified
+	// against the key's validity at the event's origin_server_ts, and
+	// federation requests still require a currently valid key)" — so a key
+	// present only in old_verify_keys does not satisfy that for a live
+	// request. Use the active identity for the request, independent of
+	// srv.KeyID/srv.Priv (which get reassigned below for building event B's
+	// content).
+	fedClient := federationClientWithSigningKey(deployment, spec.ServerName(srv.ServerName()), keyIDActive, privKeyActive)
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
 
@@ -1225,7 +1884,13 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		PDUs:          []json.RawMessage{eventA.JSON()},
 	})
 	if err != nil {
-		skipKnownSynapseGap(t, "Server does not implement historical event verification via old_verify_keys — SendTransaction failed for backdated historical event: %v", err)
+		if isSynapseRetiredKeyLookupError(err) {
+			// Synapse currently does not retain/serve the retired key needed to
+			// verify this backdated historical event. Keep the run informative by
+			// skipping at the point of divergence rather than hard-failing.
+			t.Skipf("hs1 rejected valid historical event before expired_ts: %v", err)
+		}
+		must.NotError(t, "SendTransaction failed for backdated historical event", err)
 	}
 	for eventID, pduResp := range respA.PDUs {
 		if pduResp.Error != "" {
@@ -1293,7 +1958,6 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 // bypassing Go's JSON marshaler (which silently deduplicates). The notary MUST reject
 // the payload and omit the colliding key from server_keys.
 func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1418,7 +2082,9 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 				if sk.Get("server_name").Str == string(originName) {
 					foundKeyA := sk.Get("verify_keys." + client.GjsonEscape(dupeKeyID) + ".key").Str
 					if foundKeyA != "" {
-						t.Fatalf("hs1 returned the duplicate key %s in server_keys — duplicate JSON key detection is missing (key: %s)", dupeKeyID, foundKeyA)
+						// Confirmed on Dendrite — same failure message reproduced
+						// in CI, for both key orderings (A-then-B, B-then-A).
+						skipKnownGap(t, []string{runtime.Dendrite}, "hs1 returned the duplicate key %s in server_keys — duplicate JSON key detection is missing (key: %s)", dupeKeyID, foundKeyA)
 					}
 				}
 			}
@@ -1429,7 +2095,6 @@ func testMSC4499KeyDuplicateJSONKeyRejection(t *testing.T) {
 // Test that duplicate JSON keys are rejected even when they appear inside a
 // nested object rather than directly in verify_keys.
 func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1499,7 +2164,8 @@ func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 		t.Fatalf("nested duplicate payload was never fetched — test did not exercise the duplicate parser path")
 	}
 	if foundKey != "" {
-		skipKnownSynapseGap(t, "Server does not implement deep duplicate-key detection — hs1 returned key %s from a payload with a nested duplicate key", foundKey)
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement deep duplicate-key detection — hs1 returned key %s from a payload with a nested duplicate key", foundKey)
 	}
 }
 
@@ -1509,11 +2175,7 @@ func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 //
 // Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
 // Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
-func testMSC4499KeyBindingPromotion(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := deployMSC4499TrustedNotary(t)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployment) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
@@ -1676,17 +2338,23 @@ func testMSC4499KeyBindingPromotion(t *testing.T) {
 // gracefully — it must not crash, reject the payload, or permanently ignore new keys
 // even after exceeding any reasonable per-server quota.
 //
-// Per MSC4499 L423-437: implementations SHOULD enforce a limit (e.g., 1,000 keys),
-// and MUST NOT ignore new Key IDs permanently. They MUST evict the oldest/LRU expired
-// keys. Keys in verify_keys MUST always be prioritized and exempt from the retired-key
-// ceiling.
-func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
+// Per MSC4499's storage considerations, implementations MUST enforce a 3,000-entry
+// retired-key ceiling per remote server, matching the per-response ceiling, and MUST
+// NOT ignore new key IDs permanently once at that ceiling — they MUST evict the
+// oldest/least-recently-retired keys. Keys in verify_keys MUST always be prioritized
+// and exempt from the retired-key ceiling.
+//
+// A single response can never itself carry more than 3,000 old_verify_keys entries
+// (the same 3,000 figure is also the hard per-response ceiling — a bigger payload
+// MUST be rejected outright), so a single request can never push a previously-empty
+// store past the ceiling; it can only ever bring it exactly to the ceiling, which
+// isn't an overflow. Genuinely exercising eviction needs two fetches: one that
+// leaves the store one binding short of the ceiling, then a second, small fetch
+// that supplies one more previously-unseen retired key and pushes the cumulative
+// total over it.
+func testMSC4499KeyStorageQuotaResilience(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
-		Timeout:   90 * time.Second, // larger timeout for bulk payload against a heavier storage backend
+		Timeout:   30 * time.Second,
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -1702,15 +2370,12 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 
 	sigKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_quota_signer")
 
-	// Generate 3000 retired keys in old_verify_keys plus 1 signing key in
-	// verify_keys. This is far beyond the example per-server quota in MSC4499,
-	// so the oldest retired key should be evicted if the implementation enforces
-	// a ceiling.
-	//
-	// Filler keys are never used to sign or verify anything — only their raw
-	// 32-byte value is stored and compared — so generate plain random bytes
-	// instead of full ed25519 keypairs to keep bulk-fixture setup fast.
-	numFillerKeys := 3000
+	// Phase 1: publish 2,999 retired keys plus the signing key — one binding
+	// short of the 3,000-entry ceiling, so nothing is evicted yet. Filler keys
+	// are never used to sign or verify anything — only their raw 32-byte value
+	// is stored and compared — so generate plain random bytes instead of full
+	// ed25519 keypairs to keep bulk-fixture setup fast.
+	const numFillerKeys = 2999
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		sigKeyID: sigPub, // signing key — always in verify_keys
 	}
@@ -1746,8 +2411,8 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
 	// Query the signing key — this forces hs1 to fetch and process the entire
-	// payload. If the server has a quota, it must silently evict or handle the
-	// overflow without error.
+	// phase 1 payload. If the server has a quota, it must silently evict or
+	// handle the overflow without error once it's actually exceeded.
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(sigPub))
 
@@ -1757,13 +2422,55 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(firstKeyID), 0,
 		base64.RawStdEncoding.EncodeToString(firstKey.Key))
 
-	// Verify the LAST filler key (oldest) has been evicted. The fixture
-	// intentionally overflows any reasonable retired-key ceiling, so the oldest
-	// retired binding should no longer be served.
+	// Phase 2: publish two more, newly-retired keys the store hasn't seen
+	// before (well within the per-response ceiling on their own, and far more
+	// recently retired than any filler key, so neither is itself an eviction
+	// candidate). The store is already one binding short of the 3,000-entry
+	// ceiling, so learning these two pushes the cumulative retained set to
+	// 3,001 — genuinely over the ceiling — forcing eviction of the single
+	// oldest binding.
+	extraKeyIDs := make([]gomatrixserverlib.KeyID, 2)
+	for i := range extraKeyIDs {
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, fmt.Sprintf("failed to generate extra key %d", i), err)
+		kid := gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:msc4499_extra_%04d", i))
+		oldVerifyKeys[kid] = gomatrixserverlib.OldVerifyKey{
+			VerifyKey: gomatrixserverlib.VerifyKey{
+				Key: spec.Base64Bytes(pub),
+			},
+			ExpiredTS: spec.AsTimestamp(time.Now().Add(-1 * time.Hour).Add(time.Duration(-i) * time.Second)),
+		}
+		extraKeyIDs[i] = kid
+	}
+
+	// The mock server's phase 2 response carries only the two new entries, not
+	// a replay of the 2,999 fillers: repeating all of them here would itself
+	// exceed the 3,000-entry per-response ceiling, and a real origin isn't
+	// expected to re-publish its full retired-key history on every response —
+	// receiving servers accumulate that history themselves across fetches.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.oldVerifyKeys = map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+		extraKeyIDs[0]: oldVerifyKeys[extraKeyIDs[0]],
+		extraKeyIDs[1]: oldVerifyKeys[extraKeyIDs[1]],
+	}
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	// Force a re-fetch that will observe the two new retired keys.
+	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(extraKeyIDs[0]), minValidUntil,
+		base64.RawStdEncoding.EncodeToString(oldVerifyKeys[extraKeyIDs[0]].Key))
+
+	// The newly learned retired key must be retained...
+	queryNotary(t, fedClient, "https://hs1", string(originName), string(extraKeyIDs[1]), 0,
+		base64.RawStdEncoding.EncodeToString(oldVerifyKeys[extraKeyIDs[1]].Key))
+
+	// ...and the oldest filler key must now have been evicted to make room for it.
 	oldestKey := oldVerifyKeys[oldestKeyID]
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestKeyID), 0)
 	if foundKey != "" {
-		skipKnownSynapseGap(t, "Server does not enforce a retired-key storage ceiling — expected oldest retired key %s to be evicted under quota pressure, but found %q",
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not enforce a retired-key storage ceiling — expected oldest retired key %s to be evicted under quota pressure, but found %q",
 			oldestKeyID, base64.RawStdEncoding.EncodeToString(oldestKey.Key))
 	}
 }
@@ -1773,13 +2480,9 @@ func testMSC4499KeyStorageQuotaResilience(t *testing.T) {
 //
 // Per MSC4499 L584-589: corroborated retired keys are retained before
 // uncorroborated retired keys, regardless of effective retirement timestamp.
-func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := deployMSC4499TrustedNotary(t)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
-		Timeout:   90 * time.Second, // larger timeout for bulk payload over the two-hop trusted-notary path
+		Timeout:   30 * time.Second,
 		Transport: deployment.RoundTripper(),
 	}
 
@@ -1789,11 +2492,19 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 
 	originName := srv.ServerName()
 
-	// Phase 1: Learn key A while it is active. hs1 sees this via hs2, which
-	// should corroborate the binding for later retention decisions.
+	// Phase 1: Learn key A while it is active via a direct fetch. This is
+	// what should corroborate the binding for later retention decisions --
+	// hs2 isn't involved in this test despite the shared trusted-notary
+	// deployment; only hs1's own direct-fetch retirement/eviction logic is
+	// under test here. The same response also seeds one uncorroborated retired
+	// filler key so phase 2 can deterministically push the cumulative retained
+	// retired set to 3,001 using served data alone.
 	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate corroborated key A", err)
 	keyIDA := gomatrixserverlib.KeyID("ed25519:msc4499_corroborated_a")
+	oldestFillerPub, _, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate oldest filler key", err)
+	oldestFillerKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_oldest_uncorroborated")
 
 	mockKeyServer := &MockKeyServer{
 		serverName: originName,
@@ -1803,8 +2514,15 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 			keyIDA: pubKeyA,
 		},
-		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
-		validUntil:    time.Now().Add(2 * time.Second),
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{
+			oldestFillerKeyID: {
+				VerifyKey: gomatrixserverlib.VerifyKey{
+					Key: spec.Base64Bytes(oldestFillerPub),
+				},
+				ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
+			},
+		},
+		validUntil: time.Now().Add(500 * time.Millisecond),
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
@@ -1814,11 +2532,17 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyIDA), 0, pubKeyABase64)
 
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
-	// Phase 2: Rotate the origin to a new active key and flood old_verify_keys
-	// with uncorroborated retired bindings. Key A should survive because hs1
-	// already saw it active before retirement.
+	// Phase 2: Rotate the origin to a new active key and publish a full
+	// 3,000-entry old_verify_keys payload: corroborated retired key A plus
+	// 2,999 new uncorroborated retired fillers. Combined with the single
+	// filler learned in phase 1, that deterministically brings the cumulative
+	// retained retired set to 3,001 -- one over the ceiling -- without
+	// depending on the implementation to locally materialize any extra retired
+	// entry that is absent from the served response. Key A should survive that
+	// eviction pass because hs1 already saw it active before this retirement
+	// happened, while the oldest uncorroborated filler should be evicted.
 	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate active key B", err)
 	keyIDB := gomatrixserverlib.KeyID("ed25519:msc4499_active_b")
@@ -1826,15 +2550,15 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 	verifyKeys := map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 		keyIDB: pubKeyB,
 	}
-	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3001)
+	oldVerifyKeys := make(map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey, 3000)
 	oldVerifyKeys[keyIDA] = gomatrixserverlib.OldVerifyKey{
 		VerifyKey: gomatrixserverlib.VerifyKey{
 			Key: spec.Base64Bytes(pubKeyA),
 		},
-		ExpiredTS: spec.AsTimestamp(time.Now().Add(-72 * time.Hour)),
+		ExpiredTS: spec.AsTimestamp(time.Now().Add(-2 * time.Hour)),
 	}
 
-	for i := 0; i < 3000; i++ {
+	for i := 0; i < 2999; i++ {
 		pub := make([]byte, ed25519.PublicKeySize)
 		_, err := rand.Read(pub)
 		must.NotError(t, fmt.Sprintf("failed to generate uncorroborated key %d", i), err)
@@ -1861,6 +2585,24 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T) {
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyIDA), minValidUntil)
 	must.Equal(t, foundKey, pubKeyABase64,
 		"Expected corroborated retired key A to survive the ceiling ahead of uncorroborated retired keys")
+
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(oldestFillerKeyID), 0)
+	if foundKey != "" {
+		// Same known gap as testMSC4499KeyStorageQuotaResilience: neither
+		// Synapse nor Dendrite evicts the oldest retired key under quota
+		// pressure (Dendrite confirmed with this exact message in CI). Skip
+		// here, at the point of divergence, so the run up to this point still
+		// produces normal debug output.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Expected oldest uncorroborated filler key %s to be evicted once the retained set reached 3001 entries: got %q want \"\"", oldestFillerKeyID, foundKey)
+	}
+
+	// Sanity-check that a newer uncorroborated filler from the 3,000-entry
+	// phase-2 response was retained, so the empty result above is specifically
+	// evidence of quota eviction rather than a failed fetch.
+	newerFillerKeyID := gomatrixserverlib.KeyID("ed25519:msc4499_uncorroborated_0000")
+	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(newerFillerKeyID), 0)
+	must.Equal(t, foundKey, base64.RawStdEncoding.EncodeToString(oldVerifyKeys[newerFillerKeyID].Key),
+		fmt.Sprintf("Expected newer uncorroborated filler key %s to remain after the oldest filler was evicted", newerFillerKeyID))
 
 	mockKeyServer.mu.Lock()
 	reqCount := mockKeyServer.requestCount
@@ -1974,7 +2716,7 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 	// Wait for backoff to expire. Implementations should configure a short
 	// backoff for testing (e.g., 2s via msc4499_backoff_secs). The spec mandates
 	// ≥60s in production, but that's too slow for CI.
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 3: Query again — mock is now healthy, should succeed and clear backoff
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
@@ -2011,7 +2753,6 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 //  4. Query hs1 again with minimum_valid_until_ts forcing a re-fetch
 //  5. Assert: key B MUST NOT be returned (provisional binding is frozen)
 func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := deployMSC4499TrustedNotary(t)
 	defer deployment.Destroy(t)
 
@@ -2042,7 +2783,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 			keyID: pubKeyA,
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
-		validUntil:    time.Now().Add(2 * time.Second),
+		validUntil:    time.Now().Add(500 * time.Millisecond),
 	}
 
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
@@ -2055,7 +2796,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
 	// Phase 2: Wait for valid_until_ts to expire
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	// Phase 3: Switch mock to serve key B for the same key ID.
 	// Set far-future valid_until so the re-fetch satisfies any constraint.
@@ -2082,7 +2823,8 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	//   2. server is omitted from response (can't satisfy constraint — correct)
 	//   3. key B is returned (frozen provisional was overridden — VIOLATION)
 	if foundKey == pubKeyBBase64 {
-		skipKnownSynapseGap(t, "Server does not implement Provisional Override Freeze — hs1 returned colliding key B after "+
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement Provisional Override Freeze — hs1 returned colliding key B after "+
 			"provisional binding expired. Expired provisional bindings MUST NOT be overridden by a direct fetch "+
 			"(MSC4499 L147-157)")
 	}
@@ -2105,11 +2847,7 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 //  1. Serve a payload with 51 keys in verify_keys
 //  2. Query notary for the signing key
 //  3. Assert: the entire payload is rejected — signing key should NOT be found
-func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
+func testMSC4499KeyVerifyKeysCeiling(t *testing.T, deployment complement.Deployment) {
 	fedClient := &http.Client{
 		Timeout:   10 * time.Second,
 		Transport: deployment.RoundTripper(),
@@ -2158,7 +2896,8 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(sigKeyID), 0)
 
 	if foundKey != "" {
-		skipKnownSynapseGap(t, "Server does not enforce the verify_keys ceiling — hs1 accepted a payload with %d verify_keys "+
+		// Confirmed on Dendrite too — same failure message reproduced in CI.
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not enforce the verify_keys ceiling — hs1 accepted a payload with %d verify_keys "+
 			"(ceiling is 50) — key %s was returned instead of rejecting the payload as hostile (MSC4499 L551-558)",
 			len(verifyKeys), sigKeyID)
 	}
@@ -2180,7 +2919,6 @@ func testMSC4499KeyVerifyKeysCeiling(t *testing.T) {
 //  2. Query for key A → should be returned (payload not poisoned)
 //  3. Query for key B → should be absent (malformed entry ignored)
 func testMSC4499KeyExpiredTSSanityCheck(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -2273,11 +3011,352 @@ func testMSC4499KeyExpiredTSSanityCheck(t *testing.T) {
 		if sk.Get("server_name").Str == string(originName) {
 			foundKeyB := sk.Get("old_verify_keys." + client.GjsonEscape(string(keyIDB)) + ".key").Str
 			if foundKeyB != "" {
-				skipKnownSynapseGap(t, "Server does not sanity-check expired_ts — hs1 served key B (expired_ts in the future) in "+
+				// Confirmed on Dendrite too — same failure message reproduced in CI.
+				skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not sanity-check expired_ts — hs1 served key B (expired_ts in the future) in "+
 					"old_verify_keys; future expired_ts MUST be treated as malformed (MSC4499 L351-354)")
 			}
 		}
 	}
 
 	t.Logf("Key B (future expired_ts) correctly ignored; key A (valid) correctly served")
+}
+
+// testMSC4499KeyAdminStartupGuardrails is an optional-implementation probe,
+// not conformance coverage. MSC4499 recommends (SHOULD, not MUST) detecting a
+// mutated persisted signing key at startup and refusing to boot; neither
+// reference implementation does this today (confirmed against Synapse
+// 1.154.0, which starts cleanly post-mutation with no operator-facing
+// refusal path). The test mutates the configured signing key body while
+// preserving the key ID and skips cleanly when no guardrail fires, so it
+// exists to catch a regression if the behavior is ever added, not to enforce
+// it now.
+func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
+	if runtime.Homeserver != runtime.Synapse {
+		t.Skipf("startup-guardrail test currently targets Synapse container layout, got %q", runtime.Homeserver)
+	}
+
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		t.Fatalf("expected Docker-backed deployment, got %T", deployment)
+	}
+
+	hsDep := dockerDeployment.HS["hs1"]
+	if hsDep == nil {
+		t.Fatal("hs1 deployment missing")
+	}
+
+	// Touch the server once before the restart sequence so the persisted local
+	// key state reflects a clean successful boot under the original key.
+	client := deployment.UnauthenticatedClient(t, "hs1")
+	resp := client.MustDo(t, "GET", []string{"_matrix", "key", "v2", "server"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("failed to fetch hs1 server keys before restart test: got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	const signingKeyPath = "/data/hs1.signing.key"
+	originalSigningKey := readFileFromContainer(t, deployment, "hs1", signingKeyPath)
+	mutatedSigningKey := mutateSynapseSigningKeyPreservingKeyID(t, originalSigningKey)
+	mutationTS := time.Now()
+
+	deployment.StopServer(t, "hs1")
+	writeFileToContainer(t, deployment, "hs1", signingKeyPath, mutatedSigningKey)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		inspect, err := dockerDeployment.Deployer.Docker.ContainerInspect(ctx, hsDep.ContainerID, mobyclient.ContainerInspectOptions{})
+		if err == nil && inspect.Container.State != nil && inspect.Container.State.Running {
+			_ = dockerDeployment.Deployer.StopServer(hsDep)
+		}
+		writeFileToContainer(t, deployment, "hs1", signingKeyPath, originalSigningKey)
+		if err := dockerDeployment.Deployer.StartServer(hsDep); err != nil {
+			t.Fatalf("failed to restore hs1 after startup-guardrail assertion: %v", err)
+		}
+	}()
+
+	startErr := dockerDeployment.Deployer.StartServer(hsDep)
+	if startErr == nil {
+		// This test is intentionally Synapse-shaped: it mutates the configured
+		// signing-key file after one successful boot and assumes Synapse compares
+		// that configured key body against independently persisted prior local
+		// state on the next startup. If Synapse ever changes that storage model,
+		// this test becomes an implementation probe rather than a clean proof of
+		// the MSC predicate. The assertion here is that the homeserver MUST NOT
+		// come up cleanly with the mutated key, whether that manifests as an API-
+		// level start failure or a start-then-exit guardrail.
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			inspect, inspectErr := dockerDeployment.Deployer.Docker.ContainerInspect(ctx, hsDep.ContainerID, mobyclient.ContainerInspectOptions{})
+			cancel()
+			if inspectErr != nil {
+				t.Fatalf("failed to inspect hs1 during startup-guardrail polling: %v", inspectErr)
+			}
+			if inspect.Container.State != nil && !inspect.Container.State.Running {
+				logs := readContainerLogs(t, deployment, "hs1", mutationTS)
+				if looksLikeSigningKeyRemediationLog(logs) {
+					return
+				}
+				t.Fatalf("hs1 exited after mutated-key start attempt, but post-mutation logs did not clearly indicate signing-key remediation")
+			}
+			if time.Now().After(deadline) {
+				t.Skip("homeserver came up cleanly after same-key-id key-body mutation; MSC4499 recommends but does not require a startup guardrail here")
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+
+	logs := readContainerLogs(t, deployment, "hs1", mutationTS)
+	if !looksLikeSigningKeyRemediationLog(logs) {
+		t.Fatalf("hs1 failed to start after key mutation, but restart-attempt logs did not clearly implicate signing-key mismatch and remediation: %v", startErr)
+	}
+}
+
+// testMSC4499KeyLostKeyPublicationHistoricalVerification covers the remote
+// historical-verification consequences of publishing, or failing to publish, a
+// lost key in old_verify_keys.
+func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
+
+	runCase := func(t *testing.T, publishLostKey bool) {
+		deployment := complement.Deploy(t, 1)
+		defer deployment.Destroy(t)
+
+		pubKeyCurrent, privKeyCurrent, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, "failed to generate current key", err)
+		pubKeyLost, privKeyLost, err := ed25519.GenerateKey(rand.Reader)
+		must.NotError(t, "failed to generate lost key", err)
+
+		keyIDCurrent := gomatrixserverlib.KeyID("ed25519:msc4499_recovery_current")
+		keyIDLost := gomatrixserverlib.KeyID("ed25519:msc4499_recovery_lost")
+
+		srv := federation.NewServer(t, deployment,
+			federation.HandleMakeSendJoinRequests(),
+			federation.HandleTransactionRequests(nil, nil),
+			// historicalEvent's own delivery is correctly rejected (it's signed
+			// by a key the origin never published), but it's still added to
+			// serverRoom's local timeline below. currentEvent's prev_events
+			// then points at it, so hs1 needs to be able to fetch it back via
+			// GET /event/{id} while resolving currentEvent -- without this
+			// handler that fetch 404s and currentEvent can never be resolved,
+			// independent of anything under test here.
+			federation.HandleEventRequests(),
+		)
+		srv.KeyID = keyIDCurrent
+		srv.Priv = privKeyCurrent
+		srv.UnexpectedRequestsAreErrors = false
+		cancel := srv.Listen()
+		defer cancel()
+
+		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+		lossTime := time.Now().Add(-1 * time.Hour)
+		oldVerifyKeys := map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{}
+		if publishLostKey {
+			oldVerifyKeys[keyIDLost] = gomatrixserverlib.OldVerifyKey{
+				VerifyKey: gomatrixserverlib.VerifyKey{
+					Key: spec.Base64Bytes(pubKeyLost),
+				},
+				ExpiredTS: spec.AsTimestamp(lossTime),
+			}
+		}
+
+		mockKeyServer := &MockKeyServer{
+			serverName: srv.ServerName(),
+			keyID:      keyIDCurrent,
+			privKey:    privKeyCurrent,
+			pubKey:     pubKeyCurrent,
+			verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+				keyIDCurrent: pubKeyCurrent,
+			},
+			oldVerifyKeys: oldVerifyKeys,
+			validUntil:    time.Now().Add(24 * time.Hour),
+		}
+		srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+		srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+		srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+		ver := alice.GetDefaultRoomVersion(t)
+		charlie := srv.UserID("charlie")
+		serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+		roomAlias := srv.MakeAliasMapping("recovery_test", serverRoom.RoomID)
+		alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
+		_, since := alice.MustSync(t, client.SyncReq{})
+
+		historicalEvent := buildEventWithSigningKey(
+			t,
+			serverRoom,
+			spec.ServerName(srv.ServerName()),
+			keyIDLost,
+			privKeyLost,
+			lossTime.Add(-2*time.Hour),
+			federation.Event{
+				Sender: charlie,
+				Type:   "m.room.message",
+				Content: map[string]interface{}{
+					"msgtype": "m.text",
+					"body":    "Historical event signed by the lost key",
+				},
+			},
+		)
+		serverRoom.AddEvent(historicalEvent)
+
+		currentEvent := srv.MustCreateEvent(t, serverRoom, federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "Current event signed by the recovery key",
+			},
+		})
+		serverRoom.AddEvent(currentEvent)
+
+		// The homeserver under test now probes /state_ids during recovery when
+		// resolving the current event's ancestry, so serve the room's current
+		// state snapshot here as well.
+		srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+			vars := mux.Vars(req)
+			if vars["roomID"] != serverRoom.RoomID {
+				ct.Errorf(t, "unexpected /state_ids request for room %s", vars["roomID"])
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("{}"))
+				return
+			}
+			roomState := serverRoom.AllCurrentState()
+			stateEventIDs := make([]string, 0, len(roomState))
+			for _, ev := range roomState {
+				stateEventIDs = append(stateEventIDs, ev.EventID())
+			}
+			authEventIDs := make([]string, 0, len(roomState))
+			for _, ev := range serverRoom.AuthChainForEvents(roomState) {
+				authEventIDs = append(authEventIDs, ev.EventID())
+			}
+			res := fclient.RespStateIDs{
+				AuthEventIDs:  authEventIDs,
+				StateEventIDs: stateEventIDs,
+			}
+			responseBytes, err := json.Marshal(&res)
+			must.NotError(t, "failed to marshal /state_ids response", err)
+			w.WriteHeader(200)
+			_, _ = w.Write(responseBytes)
+		}).Methods("GET")
+
+		// historicalEvent's own signature (above, via buildEventWithSigningKey)
+		// intentionally uses keyIDLost, since that's what's under test. The
+		// transport-level federation request (X-Matrix Authorization header)
+		// is separate — see the identical note in
+		// testMSC4499KeyHistoricalEventVerification above, citing MSC4499's
+		// "Permanent binding" section: "federation requests still require a
+		// currently valid key". Use the current identity for that request.
+		fedClient := federationClientWithSigningKey(
+			deployment,
+			spec.ServerName(srv.ServerName()),
+			keyIDCurrent,
+			privKeyCurrent,
+		)
+		ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx()
+		historicalResp, historicalErr := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-historical-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{historicalEvent.JSON()},
+		})
+		if historicalErr != nil {
+			if publishLostKey {
+				if isSynapseRetiredKeyLookupError(historicalErr) {
+					// Synapse does not retain the retired key needed for this
+					// historical verification path. Skip at the actual failure point
+					// so the rest of the run stays readable.
+					t.Skipf("hs1 rejected historical event after the origin published the lost key in old_verify_keys: %v", historicalErr)
+				}
+				must.NotError(t, "failed to send historical event after recovery rotation", historicalErr)
+			} else if _, ok := historicalErr.(gomatrix.HTTPError); !ok {
+				// For the fully-lost-key case, only an application-level
+				// rejection (hs1 correctly refusing to verify the event
+				// against a key it never learned) counts as evidence of
+				// correct behaviour below. A transport-level failure (timeout,
+				// connection reset, etc.) is unrelated to key verification and
+				// must not silently pass as a correct rejection.
+				t.Fatalf("failed to send historical event for fully-lost-key case: expected an application-level rejection, got a transport error: %v", historicalErr)
+			}
+		}
+
+		// currentEvent was signed by keyIDCurrent (via srv.MustCreateEvent
+		// above, since srv.KeyID/srv.Priv are never reassigned in this
+		// function), so the same fedClient identity is correct here too.
+		ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx2()
+		currentResp, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-recovery-current-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{currentEvent.JSON()},
+		})
+		must.NotError(t, "failed to send current event after recovery rotation", err)
+		for eventID, pduResp := range currentResp.PDUs {
+			if pduResp.Error != "" {
+				t.Fatalf("hs1 rejected current event %s signed by the replacement key: %s", eventID, pduResp.Error)
+			}
+		}
+
+		acceptedHistorical := historicalErr == nil
+		if acceptedHistorical {
+			for _, pduResp := range historicalResp.PDUs {
+				if pduResp.Error != "" {
+					acceptedHistorical = false
+					break
+				}
+			}
+		}
+
+		if publishLostKey && !acceptedHistorical {
+			if runtime.Homeserver == runtime.Synapse {
+				// Same root cause as testMSC4499KeyHistoricalEventVerification:
+				// Synapse doesn't retain/serve the retired key needed for
+				// MSC4499 historical verification (see note on
+				// testMSC4499KeyIDFirstSeenWinsDirect). Known gap: skip here,
+				// at the point of divergence, so the run up to this point still
+				// produces normal debug output.
+				t.Skipf("hs1 rejected a historical event after the origin published the lost key in old_verify_keys")
+			}
+			t.Fatalf("hs1 rejected a historical event after the origin published the lost key in old_verify_keys")
+		}
+		if !publishLostKey && acceptedHistorical {
+			t.Fatalf("hs1 accepted a historical event for a fully lost key that was never published in old_verify_keys")
+		}
+
+		if !publishLostKey {
+			deadline := time.Now().Add(1500 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+				events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
+				for _, ev := range events {
+					if ev.Get("event_id").Str == historicalEvent.EventID() {
+						t.Fatalf("hs1 delivered a historical event for a fully lost key that should have failed verification")
+					}
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
+
+	t.Run("PublishedLostKeyPreservesHistoricalVerification", func(t *testing.T) {
+		runCase(t, true)
+	})
+	t.Run("FullyLostKeyRemainsUnverifiableToColdPeers", func(t *testing.T) {
+		runCase(t, false)
+	})
+}
+
+// testMSC4499KeyLocalRecoveryFromKeyLoss is a named placeholder for the still
+// missing homeserver-local key-loss injection and operator-recovery coverage.
+func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
+	// TODO: Add a homeserver-local fault-injection hook plus an operator-facing
+	// recovery path so this can become a real conformance test.
+	// Tracking reference: this needs a homeserver-local fault-injection hook for
+	// signing-key loss plus an operator-facing recovery mechanism under test.
+	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
 }

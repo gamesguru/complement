@@ -70,7 +70,6 @@ func TestUnknownEndpoints(t *testing.T) {
 
 	// Unknown key endpoints (part of the Server-server API under a different prefix).
 	t.Run("Key endpoints", func(t *testing.T) {
-		runtime.SkipIf(t, runtime.Conduit)
 		queryUnknownEndpoint(t, alice, []string{"_matrix", "key", "unknown"})
 		// v3 should exist, but not v3/unknown.
 		queryUnknownEndpoint(t, alice, []string{"_matrix", "key", "v2", "unknown"})

@@ -22,6 +22,7 @@ import (
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
@@ -119,6 +120,36 @@ func TestInboundFederationRejectsEventsWithRejectedAuthEvents(t *testing.T) {
 	charlie := srv.UserID("charlie")
 	room := srv.MustJoinRoom(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), testRoomID, charlie)
 	charlieMembershipEvent := room.CurrentState("m.room.member", charlie)
+
+	// The homeserver under test now probes /state_ids during the recovery path
+	// for some auth-resolution cases, so return the room's current state here as
+	// a stable snapshot.
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		vars := mux.Vars(req)
+		if vars["roomID"] != room.RoomID {
+			ct.Errorf(t, "unexpected /state_ids request for room %s", vars["roomID"])
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		roomState := room.AllCurrentState()
+		stateEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range roomState {
+			stateEventIDs = append(stateEventIDs, ev.EventID())
+		}
+		authEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range room.AuthChainForEvents(roomState) {
+			authEventIDs = append(authEventIDs, ev.EventID())
+		}
+		res := fclient.RespStateIDs{
+			AuthEventIDs:  authEventIDs,
+			StateEventIDs: stateEventIDs,
+		}
+		responseBytes, err := json.Marshal(&res)
+		must.NotError(t, "failed to marshal /state_ids response", err)
+		w.WriteHeader(200)
+		_, _ = w.Write(responseBytes)
+	}).Methods("GET")
 
 	// have Charlie send a PL event which will be rejected
 	rejectedEvent := srv.MustCreateEvent(t, room, federation.Event{

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -92,6 +93,8 @@ type Complement struct {
 
 	// The namespace for all complement created blueprints and deployments
 	PackageNamespace string
+	// A per-process suffix used to keep Docker object names unique across runs.
+	RunID string
 	// Certificate Authority generated values for this run of complement. Homeservers will use this
 	// as a base to derive their own signed Federation certificates.
 	CACertificate *x509.Certificate
@@ -194,6 +197,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	if namespacePrefix := os.Getenv("COMPLEMENT_PACKAGE_NAMESPACE_PREFIX"); namespacePrefix != "" {
 		cfg.PackageNamespace = namespacePrefix + "_" + cfg.PackageNamespace
 	}
+	cfg.RunID = generateRunID()
 
 	// create CA certs and keys
 	if err := cfg.GenerateCA(); err != nil {
@@ -213,6 +217,14 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	// HSPortBindingIP is fixed here, but used by homerunner to override.
 	cfg.HSPortBindingIP = "127.0.0.1"
 	return cfg
+}
+
+func generateRunID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 }
 
 func (c *Complement) GenerateCA() error {
