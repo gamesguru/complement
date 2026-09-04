@@ -64,8 +64,11 @@ func TestRedisRestartRecovery(t *testing.T) {
 	containerID := deployment.ContainerID(t, "hs1")
 
 	pid, err := findRedisServerPID(containerID)
-	if err != nil || pid == "" {
-		t.Skipf("no redis-server process found in this deployment (monolith mode?): pid=%q err=%v", pid, err)
+	if err != nil {
+		t.Fatalf("failed to inspect %s for redis-server: %v", containerID, err)
+	}
+	if pid == "" {
+		t.Skip("no redis-server process found in this deployment (monolith mode)")
 	}
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
@@ -103,6 +106,9 @@ func TestRedisRestartRecovery(t *testing.T) {
 		t.Fatalf("redis-server did not respawn within 5s of being killed -- supervisord autorestart appears broken, not just slow")
 	}
 
+	// SendEventSynced itself waits for /sync, so set the recovery allowance
+	// before calling it rather than only for the later incremental sync.
+	alice.SyncUntilTimeout = 15 * time.Second
 	eventID := alice.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
 		Content: map[string]interface{}{
@@ -115,7 +121,6 @@ func TestRedisRestartRecovery(t *testing.T) {
 	// resubscribe + REPLICATE catch-up, not just the ~5s reconnect delay
 	// cap alone -- give it real headroom rather than reusing the tight
 	// bound that made the original test flaky.
-	alice.SyncUntilTimeout = 15 * time.Second
 	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, eventID))
 
 	t.Logf("event became visible via /sync after redis restart within the 15s bound")

@@ -1279,13 +1279,18 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	// TestCorruptedAuthChain and
 	// TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse).
 	// Without this, the state read below can race ahead of that processing.
-	alice.SendEventSynced(t, roomID, b.Event{
-		Type: "m.room.message",
+	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
 			"body":    "finished",
 		},
+		PrevEvents: []string{sendTxnEvent.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
 	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
 
 	// Unlike TestCorruptedAuthChain: every event was individually
 	// fetchable, so the full A->B->C->D->E chain should have been
@@ -1612,13 +1617,18 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	gmeRetryWaiter.Wait(t, 5*time.Second)
 	must.Equal(t, gmeCallCount.Load() >= 2, true, "/get_missing_events was never retried after the malformed first response")
 
-	alice.SendEventSynced(t, roomID, b.Event{
-		Type: "m.room.message",
+	sentinelEvent := srv.MustCreateEvent(t, srvRoom, federation.Event{
+		Type:   "m.room.message",
+		Sender: bob,
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
 			"body":    "finished",
 		},
+		PrevEvents: []string{eventE.EventID()},
+		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventE.EventID()},
 	})
+	srv.MustSendTransaction(t, deployment, "hs1", []json.RawMessage{sentinelEvent.JSON()}, nil)
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sentinelEvent.EventID()))
 
 	content := alice.MustGetStateEventContent(t, roomID, spec.MRoomMember, bob)
 	t.Logf("bob's membership content after malformed gme retry: %v", content.Raw)
