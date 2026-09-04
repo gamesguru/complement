@@ -51,4 +51,5 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("STATE09: Asymmetric 3-way partition eventual consistency and rolling heal", testMSC4242STATE09AsymmetricPartitionEventualConsistency)
 	t.Run("DIVERGENCE00: Partitioned server accepts incomplete state DAG from buggy peer", testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG)
 	t.Run("DIVERGENCE01: Differential rejection after partition with divergent state DAGs", testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition)
+	t.Run("STATE_PREDECESSORS00: Pre-MSC4242 room uses prev_events as state predecessors", testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecessors)
 }
