@@ -366,6 +366,138 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 	must.NotEqual(t, resp.PDUs[probe.EventID()].Error, "", "hs2 should reject the probe when state-DAG recovery fails")
 }
 
+// DIVERGENCE02: Inherent spec defect — an unrecoverable state-DAG gap between
+// two fully HONEST servers is a permanent, silent fork, with no fallback.
+//
+// This is not a bug in a particular implementation, and no server here is
+// malicious or buggy: hs2 legitimately cannot serve the missing state-DAG
+// event (e.g. it never received it either, or it has since been pruned by an
+// ordinary retention policy). Per MSC4242, `/state` and `/state_ids` are
+// obsoleted (they "fixed a security vulnerability" by removing them), so the
+// ONLY recovery path for a state-DAG gap is `/get_missing_events` walking
+// from a specific referenced event. There is no fallback endpoint to force a
+// full-state resync. And per the "rejected events" model, a faulty or failed
+// `/get_missing_events` response MUST cause the `/send` transaction to fail
+// (spec: "this discourages malicious servers... [but] this property only
+// exists whilst Matrix continues to have a full-mesh topology").
+//
+// This test shows the failure is not a one-off hiccup: once the gap exists
+// and can't be filled, EVERY subsequent event from the diverged branch is
+// rejected too — the two servers are permanently unable to federate this
+// room with each other, with no repair short of a destructive leave+rejoin
+// (which discards local history, per the send_join spec text: "destroy the
+// state associated with the room").
+func testMSC4242DIVERGENCE02PermanentForkWithNoFallbackEndpoint(t *testing.T) {
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie,
+		federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	bob.MustJoinRoom(t, roomID, []spec.ServerName{deployment.GetFullyQualifiedHomeserverName(t, "hs1")})
+
+	sinceAlice := alice.MustSyncUntil(t, client.SyncReq{},
+		client.SyncJoinedTo(bob.UserID, roomID),
+		client.SyncJoinedTo(charlie, roomID),
+	)
+
+	// hs2 is offline for a single state change on hs1 — an ordinary, transient
+	// partition, not an attack.
+	deployment.PauseServer(t, "hs2")
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, "",
+	}, client.WithJSONBody(t, map[string]any{"topic": "New topic set during partition"}))
+	var topicEventID string
+	sinceAlice = alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomTopic {
+			topicEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	topicAtController := room.WaiterForEvent(topicEventID)
+	topicAtController.Waitf(t, 10*time.Second, "controller did not receive Alice's topic change")
+	deployment.PauseServer(t, "hs1")
+
+	// hs2 comes back and is otherwise a normal, honest participant.
+	deployment.UnpauseServer(t, "hs2")
+
+	// The gap can never be filled: hs2's /get_missing_events always fails,
+	// modelling the legitimate case where the required history is genuinely
+	// unavailable (pruned, or the responder itself never had it), not a
+	// deliberate attack.
+	var missingStateDAGCount int
+	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		body, err := extractGetMissingEventsRequest(roomID, req)
+		if err != nil {
+			ct.Errorf(t, "failed to read hs2 /get_missing_events request: %s", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if body.StateDAG {
+			missingStateDAGCount++
+		}
+		w.WriteHeader(http.StatusBadGateway)
+	})
+
+	deployment.UnpauseServer(t, "hs1")
+	sendProbe := func(body string) string {
+		probe := mustCreateEvent(t, srv, room, MSC4242Event{
+			Event: federation.Event{
+				Type:       "m.room.message",
+				Sender:     charlie,
+				Content:    map[string]interface{}{"msgtype": "m.text", "body": body},
+				PrevEvents: []string{topicEventID},
+			},
+			PrevStateEvents: []string{topicEventID},
+		})
+		alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHasEventID(roomID, probe.EventID()))
+		resp, err := srv.FederationClient(deployment).SendTransaction(context.Background(), gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(probe.EventID()),
+			Origin:        srv.ServerName(),
+			Destination:   deployment.GetFullyQualifiedHomeserverName(t, "hs2"),
+			PDUs:          AsEventJSONs([]gomatrixserverlib.PDU{probe}),
+		})
+		must.NotError(t, "send probe to hs2", err)
+		return resp.PDUs[probe.EventID()].Error
+	}
+
+	// First attempt: hs2 detects the gap (via prev_state_events) and tries to
+	// recover, fails, and rejects.
+	must.NotEqual(t, sendProbe("first attempt after the gap"), "", "hs2 should reject the first event referencing the unfillable gap")
+	must.Equal(t, missingStateDAGCount >= 1, true, "hs2 should have attempted state-DAG recovery at least once")
+
+	// Second, independent attempt, well after the first: this is not a
+	// one-off failure to be retried past. The room is permanently split
+	// between hs1 and hs2's views with no self-healing mechanism.
+	must.NotEqual(t, sendProbe("second attempt, still after the gap"), "", "hs2 should still reject: there is no fallback endpoint (no /state, /state_ids) to force a resync")
+
+	// hs2's own view of the room is completely unaffected and remains
+	// internally self-consistent throughout — from hs2's perspective nothing
+	// is wrong. This is the "subjective" half of the defect: neither side has
+	// any signal that its view of current state disagrees with the other's,
+	// short of federation traffic simply and permanently failing between them.
+	bobTopicResp := bob.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, ""})
+	must.Equal(t, bobTopicResp.StatusCode, 200, "hs2 should still be able to read its own (stale) room state without any error")
+}
+
 // documentaryMSC4242DIVERGENCE01DifferentialRejectionAfterPartition preserves
 // the original mock-Bob sketch as background. It is intentionally not registered:
 // the executable test above exercises the behavior with two real homeservers.

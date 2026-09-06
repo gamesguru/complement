@@ -1578,3 +1578,122 @@ func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 func printInfo(t ct.TestLike, prefix string, p gomatrixserverlib.PDU) {
 	t.Logf("%s => %v (prev_state_events=%v     prev_events=%v)", prefix, p.EventID(), p.PrevStateEventIDs(), p.PrevEventIDs())
 }
+
+// STATE10: Self-demotion does not prevent backdated retaliation (Kegan's
+// "dueling admins" Figure 5).
+//
+// Bob (PL 75) and Charlie (PL 50) are both admins under Alice (PL 100, creator).
+// Bob self-demotes to PL 0 — a real, causally-first event, visible to Alice
+// before anything else happens. Bob then bans Charlie, but constructs that ban
+// with `prev_state_events` citing the power_levels grant from BEFORE his own
+// self-demotion, not the self-demotion itself. The ban's `prev_events` chains
+// after the self-demotion (so it arrives later, both in wall-clock send order
+// and in DAG causal order for the message/member tuple), but its auth state
+// is chosen independently via `prev_state_events`.
+//
+// Because event authorization is checked against the state an event itself
+// cites (see STATE07), not against "current" resolved state, Bob's ban is
+// authorized using the PL 75 he had already given up by the time he sent it.
+// Self-demotion provides no protection against a retaliatory action the demoted
+// user backdates to before their own demotion, because `prev_state_events` —
+// not real time, not even the event's own `prev_events` — governs which state
+// an event is authorized against.
+func testMSC4242STATE10SelfDemotionDoesNotPreventBackdatedRetaliation(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob, federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoin := srv.MustCreateEvent(t, room, federation.Event{
+		Type:     spec.MRoomMember,
+		StateKey: &charlie,
+		Sender:   charlie,
+		Content:  map[string]interface{}{"membership": "join"},
+	})
+	room.AddEvent(charlieJoin)
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	// Alice grants Bob PL 75 and Charlie PL 50 — Bob outranks Charlie and can ban him.
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          75,
+			charlie:      50,
+		},
+	}))
+	var plGrantEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 75 {
+			plGrantEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	// Wait for the mock federation server to process the PL grant before Bob
+	// constructs events rooted in it.
+	plGrantAtController := room.WaiterForEvent(plGrantEventID)
+	plGrantAtController.Waitf(t, 10*time.Second, "controller did not receive PL grant for Bob")
+
+	// Bob self-demotes to PL 0. This is the real, causally-first event.
+	selfDemote := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomPowerLevels,
+			StateKey:   &empty,
+			Sender:     bob,
+			Content:    map[string]interface{}{"users": map[string]int{alice.UserID: 100, bob: 0, charlie: 50}},
+			PrevEvents: []string{plGrantEventID},
+		},
+		PrevStateEvents: []string{plGrantEventID},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{selfDemote}), nil)
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, selfDemote.EventID()))
+
+	// Bob bans Charlie. prev_events chains after the self-demotion (arrives
+	// later, both in wall-clock send order and DAG order), but prev_state_events
+	// deliberately cites the PRE-self-demotion power_levels grant — backdating
+	// the ban's authorization to when Bob still held PL 75.
+	backdatedBan := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomMember,
+			StateKey:   &charlie,
+			Sender:     bob,
+			Content:    map[string]interface{}{"membership": "ban"},
+			PrevEvents: []string{selfDemote.EventID()},
+		},
+		PrevStateEvents: []string{plGrantEventID},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{backdatedBan}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, backdatedBan.EventID()))
+
+	// Verify resolved state: Bob is PL 0 (his self-demotion stands, it's on a
+	// separate tuple), and Charlie IS banned despite Bob no longer holding
+	// sufficient PL by the time the ban was actually sent.
+	plResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""})
+	plBody := client.ParseJSON(t, plResp)
+	must.Equal(t, gjson.GetBytes(plBody, "users."+client.GjsonEscape(bob)).Int(), int64(0), "Bob's self-demotion should stand")
+
+	charlieResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
+	charlieBody := client.ParseJSON(t, charlieResp)
+	must.Equal(t, gjson.GetBytes(charlieBody, "membership").Str, "ban",
+		"Charlie's ban should be authorized: it cites the pre-self-demotion PL 75 state, not Bob's current (demoted) PL")
+}
