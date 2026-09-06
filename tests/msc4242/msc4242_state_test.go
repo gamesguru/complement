@@ -31,9 +31,9 @@ import (
 //  STATE04: mismatched prev_events and prev_state_events produces the correct state
 //  STATE05: demoted moderator concurrent action (Priya bans troll before demotion)
 //  STATE06: concurrent ban/kick dominance (Bob banned on branch 1 cannot ban Charlie on branch 2)
-//  STATE07: phantom join rules lockdown (invite-only lockdown rejects concurrent public joins)
+//  STATE07: phantom join rules lockdown (invite-only lockdown resolves, but Charlie's concurrent join succeeds because join authorization is per-event)
 //  STATE08: redaction of state event in state DAG
-//  STATE09: asymmetric 3-way partition eventual consistency and rolling heal (highlights assists from MSC4500, MSC4511A, MSC4511C, MSC4521)
+//  STATE09: asymmetric 3-way state DAG merge and resolution
 
 func testMSC4242STATE00TemporaryNetworkErrorIsOkay(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
@@ -1401,6 +1401,11 @@ func testMSC4242STATE09AsymmetricPartitionEventualConsistency(t *testing.T) {
 		}
 		return false
 	}))
+	// Wait for the mock federation server to process the PL grant before
+	// constructing events rooted in it — Alice seeing it in /sync does not
+	// guarantee the mock has processed the outbound transaction.
+	plGrantAtController := room.WaiterForEvent(basePLID)
+	plGrantAtController.Waitf(t, 10*time.Second, "controller did not receive PL grant for Bob and Charlie")
 
 	alice.MustDo(t, "PUT", []string{
 		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomTopic, "",
