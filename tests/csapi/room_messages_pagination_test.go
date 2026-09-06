@@ -1,9 +1,7 @@
 package csapi_tests
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -1095,14 +1093,6 @@ type paginationResult struct {
 	nonAdvancingToken bool
 }
 
-type forwardExtremitiesResponse struct {
-	Count   int                     `json:"count"`
-	Results []forwardExtremityEntry `json:"results"`
-}
-
-type forwardExtremityEntry struct {
-	EventID string `json:"event_id"`
-}
 
 // findRoomStartToken paginates backward through a room with large pages to find
 // the token pointing to the very start of the room timeline. This token can then
@@ -1147,47 +1137,6 @@ func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string 
 	return startToken
 }
 
-func assertForwardExtremities(t *testing.T, admin *client.CSAPI, roomID string, expectedEventIDs ...string) {
-	t.Helper()
-
-	if len(expectedEventIDs) == 0 {
-		t.Fatal("assertForwardExtremities requires at least one expected event ID")
-	}
-
-	res := admin.Do(t, "GET", []string{"_synapse", "admin", "v1", "rooms", roomID, "forward_extremities"})
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
-			t.Logf("Skipping forward extremities assertion for %s: admin endpoint returned HTTP %d", roomID, res.StatusCode)
-			return
-		}
-		body := client.ParseJSON(t, res)
-		t.Fatalf("forward extremities admin endpoint for %s returned HTTP %d: %s", roomID, res.StatusCode, string(body))
-	}
-
-	body := client.ParseJSON(t, res)
-	var got forwardExtremitiesResponse
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("failed to decode forward extremities response for %s: %s\nbody=%s", roomID, err, string(body))
-	}
-
-	gotEventIDs := make([]string, 0, len(got.Results))
-	for _, result := range got.Results {
-		gotEventIDs = append(gotEventIDs, result.EventID)
-	}
-
-	expected := append([]string(nil), expectedEventIDs...)
-	slices.Sort(expected)
-	slices.Sort(gotEventIDs)
-
-	if got.Count != len(expectedEventIDs) {
-		t.Fatalf("forward extremities count mismatch for %s: got %d (results=%d), want %d; got=%v want=%v",
-			roomID, got.Count, len(gotEventIDs), len(expectedEventIDs), gotEventIDs, expected)
-	}
-
-	if !slices.Equal(gotEventIDs, expected) {
-		t.Fatalf("forward extremities mismatch for %s: got %v want %v", roomID, gotEventIDs, expected)
-	}
-}
 
 // paginateRoom paginates through a room's /messages endpoint in the given
 // direction ("b" for backwards, "f" for forwards), collecting ALL events
@@ -1195,11 +1144,6 @@ func assertForwardExtremities(t *testing.T, admin *client.CSAPI, roomID string, 
 func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) paginationResult {
 	t.Helper()
 	return paginateRoomDirFrom(t, user, roomID, limit, "b", "")
-}
-
-func paginateRoomDir(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string) paginationResult {
-	t.Helper()
-	return paginateRoomDirFrom(t, user, roomID, limit, dir, "")
 }
 
 func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string, initialToken string) paginationResult {
@@ -1574,25 +1518,5 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 	for _, failure := range failures {
 		t.Error(failure)
-	}
-}
-
-// dumpEventDetails is a test helper that can be called to log all raw events from
-// pagination for debugging purposes. This is intentionally verbose.
-func dumpEventDetails(t *testing.T, messagesResBody json.RawMessage, pageNum int) {
-	t.Helper()
-
-	chunkRes := gjson.GetBytes(messagesResBody, "chunk")
-	if !chunkRes.Exists() {
-		return
-	}
-
-	for i, event := range chunkRes.Array() {
-		t.Logf("  Page %d, event %d: type=%s event_id=%s state_key=%s",
-			pageNum, i,
-			event.Get("type").Str,
-			event.Get("event_id").Str,
-			event.Get("state_key").Str,
-		)
 	}
 }
