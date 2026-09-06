@@ -77,6 +77,7 @@ func testMSC4500StateAccumulator(t *testing.T) {
 
 	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "do federation request", err)
+	defer fedRes.Body.Close()
 
 	fedBody := must.ParseJSON(t, fedRes.Body)
 
@@ -277,6 +278,7 @@ func mustGetStateAccumulatorDigest(
 
 	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "do federation request", err)
+	defer fedRes.Body.Close()
 
 	fedBody := must.ParseJSON(t, fedRes.Body)
 	digestB64 := fedBody.Get("digest").Str
