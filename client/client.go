@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -829,12 +830,32 @@ func (c *CSAPI) Do(t ct.TestLike, method string, paths []string, opts ...Request
 	}
 }
 
+// defaultClientTimeout returns the request timeout to use for the
+// per-request http.Client used against a homeserver under test. 30s is
+// fine for a request that's actually hung, but under host contention
+// (many containers/tests scheduled concurrently, a loaded CI runner or
+// dev machine) a homeserver can simply be slow to be scheduled rather
+// than actually stuck -- a fixed 30s in that case produces a spurious
+// "context deadline exceeded"/timeout test failure that looks like a
+// product bug but is really the test harness being impatient. Overridable
+// via COMPLEMENT_CLIENT_TIMEOUT_SECS so a slow/loaded environment can be
+// given more slack without touching parallelism or masking genuinely
+// hung requests elsewhere.
+func defaultClientTimeout() time.Duration {
+	if s := os.Getenv("COMPLEMENT_CLIENT_TIMEOUT_SECS"); s != "" {
+		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return 30 * time.Second
+}
+
 // NewLoggedClient returns an http.Client which logs requests/responses
 func NewLoggedClient(t ct.TestLike, hsName string, cli *http.Client) *http.Client {
 	t.Helper()
 	if cli == nil {
 		cli = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultClientTimeout(),
 		}
 	}
 	transport := cli.Transport
