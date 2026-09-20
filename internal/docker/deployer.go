@@ -235,10 +235,13 @@ func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName strin
 
 		if printServerLogs {
 			// If we want the logs we gracefully stop the containers to allow
-			// the logs to be flushed.
-			oneSecond := 1
+			// the logs to be flushed. Configurable via COMPLEMENT_STOP_TIMEOUT_SECS
+			// -- a bare 1s default is too short for a multi-process (worker-mode)
+			// container also running Postgres/Redis/nginx under supervisord to
+			// shut down cleanly before Docker gives up and sends SIGKILL instead.
+			stopTimeoutSecs := int(d.config.StopTimeout.Seconds())
 			_, err := d.Docker.ContainerStop(context.Background(), hsDep.ContainerID, client.ContainerStopOptions{
-				Timeout: &oneSecond,
+				Timeout: &stopTimeoutSecs,
 			})
 			if err != nil {
 				log.Printf("Destroy: Failed to destroy container %s : %s\n", hsDep.ContainerID, err)
