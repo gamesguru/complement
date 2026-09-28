@@ -74,3 +74,26 @@ func TestComplementServerIsSigned(t *testing.T) {
 		}
 	}
 }
+
+func TestFederationServersHaveIndependentCertificates(t *testing.T) {
+	cfg := config.NewConfigFromEnvVars("test", "unimportant")
+	cfg.HostnameRunningComplement = "localhost"
+	deployment := &fedDeploy{
+		cfg:     cfg,
+		tripper: http.DefaultClient.Transport,
+	}
+	first := NewServer(t, deployment)
+	second := NewServer(t, deployment)
+
+	if first.srv.TLSConfig == nil || len(first.srv.TLSConfig.Certificates) != 1 {
+		t.Fatal("first federation server does not have an in-memory TLS certificate")
+	}
+	if second.srv.TLSConfig == nil || len(second.srv.TLSConfig.Certificates) != 1 {
+		t.Fatal("second federation server does not have an in-memory TLS certificate")
+	}
+	firstSerial := first.srv.TLSConfig.Certificates[0].Leaf.SerialNumber
+	secondSerial := second.srv.TLSConfig.Certificates[0].Leaf.SerialNumber
+	if firstSerial.Cmp(secondSerial) == 0 {
+		t.Fatal("separate federation servers unexpectedly share a certificate")
+	}
+}

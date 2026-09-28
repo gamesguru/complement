@@ -8,18 +8,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
-	"os"
-	"path"
 	"sync"
 	"time"
 
@@ -57,10 +55,8 @@ type Server struct {
 	serverName spec.ServerName
 	listening  bool
 
-	certPath string
-	keyPath  string
-	mux      *mux.Router
-	srv      *http.Server
+	mux *mux.Router
+	srv *http.Server
 
 	directoryHandlerSetup bool
 	aliases               map[string]string
@@ -126,12 +122,10 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 	})
 
 	// generate certs and an http.Server
-	httpServer, certPath, keyPath, err := federationServer(deployment.GetConfig(), srv.mux)
+	httpServer, err := federationServer(deployment.GetConfig(), srv.mux)
 	if err != nil {
 		ct.Fatalf(t, "complement: unable to create federation server and certificates: %s", err.Error())
 	}
-	srv.certPath = certPath
-	srv.keyPath = keyPath
 	srv.srv = httpServer
 
 	for _, opt := range opts {
@@ -625,7 +619,10 @@ func (s *Server) Listen() (cancel func()) {
 	go func() {
 		defer ln.Close()
 		defer wg.Done()
-		err := s.srv.ServeTLS(ln, s.certPath, s.keyPath)
+		// The certificate is configured in memory. Passing shared certificate
+		// file paths here lets concurrently-running test packages overwrite
+		// each other's PEM files between server creation and TLS startup.
+		err := s.srv.ServeTLS(ln, "", "")
 		if err != nil && err != http.ErrServerClosed {
 			s.t.Logf("ListenFederationServer: ServeTLS failed: %s", err)
 			// Note that running s.t.FailNow is not allowed in a separate goroutine
@@ -665,25 +662,23 @@ func WithRoomOpts(opts ...ServerRoomOpt) JoinRoomOpt {
 }
 
 // federationServer creates a federation server with the given handler
-func federationServer(cfg *config.Complement, h http.Handler) (*http.Server, string, string, error) {
+func federationServer(cfg *config.Complement, h http.Handler) (*http.Server, error) {
 	var derBytes []byte
 	srv := &http.Server{
 		Addr:    ":8448",
 		Handler: h,
 	}
-	tlsCertPath := path.Join(os.TempDir(), "complement.crt")
-	tlsKeyPath := path.Join(os.TempDir(), "complement.key")
 	certificateDuration := time.Hour
 	priv, err := rsa.GenerateKey(rand.Reader, 4096)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 	notBefore := time.Now()
 	notAfter := notBefore.Add(certificateDuration)
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 
 	template := x509.Certificate{
@@ -713,32 +708,22 @@ func federationServer(cfg *config.Complement, h http.Handler) (*http.Server, str
 	// derive a new certificate from the base complement one
 	derBytes, err = x509.CreateCertificate(rand.Reader, &template, cfg.CACertificate, &priv.PublicKey, cfg.CAPrivateKey)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
 
-	certOut, err := os.Create(tlsCertPath)
+	leaf, err := x509.ParseCertificate(derBytes)
 	if err != nil {
-		return nil, "", "", err
+		return nil, err
 	}
-	defer certOut.Close() // nolint: errcheck
-	if err = pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
-		return nil, "", "", err
+	srv.TLSConfig = &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{derBytes},
+			PrivateKey:  priv,
+			Leaf:        leaf,
+		}},
 	}
 
-	keyOut, err := os.OpenFile(tlsKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return nil, "", "", err
-	}
-	defer keyOut.Close() // nolint: errcheck
-	err = pem.Encode(keyOut, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(priv),
-	})
-	if err != nil {
-		return nil, "", "", err
-	}
-
-	return srv, tlsCertPath, tlsKeyPath, nil
+	return srv, nil
 }
 
 type nopKeyDatabase struct {
