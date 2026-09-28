@@ -48,6 +48,10 @@ func TestDeactivateAccount(t *testing.T) {
 	outer:
 		for _, flow := range flowList {
 			flowObject, ok := flow.(map[string]interface{})
+			if !ok {
+				t.Fatalf("flow is not an object")
+				return
+			}
 			stageList, ok := flowObject["stages"].([]interface{})
 			if !ok {
 				t.Fatalf("stages is not a list")

@@ -130,11 +130,11 @@ func TestDeviceListsUpdateOverFederation(t *testing.T) {
 			})
 
 			// both alice and bob should see device list updates for each other
-			aliceSince = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t, client.SyncReq{TimeoutMillis: "1000", Since: aliceSince},
 				syncHasDeviceListChange([]string{bob.UserID}, []string{}),
 			)
-			bobSince = bob.MustSyncUntil(
+			bob.MustSyncUntil(
 				t, client.SyncReq{TimeoutMillis: "1000", Since: bobSince},
 				// bob is in this list because... his other devices may need to know.
 				syncHasDeviceListChange([]string{alice.UserID, bob.UserID}, []string{}),
@@ -155,13 +155,13 @@ func TestDeviceListsUpdateOverFederation(t *testing.T) {
 			tc.makeReachable(t)
 
 			// ensure alice sees her new device login
-			aliceSince = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t, client.SyncReq{TimeoutMillis: "1000", Since: aliceSince},
 				syncHasDeviceListChange([]string{alice.UserID}, []string{}),
 			)
 
 			// ensure bob sees the device list change
-			bobSince = bob.MustSyncUntil(
+			bob.MustSyncUntil(
 				t, client.SyncReq{TimeoutMillis: "1000", Since: bobSince},
 				syncHasDeviceListChange([]string{alice.UserID}, []string{}),
 			)
@@ -268,7 +268,7 @@ func TestUserAppearsInChangedDeviceListOnJoinOverFederation(t *testing.T) {
 	})
 
 	// we must see the joiner's user ID in device_lists.changed
-	since = joinee.MustSyncUntil(t, client.SyncReq{
+	joinee.MustSyncUntil(t, client.SyncReq{
 		Since: since,
 	}, func(clientUserID string, topLevelSyncJSON gjson.Result) error {
 		changed := topLevelSyncJSON.Get("device_lists.changed").Array()

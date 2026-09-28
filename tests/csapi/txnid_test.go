@@ -244,7 +244,7 @@ func TestTxnIdWithRefreshToken(t *testing.T) {
 	}, txnId)
 
 	// Use the refresh token to get a new access token.
-	c.AccessToken, refreshToken, _ = c.ConsumeRefreshToken(t, refreshToken)
+	c.AccessToken, _, _ = c.ConsumeRefreshToken(t, refreshToken)
 
 	// When syncing, we should find the event and it should also have the correct transaction ID even
 	// though the access token is different.

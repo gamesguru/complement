@@ -386,13 +386,6 @@ func slidingSubscription(timelineLimit int) map[string]interface{} {
 	}
 }
 
-func slidingSubscriptionWithRequiredState(timelineLimit int, requiredState map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"timeline_limit": timelineLimit,
-		"required_state": requiredState,
-	}
-}
-
 func allRoomsList(timelineLimit int, from int, to int) map[string]interface{} {
 	return map[string]interface{}{
 		"all": slidingList(timelineLimit, from, to),

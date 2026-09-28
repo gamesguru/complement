@@ -114,7 +114,7 @@ func TestRoomAlias(t *testing.T) {
 			//
 			// If (4) arrives at the reader before (2), the reader responds with
 			// old data. Bodge around this by retrying for up to a second.
-			res = alice.Do(
+			alice.Do(
 				t,
 				"GET",
 				[]string{"_matrix", "client", "v3", "rooms", roomID, "aliases"},

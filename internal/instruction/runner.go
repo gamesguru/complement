@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -227,7 +226,7 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
 			if i < 100 || i%200 == 0 {
 				r.log("%s [%d/%d] %s => HTTP %s\n", contextStr, i, len(instrs), req.URL.String(), res.Status)
 			}
-			body, err := ioutil.ReadAll(res.Body)
+			body, err := io.ReadAll(res.Body)
 			if err != nil {
 				err = isFatalErr(fmt.Errorf("%s : failed to read response body: %w", contextStr, err))
 				if err != nil {

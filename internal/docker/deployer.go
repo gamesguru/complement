@@ -56,10 +56,7 @@ type Deployer struct {
 }
 
 func NewDeployer(deployNamespace string, cfg *config.Complement) (*Deployer, error) {
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -584,6 +581,9 @@ func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client,
 	}
 
 	baseURL, fedBaseURL, err = endpoints(inspectResult.Container.NetworkSettings.Ports, hsPortBindingIP, 8008, 8448)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to determine homeserver endpoints: %w", err)
+	}
 
 	// Sanity check that the URLs match the expected configured binding IP. It's
 	// also important that we use the canonical publicly accessible hostname for the

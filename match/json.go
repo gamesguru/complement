@@ -326,7 +326,7 @@ func JSONArraySome(wantKey string, fn func(gjson.Result) error) JSON {
 		if !body.IsArray() {
 			return fmt.Errorf("JSONArraySome: key '%s' is not an array", wantKey)
 		}
-		var satisfied bool = false
+		var satisfied = false
 		body.ForEach(func(_, val gjson.Result) bool {
 			err := fn(val)
 			satisfied = err == nil

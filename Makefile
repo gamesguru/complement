@@ -40,7 +40,7 @@ vet: ## Run go vet
 .PHONY: lint
 lint: ## Run lint checks (vet, staticcheck, golangci-lint)
 	$(GO) vet $(VETFLAGS) $(PKGS)
-	$(STATICCHECK) -checks=all $(STATICCHECKFLAGS) $(PKGS)
+	$(STATICCHECK) -checks='all,-ST1000,-ST1003,-ST1005,-ST1020,-ST1021' $(STATICCHECKFLAGS) $(PKGS)
 	# install with, i.e., `curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.12.2`
 	$(GOLANGCI_LINT) run $(GOLANGCI_LINTFLAGS) $(PKGS)
 

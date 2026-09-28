@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"maps"
 	"net/http"
 	"net/url"
@@ -224,7 +223,7 @@ func TestRegistration(t *testing.T) {
 				"device_id":                   "xyzzy",
 				"initial_device_display_name": "display_name"}
 			resp := unauthedClient.Do(t, "POST", []string{"_matrix", "client", "v3", "register"}, client.WithJSONBody(t, reqJson))
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			session := gjson.GetBytes(body, "session")
 			if err != nil {
 				t.Fatalf("Failed to read response body: %s", err)

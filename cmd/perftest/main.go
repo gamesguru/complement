@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"flag"
-	"io/ioutil"
 	"os"
 
 	"github.com/matrix-org/complement/config"
@@ -63,7 +62,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err = ioutil.WriteFile(*flagOutput, b, os.ModePerm); err != nil {
+	if err = os.WriteFile(*flagOutput, b, os.ModePerm); err != nil {
 		panic(err)
 	}
 }

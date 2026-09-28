@@ -2,8 +2,6 @@
 package must
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -16,9 +14,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/should"
 )
-
-const ansiRedForeground = "\x1b[31m"
-const ansiResetForeground = "\x1b[39m"
 
 // NotError will ensure `err` is nil else terminate the test with `msg`.
 func NotError(t ct.TestLike, msg string, err error) {
@@ -218,14 +213,4 @@ func CheckOff(t ct.TestLike, items []interface{}, wantItem interface{}) []interf
 		ct.Fatalf(t, err.Error())
 	}
 	return result
-}
-
-func jsonDeepEqual(gotJson []byte, wantValue interface{}) bool {
-	// marshal what the test gave us
-	wantBytes, _ := json.Marshal(wantValue)
-	// re-marshal what the network gave us to acount for key ordering
-	var gotVal interface{}
-	_ = json.Unmarshal(gotJson, &gotVal)
-	gotBytes, _ := json.Marshal(gotVal)
-	return bytes.Equal(gotBytes, wantBytes)
 }

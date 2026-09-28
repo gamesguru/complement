@@ -171,7 +171,7 @@ func runTest(testName string, builder *docker.Builder, deployer *docker.Deployer
 			},
 		}
 	}
-	snapshots, err = withSpan("initial_syncs", fmt.Sprintf("performs /sync with no since token and timeout=0 for all users"), snapshots, absStartTime, deployment, func() error {
+	snapshots, err = withSpan("initial_syncs", "performs /sync with no since token and timeout=0 for all users", snapshots, absStartTime, deployment, func() error {
 		return runner.RunInstructions(runOpts, syncInstructions)
 	})
 	if err != nil {
