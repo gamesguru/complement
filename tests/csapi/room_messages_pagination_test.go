@@ -1093,7 +1093,6 @@ type paginationResult struct {
 	nonAdvancingToken bool
 }
 
-
 // findRoomStartToken paginates backward through a room with large pages to find
 // the token pointing to the very start of the room timeline. This token can then
 // be used as a starting point for forward (dir=f) pagination.
@@ -1136,7 +1135,6 @@ func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string 
 	t.Logf("Found room start token: %s", startToken)
 	return startToken
 }
-
 
 // paginateRoom paginates through a room's /messages endpoint in the given
 // direction ("b" for backwards, "f" for forwards), collecting ALL events
