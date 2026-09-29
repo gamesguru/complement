@@ -1,0 +1,206 @@
+version: "2"
+run:
+  build-tags:
+    - '*'
+  modules-download-mode: readonly
+  issues-exit-code: 1
+  tests: true
+  allow-parallel-runners: false
+output:
+  path-prefix: ""
+linters:
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - contextcheck
+    - durationcheck
+    - errchkjson
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocyclo
+    - gosec
+    - gosmopolitan
+    - loggercheck
+    - makezero
+    - misspell
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - protogetter
+    - reassign
+    - recvcheck
+    - spancheck
+    - sqlclosecheck
+    - testifylint
+    - zerologlint
+  disable:
+    - bodyclose
+    - depguard
+    - dogsled
+    - dupl
+    - errcheck
+    - errorlint
+    - exhaustive
+    - funlen
+    - gocognit
+    - goconst
+    - gocritic
+    - godot
+    - godox
+    - goheader
+    - gomodguard
+    - lll
+    - mnd
+    - nestif
+    - noctx
+    - nolintlint
+    - prealloc
+    - rowserrcheck
+    - testpackage
+    - unparam
+    - whitespace
+    - wsl
+  settings:
+    dogsled:
+      max-blank-identifiers: 2
+    dupl:
+      threshold: 100
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+    errorlint:
+      errorf: true
+    exhaustive:
+      default-signifies-exhaustive: false
+    funlen:
+      lines: 60
+      statements: 40
+    gocognit:
+      min-complexity: 30
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    gocritic:
+      disabled-checks:
+        - regexpMust
+      enabled-tags:
+        - performance
+      disabled-tags:
+        - experimental
+      settings:
+        captLocal:
+          paramsOnly: true
+        rangeValCopy:
+          sizeThreshold: 32
+    gocyclo:
+      min-complexity: 25
+    godot:
+      scope: declarations
+      capital: false
+    godox:
+      keywords:
+        - NOTE
+        - OPTIMIZE
+        - HACK
+    govet:
+      enable:
+        - atomicalign
+      disable:
+        - shadow
+      enable-all: false
+      disable-all: false
+      settings:
+        printf:
+          funcs:
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+            - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+    lll:
+      line-length: 120
+      tab-width: 1
+    makezero:
+      always: false
+    misspell:
+      ignore-rules:
+        - dendrite
+        - synapse
+        - sytest
+    nakedret:
+      max-func-lines: 30
+    nestif:
+      min-complexity: 5
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    prealloc:
+      simple: true
+      range-loops: true
+      for-loops: false
+    rowserrcheck:
+      packages:
+        - github.com/jmoiron/sqlx
+    testpackage:
+      skip-regexp: (export|internal)_test\.go
+    unparam:
+      check-exported: false
+    whitespace:
+      multi-if: false
+      multi-func: false
+    wsl:
+      strict-append: true
+      allow-assign-and-call: true
+      allow-multiline-assign: true
+      force-case-trailing-whitespace: 0
+      allow-trailing-comment: false
+      allow-separated-leading-comment: false
+      allow-cuddle-declarations: false
+      force-err-cuddling: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: (.+)\.go$
+        text: G107
+      - path: (.+)\.go$
+        text: G402
+      - path: (.+)\.go$
+        text: SA1019
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+severity:
+  default: error
+  rules:
+    - linters:
+        - dupl
+      severity: info
+formatters:
+  enable:
+    - goimports
+  settings:
+    gofmt:
+      simplify: true
+    gofumpt:
+      extra-rules: false
+    goimports:
+      local-prefixes:
+        - github.com/matrix-org/complement
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

@@ -41,8 +41,8 @@ vet: ## Run go vet
 lint: ## Run lint checks (vet, staticcheck, golangci-lint)
 	$(GO) vet $(VETFLAGS) $(PKGS)
 	$(STATICCHECK) -checks='all,-ST1000,-ST1003,-ST1005,-ST1020,-ST1021' $(STATICCHECKFLAGS) $(PKGS)
-	# install with, i.e., `curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.12.2`
-	$(GOLANGCI_LINT) run $(GOLANGCI_LINTFLAGS) $(PKGS)
+	# .golangci.yml is retained as the documented v1 config; v2 uses the generated compatibility config.
+	$(GOLANGCI_LINT) run -c .golangci-v2.yml $(GOLANGCI_LINTFLAGS) $(PKGS)
 
 .PHONY: test
 test: ## Run the Complement test suite against COMPLEMENT_BASE_IMAGE (scope with TESTPKGS/TESTFLAGS)
