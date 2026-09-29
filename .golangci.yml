@@ -356,19 +356,15 @@ linters-settings:
 linters:
   enable:
     - govet
-    - deadcode
     - gocyclo
     - goimports # Does everything gofmt does
     - gosec
     - gosimple
     - ineffassign
-    - megacheck
     - misspell # Check code comments, whereas misspell in CI checks *.md files
     - nakedret
     - staticcheck
-    - structcheck
     - unused
-    - varcheck
   disable:
     # We don't really care about closing body's properly during test runs
     - bodyclose
@@ -422,9 +418,6 @@ linters:
     # Unknown linter?
     #- makezero
   disable-all: false
-  presets:
-    - bugs
-    - unused
   fast: false
 
 
