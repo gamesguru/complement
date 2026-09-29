@@ -17,7 +17,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"net/http"
@@ -845,11 +844,5 @@ func (t *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.URL.Host = newURL.Host
 	}
 	req.URL.Scheme = "https"
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			ServerName:         hsName,
-			InsecureSkipVerify: true,
-		},
-	}
-	return transport.RoundTrip(req)
+	return t.Deployment.transportFor(hsName).RoundTrip(req)
 }
