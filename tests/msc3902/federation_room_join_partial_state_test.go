@@ -185,7 +185,7 @@ func (s *server) WaitForEvent(
 	}
 }
 
-func TestPartialStateJoin(t *testing.T) {
+func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test contains the partial-join scenario matrix.
 	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
 
@@ -439,7 +439,7 @@ func TestPartialStateJoin(t *testing.T) {
 		// Sanity check that the sync hasn't completed
 		select {
 		case response := <-responseChan:
-			t.Fatalf("Recieved sync response too soon: %s", response.Raw)
+			t.Fatalf("Received sync response too soon: %s", response.Raw)
 		default:
 			t.Logf("No sync response yet")
 		}
@@ -2193,7 +2193,7 @@ func TestPartialStateJoin(t *testing.T) {
 				close(deviceListUpdateChannel1)
 				close(deviceListUpdateChannel2)
 			}
-			return
+			return alice, server1, server2, deviceListUpdateChannel1, deviceListUpdateChannel2, room, cleanup
 		}
 
 		// renameDevice triggers an outgoing device list update
@@ -2796,7 +2796,7 @@ func TestPartialStateJoin(t *testing.T) {
 				cancel()
 				close(userDevicesQueryChannel)
 			}
-			return
+			return alice, server, userDevicesQueryChannel, room, sendDeviceListUpdate, cleanup
 		}
 
 		// mustQueryKeys makes a /keys/query request to the homeserver under test.
@@ -4091,7 +4091,7 @@ func TestPartialStateJoin(t *testing.T) {
 
 	t.Run("Purge during resync", func(t *testing.T) {
 		if runtime.Homeserver != runtime.Synapse {
-			// TOOD: Pull this into a Synapse-specific suite when someone figures out how
+			// TODO: Pull this into a Synapse-specific suite when someone figures out how
 			// to do that (https://github.com/matrix-org/complement/issues/226)
 			t.Skipf("Skipping test of Synapse-internal API on %s", runtime.Homeserver)
 		}

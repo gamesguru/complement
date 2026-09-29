@@ -3,10 +3,11 @@ package csapi_tests
 import (
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/tidwall/gjson"
 )
 
 // sytest: PUT /rooms/:room_id/typing/:user_id sets typing notification

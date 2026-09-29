@@ -20,13 +20,17 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/matrix-org/complement"
-	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
+
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
@@ -35,8 +39,6 @@ import (
 	"github.com/matrix-org/complement/internal/docker"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/moby/moby/api/pkg/stdcopy"
-	mobyclient "github.com/moby/moby/client"
 )
 
 type MockKeyServer struct {

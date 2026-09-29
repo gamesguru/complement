@@ -29,9 +29,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/client"
+
 	"github.com/matrix-org/complement/internal"
 	complementRuntime "github.com/matrix-org/complement/runtime"
-	"github.com/moby/moby/client"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"
@@ -769,7 +770,7 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 		iterCount += 1
 		if time.Now().After(stopTime) {
 			lastErr = fmt.Errorf("timed out checking for homeserver to be up: %s", lastErr)
-			return
+			return iterCount, lastErr
 		}
 		inspect, err := docker.ContainerInspect(ctx, hsDep.ContainerID, client.ContainerInspectOptions{})
 		if err != nil {
@@ -814,7 +815,7 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 		lastErr = nil
 		break
 	}
-	return
+	return iterCount, lastErr
 }
 
 // RoundTripper is a round tripper that maps https://hs1 to the federation port of the container

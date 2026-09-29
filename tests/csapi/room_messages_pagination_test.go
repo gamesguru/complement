@@ -10,13 +10,14 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // TestMessagesPaginationStress adversarially stress-tests /messages pagination
@@ -395,7 +396,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 // and scrolling downward. This exercises different code paths than backward
 // pagination — forward tokens, forward ordering, and the interaction between
 // "find the oldest token" and "paginate forward from it".
-func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
+func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:gocyclo // stress test covers independent pagination branches.
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -682,7 +683,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 //   - Gaps appear between the "pre-away" and "post-away" pagination results
 //   - Duplicates appear at the token boundary
 //   - New membership/state events confuse the token position
-func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
+func testMessagesPaginationStressStaleTokenResume(t *testing.T) { //nolint:gocyclo // stress test covers independent pagination branches.
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -1361,7 +1362,7 @@ func assertPaginationIntegrityWithDir(
 // signature, the failure is reported via t.Skipf (after logging all the same
 // diagnostics) instead of failing the test outright. matchesKnownFailure may be nil
 // only when knownFailureHomeservers is also empty/nil.
-func assertPaginationIntegrityWithDirFrom(
+func assertPaginationIntegrityWithDirFrom( //nolint:gocyclo // assertion helper validates multiple pagination modes.
 	t *testing.T,
 	user *client.CSAPI,
 	roomID string,

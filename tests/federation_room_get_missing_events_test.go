@@ -16,12 +16,13 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/matrix-org/util"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -436,7 +437,7 @@ func TestInboundCanReturnMissingEvents(t *testing.T) {
 			)
 
 			// Find two event IDs that there's going to be something missing
-			// inbetween. Say, any history between the room's creation and my own
+			// between. Say, any history between the room's creation and my own
 			// joining of it.
 			earliestEvent := room.CurrentState("m.room.create", "")
 			latestEvent := room.CurrentState("m.room.member", charlie)
@@ -1309,7 +1310,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 // This is the negative counterpart to TestStateIdsFallbackFetchesFullAuthChain:
 // we intentionally return a malformed response once, then let the server retry
 // and complete the fallback ladder normally.
-func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testing.T) {
+func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testing.T) { //nolint:gocyclo // integration test covers the fallback sequence.
 	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

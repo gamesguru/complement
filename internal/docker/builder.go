@@ -259,7 +259,7 @@ func (d *Builder) construct(bprint b.Blueprint) (errs []error) {
 				d.log("%s: failed to remove container which failed to deploy: %s", res.contextStr, delErr)
 			}
 			// there is little point continuing to set up the remaining homeservers at this point
-			return
+			return errs
 		}
 		// kill the container
 		defer func(r result) {

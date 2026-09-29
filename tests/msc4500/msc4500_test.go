@@ -12,6 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+	"github.com/tidwall/gjson"
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -19,10 +24,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
-	"github.com/tidwall/gjson"
-	"golang.org/x/crypto/blake2b"
 )
 
 // TestMSC4500State exercises the MSC4500 state_accumulator endpoint and the

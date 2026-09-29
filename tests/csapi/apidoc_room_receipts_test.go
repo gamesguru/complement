@@ -3,12 +3,13 @@ package csapi_tests
 import (
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/tidwall/gjson"
 )
 
 // tests/10apidoc/37room-receipts.pl
