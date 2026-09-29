@@ -29,9 +29,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/moby/client"
+
 	"github.com/matrix-org/complement/internal"
 	complementRuntime "github.com/matrix-org/complement/runtime"
-	"github.com/moby/moby/client"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/image"

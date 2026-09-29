@@ -5,8 +5,11 @@ package tests
 import (
 	"testing"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
+
+	"github.com/matrix-org/gomatrixserverlib/spec"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
@@ -14,7 +17,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // Request the room summary and ensure the expected rooms are in the response.

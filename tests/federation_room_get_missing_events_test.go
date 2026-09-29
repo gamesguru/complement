@@ -15,12 +15,13 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/matrix-org/util"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"

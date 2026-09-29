@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/matrix-org/complement/internal/docker"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+
+	"github.com/matrix-org/complement/internal/docker"
 )
 
 type Snapshot struct {

@@ -5,8 +5,9 @@ import (
 	"log"
 	"regexp"
 
-	"github.com/matrix-org/complement/b"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/b"
 )
 
 var ignoredEventType = map[string]bool{

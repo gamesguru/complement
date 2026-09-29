@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"

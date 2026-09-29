@@ -6,8 +6,9 @@ import (
 	"encoding/hex"
 	"io"
 
-	"github.com/matrix-org/complement/ct"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/ct"
 )
 
 const (

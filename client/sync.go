@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/matrix-org/complement/ct"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/ct"
 )
 
 // SyncCheckOpt is a functional option for use with MustSyncUntil which should return <nil> if
