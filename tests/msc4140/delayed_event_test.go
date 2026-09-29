@@ -107,7 +107,6 @@ func TestDelayedEvents(t *testing.T) {
 			})
 		}
 
-		countExpected = 0
 		matchDelayedEvents(t, user, delayedEventsNumberEqual(numEvents))
 
 		t.Run("cannot get delayed events of another user", func(t *testing.T) {

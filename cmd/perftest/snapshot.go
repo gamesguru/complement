@@ -41,8 +41,8 @@ func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDura
 
 		var rxBytes, txBytes int64
 		for _, nw := range sj.Networks {
-			rxBytes += int64(nw.RxBytes)
-			txBytes += int64(nw.TxBytes)
+			rxBytes += int64(nw.RxBytes) //nolint:gosec // Docker counters cannot realistically overflow here.
+			txBytes += int64(nw.TxBytes) //nolint:gosec // Docker counters cannot realistically overflow here.
 		}
 		var bw, br uint64
 		for _, block := range sj.BlkioStats.IoServiceBytesRecursive {
@@ -67,5 +67,5 @@ func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDura
 			BytesRead:        br,
 		})
 	}
-	return
+	return snapshots
 }

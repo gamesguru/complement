@@ -72,7 +72,7 @@ func ConvertToBlueprint(s *Snapshot, serverName string) (*b.Blueprint, error) {
 	return bp, nil
 }
 
-func convertRoom(sr *AnonSnapshotRoom) *b.Room {
+func convertRoom(sr *AnonSnapshotRoom) *b.Room { //nolint:gocyclo // snapshot conversion intentionally handles every room field.
 	if len(sr.State) == 0 {
 		return convertTimelineOnlyRoom(sr)
 	}

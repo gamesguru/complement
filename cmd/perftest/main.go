@@ -62,7 +62,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err = os.WriteFile(*flagOutput, b, os.ModePerm); err != nil {
+	if err = os.WriteFile(*flagOutput, b, 0600); err != nil {
 		panic(err)
 	}
 }

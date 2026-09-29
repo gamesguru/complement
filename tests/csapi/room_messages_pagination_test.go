@@ -327,7 +327,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 // and scrolling downward. This exercises different code paths than backward
 // pagination — forward tokens, forward ordering, and the interaction between
 // "find the oldest token" and "paginate forward from it".
-func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
+func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:gocyclo // stress test intentionally covers many pagination branches.
 	runtime.SkipIf(t, runtime.Dendrite)
 
 	deployment := complement.Deploy(t, 2)

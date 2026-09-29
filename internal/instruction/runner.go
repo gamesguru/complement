@@ -212,14 +212,16 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
 				return err
 			}
 		}
-		defer internal.CloseIO(
-			res.Body,
-			fmt.Sprintf(
-				"runInstructionSet: response body from %s %s",
-				res.Request.Method,
-				res.Request.URL.String(),
-			),
-		)
+		if res == nil {
+			continue
+		}
+		if res.Body != nil {
+			responseMethod, responseURL := req.Method, req.URL.String()
+			if res.Request != nil {
+				responseMethod, responseURL = res.Request.Method, res.Request.URL.String()
+			}
+			defer internal.CloseIO(res.Body, fmt.Sprintf("runInstructionSet: response body from %s %s", responseMethod, responseURL))
+		}
 
 		// parse the response if we have one (if bestEffort=true then we don't return an error above)
 		if res != nil && res.Body != nil {

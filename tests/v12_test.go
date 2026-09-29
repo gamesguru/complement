@@ -903,7 +903,7 @@ func assertCreateEventIsRoomID(t ct.TestLike, client *client.CSAPI, roomID strin
 		return true
 	})
 	if createEventID == "" {
-		ct.Fatalf(t, "failed to find create event ID from /state respone: %v", stateEvents.Raw)
+		ct.Fatalf(t, "failed to find create event ID from /state response: %v", stateEvents.Raw)
 	}
 	must.Equal(t,
 		roomID, fmt.Sprintf("!%s", createEventID[1:]),

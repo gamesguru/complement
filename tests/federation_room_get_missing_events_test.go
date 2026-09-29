@@ -410,7 +410,7 @@ func TestInboundCanReturnMissingEvents(t *testing.T) {
 			)
 
 			// Find two event IDs that there's going to be something missing
-			// inbetween. Say, any history between the room's creation and my own
+			// between. Say, any history between the room's creation and my own
 			// joining of it.
 			earliestEvent := room.CurrentState("m.room.create", "")
 			latestEvent := room.CurrentState("m.room.member", charlie)

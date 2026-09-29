@@ -389,7 +389,7 @@ func (s *Server) MustJoinRoom(t ct.TestLike, deployment FederationDeployment, re
 		if err != nil {
 			ct.Fatalf(t, "MustJoinRoom: failed generating senderID: %v", err)
 		}
-		senderID, signingKey, err = spec.SenderIDFromPseudoIDKey(key), key, nil
+		senderID, signingKey = spec.SenderIDFromPseudoIDKey(key), key
 		keyID = "ed25519:1"
 		origin = spec.ServerName(senderID)
 		mapping := gomatrixserverlib.MXIDMapping{
@@ -704,7 +704,7 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
-		return
+		return nil
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -763,8 +763,9 @@ func WithRoomOpts(opts ...ServerRoomOpt) JoinRoomOpt {
 func federationServer(cfg *config.Complement, h http.Handler) (*http.Server, error) {
 	var derBytes []byte
 	srv := &http.Server{
-		Addr:    ":8448",
-		Handler: h,
+		Addr:              ":8448",
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	certificateDuration := time.Hour
 	priv, err := rsa.GenerateKey(rand.Reader, 4096)

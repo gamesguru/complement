@@ -341,6 +341,7 @@ func (d *Deployment) ContainerID(t ct.TestLike, hsName string) string {
 	hsDep := d.HS[hsName]
 	if hsDep == nil {
 		ct.Fatalf(t, "ContainerID: %s does not exist in this deployment", hsName)
+		return ""
 	}
 	return hsDep.ContainerID
 }

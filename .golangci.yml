@@ -95,9 +95,6 @@ linters-settings:
     # it's a comma-separated list of prefixes
     local-prefixes: github.com/matrix-org/complement
   govet:
-    # report about shadowed variables
-    check-shadowing: true
-
     # settings per analyzer
     settings:
       printf: # analyzer name, run `go tool vet help` to see all analyzers

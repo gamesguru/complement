@@ -258,7 +258,7 @@ func (d *Deployer) executePostScript(hsDep *HomeserverDeployment, testName strin
 	if d.config.PostTestScript == "" {
 		return nil, nil
 	}
-	cmd := exec.Command(d.config.PostTestScript, hsDep.ContainerID, testName, strconv.FormatBool(failed))
+	cmd := exec.Command(d.config.PostTestScript, hsDep.ContainerID, testName, strconv.FormatBool(failed)) //nolint:gosec // the post-test script is explicitly configured.
 
 	return cmd.CombinedOutput()
 }
@@ -670,7 +670,7 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 		iterCount += 1
 		if time.Now().After(stopTime) {
 			lastErr = fmt.Errorf("timed out checking for homeserver to be up: %s", lastErr)
-			return
+			return iterCount, lastErr
 		}
 		inspect, err := docker.ContainerInspect(ctx, hsDep.ContainerID, client.ContainerInspectOptions{})
 		if err != nil {
@@ -715,7 +715,7 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 		lastErr = nil
 		break
 	}
-	return
+	return iterCount, lastErr
 }
 
 // RoundTripper is a round tripper that maps https://hs1 to the federation port of the container

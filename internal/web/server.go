@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 
@@ -21,7 +22,7 @@ type Server struct {
 func NewServer(t *testing.T, comp *config.Complement, configFunc func(router *mux.Router)) *Server {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", ":0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("Could not create listener for web server: %s", err)
 	}
@@ -32,7 +33,7 @@ func NewServer(t *testing.T, comp *config.Complement, configFunc func(router *mu
 
 	configFunc(r)
 
-	server := &http.Server{Addr: ":0", Handler: r}
+	server := &http.Server{Addr: ":0", Handler: r, ReadHeaderTimeout: 10 * time.Second}
 
 	go server.Serve(listener)
 

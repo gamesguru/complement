@@ -51,7 +51,7 @@ func LoadSyncData(hsURL, token, tempFile string) (json.RawMessage, error) {
 	}
 
 	// dump it straight to disk first
-	err := os.WriteFile(tempFile, body, 0644)
+	err := os.WriteFile(tempFile, body, 0600)
 	if err != nil {
 		log.Printf("WARNING: failed to write sync data to disk: %s", err)
 	}

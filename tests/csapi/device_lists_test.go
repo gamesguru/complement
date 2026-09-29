@@ -23,7 +23,7 @@ import (
 //  1. `/sync`'s `device_lists.changed/left` contain the correct user IDs.
 //  2. `/keys/query` returns the correct information after device list updates.
 func TestDeviceListUpdates(t *testing.T) {
-	prng := rand.New(rand.NewSource(42))
+	prng := rand.New(rand.NewSource(42)) //nolint:gosec // deterministic test data is intentional.
 	// uploadNewKeys uploads a new set of keys for a given client.
 	// Returns a check function that can be passed to mustQueryKeys.
 	uploadNewKeys := func(t *testing.T, user *client.CSAPI) []match.JSON {
