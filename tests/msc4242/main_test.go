@@ -49,6 +49,7 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	t.Run("STATE06: Concurrent ban and kick dominance", testMSC4242STATE06ConcurrentBanAndKickDominance)
 	t.Run("STATE07: Phantom join rules lockdown", testMSC4242STATE07PhantomJoinRulesLockdown)
 	t.Run("STATE08: Redaction of state event", testMSC4242STATE08RedactionOfStateEvent)
+	t.Run("STATE11: Redaction preserves member state-DAG links", testMSC4242STATE11RedactionPreservesMemberStateDAGLinks)
 	t.Run("STATE09: Asymmetric 3-way partition eventual consistency and rolling heal", testMSC4242STATE09AsymmetricPartitionEventualConsistency)
 	t.Run("STATE10: Self-demotion does not prevent backdated retaliation", testMSC4242STATE10SelfDemotionDoesNotPreventBackdatedRetaliation)
 	t.Run("DIVERGENCE00: Partitioned server accepts incomplete state DAG from buggy peer", testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG)

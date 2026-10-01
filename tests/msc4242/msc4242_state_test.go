@@ -1343,6 +1343,80 @@ func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
 	must.Equal(t, bobPL, int64(50), "Bob's PL 50 grant persists after redaction: the users map is retained per the redaction spec")
 }
 
+// STATE11: Redacting an m.room.member event strips profile fields but preserves
+// membership and the event's prev_state_events, allowing later DAG traversal.
+func testMSC4242STATE11RedactionPreservesMemberStateDAGLinks(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+		federation.HandleEventRequests(),
+		federation.HandleMakeSendJoinRequests(),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	bob := srv.UserID("bob")
+	charlie := srv.UserID("charlie")
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{
+		"room_version": roomVersion,
+		"preset":       "public_chat",
+	})
+	room := srv.MustJoinRoom(t, deployment, "hs1", roomID, bob,
+		federation.WithRoomOpts(federation.WithImpl(ServerRoomImplStateDAG(t, srv))))
+	charlieJoin := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:     spec.MRoomMember,
+			Sender:   charlie,
+			StateKey: &charlie,
+			Content: map[string]interface{}{
+				"membership":  "join",
+				"displayname": "Charlie Original",
+				"avatar_url":  "mxc://example.com/charlie",
+			},
+		},
+	})
+	room.AddEvent(charlieJoin)
+	origPrevState := charlieJoin.PrevStateEventIDs()
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
+	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+
+	redactionID := alice.MustSendRedaction(t, roomID, map[string]interface{}{"reason": "strip profile"}, charlieJoin.EventID())
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, redactionID))
+
+	stateResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomMember, charlie})
+	stateBody := client.ParseJSON(t, stateResp)
+	must.Equal(t, gjson.GetBytes(stateBody, "membership").Str, "join", "redacting membership must preserve membership")
+	must.Equal(t, gjson.GetBytes(stateBody, "displayname").Exists(), false, "redaction must remove displayname")
+	must.Equal(t, gjson.GetBytes(stateBody, "avatar_url").Exists(), false, "redaction must remove avatar_url")
+
+	evResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", charlieJoin.EventID()})
+	evBody := client.ParseJSON(t, evResp)
+	gotPrevState := make([]string, 0)
+	for _, result := range gjson.GetBytes(evBody, "prev_state_events").Array() {
+		gotPrevState = append(gotPrevState, result.Str)
+	}
+	must.Equal(t, slices.Equal(gotPrevState, origPrevState), true,
+		"redaction on hs1 must preserve the member event's prev_state_events")
+
+	downstream := mustCreateEvent(t, srv, room, MSC4242Event{
+		Event: federation.Event{
+			Type:       spec.MRoomTopic,
+			Sender:     bob,
+			StateKey:   &empty,
+			Content:    map[string]interface{}{"topic": "after member redaction"},
+			PrevEvents: []string{redactionID},
+		},
+		PrevStateEvents: []string{charlieJoin.EventID()},
+	})
+	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{downstream}), nil)
+	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, downstream.EventID()))
+}
+
 // STATE09: Asymmetric 3-way state DAG merge and resolution.
 // Tests state resolution across a manually assembled DAG with three concurrent
 // branches (simulating what would happen after a 3-way partition heals):
