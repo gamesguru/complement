@@ -557,7 +557,8 @@ var (
 )
 
 // listenOnUnusedPort listens on an unused port that no other federation `Server` has
-// used before in this process.
+// used before in this process. Bind failures are skipped; exhausting ports
+// 1024 through 65535 fails the test.
 func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	lastUsedPortMu.Lock()
 	defer lastUsedPortMu.Unlock()
@@ -610,6 +611,10 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	return nil
 }
 
+// Listen starts serving federation requests over TLS and appends the chosen port
+// to the server name. It returns a function that closes the server and waits for
+// it to stop. Subsequent calls return nil, including after the server is closed.
+// Exhausting available ports or failing to close the server fails the test.
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
 		return

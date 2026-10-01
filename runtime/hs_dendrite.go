@@ -9,6 +9,8 @@ import (
 	"github.com/moby/moby/client"
 )
 
+// init selects Dendrite and configures container cleanup to stop with a one-second
+// timeout so coverage reports can be flushed. The cleanup function returns Docker errors.
 func init() {
 	Homeserver = Dendrite
 	// For Dendrite, we want to always stop the container gracefully, as this is needed to

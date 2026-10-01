@@ -132,6 +132,10 @@ func (d *Deployer) CreateDirtyDeployment() (*Deployment, error) {
 	}, nil
 }
 
+// Deploy starts the cached images for a blueprint in the configured package namespace.
+// It returns nil and an error if image discovery or network setup fails, including
+// when no images exist. If an image fails to deploy, it returns the successful
+// homeservers and one deployment error without rolling back created containers.
 func (d *Deployer) Deploy(ctx context.Context, blueprintName string) (*Deployment, error) {
 	dep := &Deployment{
 		Deployer:      d,
@@ -216,7 +220,10 @@ func (d *Deployer) PrintLogs(dep *Deployment) {
 	}
 }
 
-// Destroy a deployment. This will kill all running containers.
+// Destroy stops or kills each deployment container, runs the configured post-test
+// script with testName and failed, and force-removes the container. printServerLogs
+// requests a graceful stop and prints server logs. Cleanup continues after errors;
+// errors are not returned.
 func (d *Deployer) Destroy(dep *Deployment, printServerLogs bool, testName string, failed bool) {
 	for _, hsDep := range dep.HS {
 		if printServerLogs {
@@ -264,6 +271,7 @@ func (d *Deployer) executePostScript(hsDep *HomeserverDeployment, testName strin
 	return cmd.CombinedOutput()
 }
 
+// PauseServer pauses the homeserver container, returning a Docker error on failure.
 func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	_, err := d.Docker.ContainerPause(ctx, hsDep.ContainerID, client.ContainerPauseOptions{})
@@ -273,6 +281,7 @@ func (d *Deployer) PauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// UnpauseServer resumes the paused homeserver container, returning a Docker error on failure.
 func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	_, err := d.Docker.ContainerUnpause(ctx, hsDep.ContainerID, client.ContainerUnpauseOptions{})
@@ -282,6 +291,8 @@ func (d *Deployer) UnpauseServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StopServer stops the homeserver container using SpawnHSTimeout, truncated to whole
+// seconds, as Docker's stop timeout. It returns a Docker error on failure.
 func (d *Deployer) StopServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	secs := int(d.config.SpawnHSTimeout.Seconds())
@@ -305,6 +316,10 @@ func (d *Deployer) Restart(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// StartServer starts the container, refreshes hsDep's endpoints, and waits for readiness.
+// It returns start, port-inspection, endpoint-resolution, or readiness errors.
+// An error after starting does not stop the container; refreshed endpoints remain
+// set if the readiness check fails.
 func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	ctx := context.Background()
 	_, err := d.Docker.ContainerStart(ctx, hsDep.ContainerID, client.ContainerStartOptions{})
@@ -332,6 +347,11 @@ func (d *Deployer) StartServer(hsDep *HomeserverDeployment) error {
 	return nil
 }
 
+// deployImage creates and starts a homeserver container on networkName, installs
+// application service registrations and CA files, and waits for readiness.
+// It returns Docker, file-preparation, endpoint-resolution, or readiness errors.
+// On error after creation, the returned deployment contains at least the container ID;
+// the caller is responsible for cleanup.
 // nolint
 func deployImage(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
@@ -531,6 +551,8 @@ func deployImage(
 	return d, nil
 }
 
+// copyToContainer copies data to path relative to the container's root with mode 0777.
+// It returns tar-header or Docker copy errors and does not replace a directory with a file.
 func copyToContainer(docker *client.Client, containerID, path string, data []byte) error {
 	// Create a fake/virtual file in memory that we can copy to the container
 	// via https://stackoverflow.com/a/52131297/796832
@@ -573,6 +595,7 @@ func assertHostnameEqual(inputUrl string, expectedHostname string) error {
 
 // getHostAccessibleHomeserverURLs returns URLs that are accessible from the host
 // machine (outside the container) for the homeserver's client API and federation API.
+// Returns empty URLs and an error if inspection or either URL's hostname check fails.
 func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (baseURL string, fedBaseURL string, err error) {
 	inspectResult, err := inspectContainer(ctx, docker, containerID)
 	if err != nil {
@@ -597,7 +620,9 @@ func getHostAccessibleHomeserverURLs(ctx context.Context, docker *client.Client,
 	return baseURL, fedBaseURL, nil
 }
 
-// waitForPorts waits until a homeserver container has NAT ports assigned (8008, 8448).
+// waitForPorts polls for host bindings of container TCP ports 8008 and 8448, checking
+// a one-second deadline between polls. It returns an error if inspection reports a stopped container.
+// Expiration returns nil even if the ports have not appeared.
 func waitForPorts(ctx context.Context, docker *client.Client, containerID string, hsPortBindingIP string) (err error) {
 	// We need to hammer the inspect endpoint until the ports show up, they don't appear immediately.
 	inspectStartTime := time.Now()
@@ -656,7 +681,10 @@ func inspectContainer(
 	return inspectResult, nil
 }
 
-// waitForContainer waits until a homeserver deployment is ready to serve requests.
+// waitForContainer waits for a healthy container (if a health check is configured)
+// and an HTTP 200 from /_matrix/client/versions. Failed checks are retried until
+// stopTime, which is checked between requests and does not cancel in-flight requests.
+// It returns the total iteration count and, on timeout, an error describing the last failure.
 func waitForContainer(ctx context.Context, docker *client.Client, hsDep *HomeserverDeployment, stopTime time.Time) (iterCount int, lastErr error) {
 	iterCount = 0
 
@@ -719,6 +747,10 @@ type RoundTripper struct {
 	Deployment *Deployment
 }
 
+// RoundTrip sends a federation request using a shared transport with TLS certificate
+// verification disabled. It changes req.URL in place to use HTTPS and the homeserver's
+// federation address, or localhost for HostnameRunningComplement, preserving its port.
+// Returns an error for an unknown homeserver, an invalid federation URL, or a transport failure.
 func (t *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// map HS names to localhost:port combos
 	hsName := req.URL.Hostname()

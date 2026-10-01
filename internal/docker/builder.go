@@ -74,7 +74,8 @@ func (d *Builder) Cleanup() {
 	}
 }
 
-// removeImages removes all images with `complementLabel`.
+// removeNetworks removes networks with complementLabel in the configured package
+// namespace. It returns the first Docker listing or removal error.
 func (d *Builder) removeNetworks() error {
 	networks, err := d.Docker.NetworkList(context.Background(), client.NetworkListOptions{
 		Filters: label(
@@ -94,7 +95,9 @@ func (d *Builder) removeNetworks() error {
 	return nil
 }
 
-// removeImages removes all images with `complementLabel`.
+// removeImages force-removes images with complementLabel in the configured package
+// namespace, except kept blueprints and images with any tag outside localhost/complement.
+// It returns the first Docker listing or removal error.
 func (d *Builder) removeImages() error {
 	images, err := d.Docker.ImageList(context.Background(), client.ImageListOptions{
 		Filters: label(
@@ -143,7 +146,8 @@ func (d *Builder) removeImages() error {
 	return nil
 }
 
-// removeContainers removes all containers with `complementLabel`.
+// removeContainers force-removes running and stopped containers with complementLabel
+// in the configured package namespace. It returns the first Docker listing or removal error.
 func (d *Builder) removeContainers() error {
 	containers, err := d.Docker.ContainerList(context.Background(), client.ContainerListOptions{
 		All: true,
@@ -166,6 +170,9 @@ func (d *Builder) removeContainers() error {
 	return nil
 }
 
+// ConstructBlueprintIfNotExist builds the blueprint only if no image matches its
+// name and the configured package namespace. Any matching image skips the build,
+// even if images for other homeservers are missing. Listing and build errors are returned.
 func (d *Builder) ConstructBlueprintIfNotExist(bprint b.Blueprint) error {
 	images, err := d.Docker.ImageList(context.Background(), client.ImageListOptions{
 		Filters: label(
@@ -185,6 +192,9 @@ func (d *Builder) ConstructBlueprintIfNotExist(bprint b.Blueprint) error {
 	return nil
 }
 
+// ConstructBlueprint builds homeserver images from the blueprint and waits up to
+// five seconds for the expected image count to appear. It returns construction,
+// image-listing, or image-discovery timeout errors; network cleanup errors are ignored.
 func (d *Builder) ConstructBlueprint(bprint b.Blueprint) error {
 	errs := d.construct(bprint)
 	if len(errs) > 0 {
@@ -435,8 +445,9 @@ func generateASRegistrationYaml(as b.ApplicationService) string {
 		"  aliases: []\\n"
 }
 
-// createNetworkIfNotExists creates a docker network and returns its name.
-// Name is guaranteed not to be empty when err == nil
+// createNetworkIfNotExists returns the first network matching the package namespace
+// and blueprint, or creates one if none matches. It returns Docker listing or creation
+// errors, and an error if creation returns no network ID.
 func createNetworkIfNotExists(docker *client.Client, pkgNamespace, blueprintName string) (networkName string, err error) {
 	// check if a network already exists for this blueprint
 	nws, err := docker.NetworkList(context.Background(), client.NetworkListOptions{
@@ -479,6 +490,8 @@ func createNetworkIfNotExists(docker *client.Client, pkgNamespace, blueprintName
 	return networkName, nil
 }
 
+// printLogs writes the container's current stdout and stderr to the default logger,
+// using contextStr to identify the output. Retrieval and copy failures are not returned.
 func printLogs(docker *client.Client, containerID, contextStr string) {
 	reader, err := docker.ContainerLogs(context.Background(), containerID, client.ContainerLogsOptions{
 		ShowStderr: true,
@@ -495,6 +508,9 @@ func printLogs(docker *client.Client, containerID, contextStr string) {
 	log.Printf("============== %s : END LOGS ==============\n\n\n", contextStr)
 }
 
+// printPortBindingsOfAllComplementContainers writes host-to-container port mappings
+// for all Complement containers to the default logger, identified by contextStr.
+// It stops on a listing or inspection error without returning the error.
 func printPortBindingsOfAllComplementContainers(docker *client.Client, contextStr string) {
 	ctx := context.Background()
 
@@ -537,7 +553,9 @@ func printPortBindingsOfAllComplementContainers(docker *client.Client, contextSt
 	log.Printf("=============== %s : END ALL COMPLEMENT DOCKER PORT BINDINGS ===============\n\n\n", contextStr)
 }
 
-// endpoints transforms the homeserver ports into the base URL and federation base URL.
+// endpoints transforms the client and federation container TCP ports into HTTP and
+// HTTPS URLs using bindings for hsPortBindingIP. It returns empty URLs and an error
+// if either port has no suitable binding or a port or substituted host IP is invalid.
 func endpoints(p network.PortMap, hsPortBindingIP string, csPort, ssPort int) (baseURL, fedBaseURL string, err error) {
 	csapiPortBinding, err := findPortBinding(p, hsPortBindingIP, csPort)
 	if err != nil {
@@ -559,6 +577,8 @@ func endpoints(p network.PortMap, hsPortBindingIP string, csPort, ssPort int) (b
 // `0.0.0.0` binding is found, we will assume that it is listening on all interfaces,
 // including the `hsPortBindingIP`, and return a binding with the `hsPortBindingIP` as
 // the host IP.
+// Returns an error for an invalid TCP port, a missing or unmatched binding, or an
+// invalid hsPortBindingIP when substituting it into a binding.
 func findPortBinding(p network.PortMap, hsPortBindingIP string, port int) (network.PortBinding, error) {
 	portString := fmt.Sprintf("%d/tcp", port)
 	parsedPort, err := network.ParsePort(portString)
@@ -591,6 +611,8 @@ func findPortBinding(p network.PortMap, hsPortBindingIP string, port int) (netwo
 	return network.PortBinding{}, fmt.Errorf("unable to find matching port binding for %s %s: %+v", hsPortBindingIP, portString, p)
 }
 
+// getPortBinding constructs a binding with the supplied host port unchanged.
+// It returns an error if hsPortBindingIP is not a valid IP address.
 func getPortBinding(hsPortBindingIP string, hostPort string) (network.PortBinding, error) {
 	hostAddr, err := netip.ParseAddr(hsPortBindingIP)
 	if err != nil {

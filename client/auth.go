@@ -101,6 +101,8 @@ func (c *CSAPI) ConsumeRefreshToken(t ct.TestLike, refreshToken string) (newAcce
 // RegisterUser will register the user with given parameters and
 // return user ID, access token and device ID. It fails the test on network error,
 // or if registration fails for another reason (e.g. server has non-dummy requirements).
+// Requires an initial 401 challenge with a non-empty session string, then completes
+// m.login.dummy authentication. Missing or empty response credentials fail the test.
 func (c *CSAPI) RegisterUser(t ct.TestLike, localpart, password string) (userID, accessToken, deviceID string) {
 	t.Helper()
 	reqBody := map[string]any{

@@ -156,8 +156,9 @@ func (c *CSAPI) MustSync(t ct.TestLike, syncReq SyncReq) (gjson.Result, string) 
 // Perform a single /sync request with the given request options. To sync until something happens,
 // see `MustSyncUntil`.
 //
-// Always returns the HTTP response, even on non-2xx.
-// Returns the top-level parsed /sync response JSON on 2xx.
+// Returns the HTTP response, even on non-2xx, with parsed JSON on 2xx or an empty
+// result otherwise. Request or response-read errors and invalid 2xx JSON fail the test.
+// UseStateAfter sends both the stable and MSC4222 use_state_after parameters.
 func (c *CSAPI) Sync(t ct.TestLike, syncReq SyncReq) (gjson.Result, *http.Response) {
 	t.Helper()
 	query := url.Values{
@@ -233,6 +234,9 @@ func SyncStateHas(roomID string, check func(gjson.Result) bool) SyncCheckOpt {
 }
 
 // Check that the `state_after` section for `roomID` has an event which passes the check function.
+// Accepts a match in either state_after or org.matrix.msc4222.state_after. The
+// returned check reports an error if neither field contains a matching event,
+// including when the event arrays are missing or malformed.
 //
 // Note that the `state_after` section of a sync response will not contain the entire
 // state of the room for incremental or `lazy_load_members` syncs.
