@@ -136,17 +136,17 @@ func (tp *TestPackage) OldDeploy(t ct.TestLike, blueprint b.Blueprint) Deploymen
 	t.Helper()
 	timeStartBlueprint := time.Now()
 	if err := tp.complementBuilder.ConstructBlueprintIfNotExist(blueprint); err != nil {
-		ct.Fatalf(t, "OldDeploy: Failed to construct blueprint: %s", err)
+		operationalSetupFailure(t, "OldDeploy: Failed to construct blueprint: %s", err)
 	}
 	namespace := fmt.Sprintf("%d", atomic.AddUint64(&tp.namespaceCounter, 1))
 	d, err := docker.NewDeployer(namespace, tp.complementBuilder.Config)
 	if err != nil {
-		ct.Fatalf(t, "OldDeploy: NewDeployer returned error %s", err)
+		operationalSetupFailure(t, "OldDeploy: NewDeployer returned error %s", err)
 	}
 	timeStartDeploy := time.Now()
 	dep, err := d.Deploy(context.Background(), blueprint.Name)
 	if err != nil {
-		ct.Fatalf(t, "OldDeploy: Deploy returned error %s", err)
+		operationalSetupFailure(t, "OldDeploy: Deploy returned error %s", err)
 	}
 	t.Logf("OldDeploy times: %v blueprints, %v containers", timeStartDeploy.Sub(timeStartBlueprint), time.Since(timeStartDeploy))
 	return dep
@@ -161,17 +161,17 @@ func (tp *TestPackage) Deploy(t ct.TestLike, numServers int) Deployment {
 	blueprint := mapServersToBlueprint(numServers)
 	timeStartBlueprint := time.Now()
 	if err := tp.complementBuilder.ConstructBlueprintIfNotExist(blueprint); err != nil {
-		ct.Fatalf(t, "Deploy: Failed to construct blueprint: %s", err)
+		operationalSetupFailure(t, "Deploy: Failed to construct blueprint: %s", err)
 	}
 	namespace := fmt.Sprintf("%d", atomic.AddUint64(&tp.namespaceCounter, 1))
 	d, err := docker.NewDeployer(namespace, tp.complementBuilder.Config)
 	if err != nil {
-		ct.Fatalf(t, "Deploy: NewDeployer returned error %s", err)
+		operationalSetupFailure(t, "Deploy: NewDeployer returned error %s", err)
 	}
 	timeStartDeploy := time.Now()
 	dep, err := d.Deploy(context.Background(), blueprint.Name)
 	if err != nil {
-		ct.Fatalf(t, "Deploy: Deploy returned error %s", err)
+		operationalSetupFailure(t, "Deploy: Deploy returned error %s", err)
 	}
 	t.Logf("Deploy times: %v blueprints, %v containers", timeStartDeploy.Sub(timeStartBlueprint), time.Since(timeStartDeploy))
 	return dep
