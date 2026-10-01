@@ -97,6 +97,8 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 	room.AddEvent(charlieJoin)
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{charlieJoin}), nil)
 	since := alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob, roomID), client.SyncJoinedTo(charlie, roomID))
+	initialJoinRules := room.CurrentState(spec.MRoomJoinRules, "")
+	initialJoinRulesID := initialJoinRules.EventID()
 
 	// Baseline: Alice changes join_rules to invite-only.
 	alice.MustDo(t, "PUT", []string{
@@ -127,7 +129,7 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 			Content:    map[string]interface{}{"name": "Bob's Room"},
 			PrevEvents: []string{room.CurrentState(spec.MRoomMember, bob).EventID()},
 		},
-		PrevStateEvents: []string{room.CurrentState(spec.MRoomJoinRules, "").EventID()},
+		PrevStateEvents: []string{initialJoinRulesID},
 	})
 
 	// Bob sends a message on his branch.
@@ -165,7 +167,7 @@ func testMSC4242DIVERGENCE00PartitionedServerAcceptsIncompleteStateDAG(t *testin
 		stateEvents := []gomatrixserverlib.PDU{
 			room.CurrentState(spec.MRoomCreate, ""),
 			room.CurrentState(spec.MRoomPowerLevels, ""),
-			room.CurrentState(spec.MRoomJoinRules, ""), // initial public join_rules, NOT inviteJoinRulesID
+			initialJoinRules, // initial public join_rules, NOT inviteJoinRulesID
 			room.CurrentState(spec.MRoomMember, bob),
 			room.CurrentState(spec.MRoomMember, alice.UserID),
 			room.CurrentState(spec.MRoomMember, charlie),
@@ -290,6 +292,19 @@ func testMSC4242DIVERGENCE01DifferentialRejectionAfterPartition(t *testing.T) {
 		client.SyncJoinedTo(bob.UserID, roomID),
 		client.SyncJoinedTo(charlie, roomID),
 	)
+
+	// Bob must be authorized to create the concurrent branch event below.
+	alice.MustDo(t, "PUT", []string{"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, ""},
+		client.WithJSONBody(t, map[string]any{"users": map[string]int{alice.UserID: 100, bob.UserID: 50}}))
+	var bobPLID string
+	sinceAlice = alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob.UserID)).Int() == 50 {
+			bobPLID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	room.WaiterForEvent(bobPLID).Waitf(t, 5*time.Second, "controller did not receive Bob's PL grant")
 
 	// hs2 cannot receive Alice's ban. Stop hs1 before bringing hs2 back so its
 	// queued transaction cannot heal the partition behind the test's back.
@@ -443,7 +458,7 @@ func testMSC4242DIVERGENCE02PermanentForkWithNoFallbackEndpoint(t *testing.T) {
 	// modelling the legitimate case where the required history is genuinely
 	// unavailable (pruned, or the responder itself never had it), not a
 	// deliberate attack.
-	var missingStateDAGCount int
+	missingStateDAG := helpers.NewWaiter()
 	srv.Mux().HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, req *http.Request) {
 		body, err := extractGetMissingEventsRequest(roomID, req)
 		if err != nil {
@@ -452,12 +467,11 @@ func testMSC4242DIVERGENCE02PermanentForkWithNoFallbackEndpoint(t *testing.T) {
 			return
 		}
 		if body.StateDAG {
-			missingStateDAGCount++
+			missingStateDAG.Finish()
 		}
 		w.WriteHeader(http.StatusBadGateway)
 	})
 
-	deployment.UnpauseServer(t, "hs1")
 	sendProbe := func(body string) string {
 		probe := mustCreateEvent(t, srv, room, MSC4242Event{
 			Event: federation.Event{
@@ -482,7 +496,7 @@ func testMSC4242DIVERGENCE02PermanentForkWithNoFallbackEndpoint(t *testing.T) {
 	// First attempt: hs2 detects the gap (via prev_state_events) and tries to
 	// recover, fails, and rejects.
 	must.NotEqual(t, sendProbe("first attempt after the gap"), "", "hs2 should reject the first event referencing the unfillable gap")
-	must.Equal(t, missingStateDAGCount >= 1, true, "hs2 should have attempted state-DAG recovery at least once")
+	missingStateDAG.Waitf(t, 10*time.Second, "hs2 should have attempted state-DAG recovery at least once")
 
 	// Second, independent attempt, well after the first: this is not a
 	// one-off failure to be retried past. The room is permanently split

@@ -40,6 +40,7 @@ func generateRedactedStateRef(t ct.TestLike, srv *federation.Server, room *feder
 		Event: federation.Event{
 			Type:       "m.room.redaction",
 			Sender:     sender,
+			Content:    map[string]interface{}{},
 			PrevEvents: []string{stateToRedact.EventID()},
 			Redacts:    stateToRedact.EventID(),
 		},

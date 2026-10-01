@@ -39,8 +39,8 @@ type SyncReq struct {
 	// since will be returned.
 	// By default, this is false.
 	FullState bool
-	// Controls whether to set MSC422 `use_state_after` request parameter to get
-	// `state_after` in the reponse (alternative to `state`).
+	// Controls whether to set MSC4222 `use_state_after` request parameter to get
+	// `state_after` in the response (alternative to `state`).
 	UseStateAfter bool
 	// Controls whether the client is automatically marked as online by polling this API. If this
 	// parameter is omitted then the client is automatically marked as online when it uses this API.

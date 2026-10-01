@@ -160,7 +160,7 @@ func ServerRoomImplStateDAG(t ct.TestLike, srv *federation.Server, opts ...State
 					res.StateDAG = append(res.StateDAG, ev.JSON())
 				}
 			}
-			serversInRoom := []spec.ServerName{s.ServerName()}
+			serversInRoom := []spec.ServerName{}
 			if !omitServersInRoom {
 				serversInRoom = room.ServersInRoom()
 			}

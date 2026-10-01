@@ -33,7 +33,8 @@ func TestMSC4242StateDAGs(t *testing.T) {
 	// so their helper funcs don't compile; kept here as a reference to re-enable.
 	// t.Run("SendJoin: faster SJ03 inbound", testMSC4242SendJoinFasterSJ03Inbound)
 	// t.Run("SendJoin: faster SJ03 outbound", testMSC4242SendJoinFasterSJ03Outbound)
-	t.Run("On send join SJ04", testMSC4242OnSendJoinSJ04)
+	t.Run("SendJoin: SJ04", testMSC4242OnSendJoinSJ04)
+	t.Run("Out of band invites", testMSC4242OutOfBandInvites)
 	t.Run("GetMissingEvents: inbound", testMSC4242GetMissingEventsInbound)
 	t.Run("GetMissingEvents: outbound", testMSC4242GetMissingEventsOutbound)
 	t.Run("GetMissingEvents: bad inputs", testMSC4242GetMissingEventsBadInputs)

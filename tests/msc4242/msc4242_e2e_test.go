@@ -47,7 +47,7 @@ func testMSC4242FederationSimple(t *testing.T) {
 // server cannot fill in the state DAG for the invite event, either because it has never been in the
 // room, or because it was in the room previously and hence has a stale state DAG. The invite is then
 // either refused by the invited user or rescinded by the inviter.
-func TestMSC4242OutOfBandInvites(t *testing.T) {
+func testMSC4242OutOfBandInvites(t *testing.T) {
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 	hs1 := deployment.GetFullyQualifiedHomeserverName(t, "hs1")

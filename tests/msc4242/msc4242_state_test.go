@@ -986,6 +986,7 @@ func testMSC4242STATE05DemotedModeratorConcurrentAction(t *testing.T) {
 		}
 		return false
 	}))
+	room.WaiterForEvent(plGrantEventID).Waitf(t, 5*time.Second, "controller did not receive PL grant for Priya")
 
 	// Fork:
 	// Branch 1: Alice demotes Priya back to 0
@@ -1102,6 +1103,7 @@ func testMSC4242STATE06ConcurrentBanAndKickDominance(t *testing.T) {
 		}
 		return false
 	}))
+	room.WaiterForEvent(plGrantEventID).Waitf(t, 5*time.Second, "controller did not receive PL grant for Bob")
 
 	// Branch 1: Alice bans Bob
 	alice.MustDo(t, "POST", []string{
@@ -1117,6 +1119,7 @@ func testMSC4242STATE06ConcurrentBanAndKickDominance(t *testing.T) {
 		}
 		return false
 	}))
+	room.WaiterForEvent(aliceBansBobID).Waitf(t, 5*time.Second, "controller did not receive Alice's ban of Bob")
 
 	// Branch 2: Bob concurrently bans Charlie (citing PL grant before his own ban)
 	bobBansCharlie := mustCreateEvent(t, srv, room, MSC4242Event{
@@ -1295,6 +1298,7 @@ func testMSC4242STATE08RedactionOfStateEvent(t *testing.T) {
 		}
 		return false
 	}))
+	room.WaiterForEvent(plGrantEventID).Waitf(t, 5*time.Second, "controller did not receive PL grant for Bob")
 
 	// Fork:
 	// Branch 1: Alice redacts the power levels grant event

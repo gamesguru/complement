@@ -119,7 +119,14 @@ func (c *CSAPI) RegisterUser(t ct.TestLike, localpart, password string) (userID,
 	if err != nil {
 		ct.Fatalf(t, "unable to read response body: %v", err)
 	}
-	session := GetJSONFieldStr(t, body, "session")
+	sessionResult := gjson.GetBytes(body, "session")
+	session := ""
+	if sessionResult.Exists() {
+		if sessionResult.Type != gjson.String {
+			ct.Fatalf(t, "expected session to be a string")
+		}
+		session = sessionResult.String()
+	}
 
 	// Now actually register the user
 	reqBody["auth"] = map[string]any{
