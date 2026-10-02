@@ -79,32 +79,6 @@ func (d *Deployer) log(str string, args ...interface{}) {
 	log.Printf(str, args...)
 }
 
-// ResetHomeserver triggers a clean-slate restart of a dirty-run homeserver
-// container: the entrypoint supervisor receives SIGUSR1, stops conduwuit, wipes
-// the database directory, and restarts the process. The container (and its
-// network, ports, and TLS certs) is reused, avoiding the cost of provisioning
-// a new container per test. Blocks until the server is accepting requests
-// again or the timeout elapses.
-func (d *Deployer) ResetHomeserver(hsDep *HomeserverDeployment) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := d.Docker.ContainerKill(ctx, hsDep.ContainerID, client.ContainerKillOptions{
-		Signal: "SIGUSR1",
-	}); err != nil {
-		return fmt.Errorf("failed to signal %s: %w", hsDep.ContainerID, err)
-	}
-
-	// Give the old process a brief moment to terminate before polling, so we
-	// don't observe it still serving requests in the window before shutdown.
-	time.Sleep(50 * time.Millisecond)
-
-	stopTime := time.Now().Add(30 * time.Second)
-	if _, err := waitForContainer(ctx, d.Docker, hsDep, stopTime); err != nil {
-		return fmt.Errorf("%s failed to restart: %w", hsDep.ContainerID, err)
-	}
-	return nil
-}
-
 // CreateDirtyServer creates a new dirty server on the dirty network, creating one if needed.
 // This homeserver should be added to the dirty deployment. The hsName should start as 'hs1', then
 // 'hs2' ... 'hsN'.
