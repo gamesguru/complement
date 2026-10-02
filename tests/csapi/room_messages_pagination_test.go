@@ -47,7 +47,16 @@ func TestMessagesPaginationStress(t *testing.T) {
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
-	deployment := complement.Deploy(t, 2)
+	// This test builds several rooms and relies on pristine pagination history.
+	// Dirty deployment reuse would carry rooms/events from other tests into the
+	// same homeservers and invalidate the page-boundary assertions.
+	deployment := complement.OldDeploy(t, b.Blueprint{
+		Name: "messages_pagination_stress_clean",
+		Homeservers: []b.Homeserver{
+			{Name: "hs1"},
+			{Name: "hs2"},
+		},
+	})
 	defer deployment.Destroy(t)
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
@@ -1118,10 +1127,12 @@ func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string 
 
 		endToken := gjson.GetBytes(body, "end")
 		if !endToken.Exists() {
-			// Reached the start; use the `start` token from this response
-			startTokenRes := gjson.GetBytes(body, "start")
-			if startTokenRes.Exists() {
-				startToken = startTokenRes.Str
+			// Reached the start; use the `start` token from this response if we didn't get an end token previously
+			if startToken == "" {
+				startTokenRes := gjson.GetBytes(body, "start")
+				if startTokenRes.Exists() {
+					startToken = startTokenRes.Str
+				}
 			}
 			break
 		}
