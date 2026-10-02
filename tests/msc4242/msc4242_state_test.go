@@ -1403,6 +1403,25 @@ func testMSC4242STATE11RedactionPreservesMemberStateDAGLinks(t *testing.T) {
 	must.Equal(t, slices.Equal(gotPrevState, origPrevState), true,
 		"redaction on hs1 must preserve the member event's prev_state_events")
 
+	// Bob needs power to set state in a public_chat room (state_default 50).
+	alice.MustDo(t, "PUT", []string{
+		"_matrix", "client", "v3", "rooms", roomID, "state", spec.MRoomPowerLevels, "",
+	}, client.WithJSONBody(t, map[string]any{
+		"users": map[string]int{
+			alice.UserID: 100,
+			bob:          50,
+		},
+	}))
+	var plGrantEventID string
+	since = alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHas(roomID, func(r gjson.Result) bool {
+		if r.Get("type").Str == spec.MRoomPowerLevels && r.Get("content.users."+client.GjsonEscape(bob)).Int() == 50 {
+			plGrantEventID = r.Get("event_id").Str
+			return true
+		}
+		return false
+	}))
+	room.WaiterForEvent(plGrantEventID).Waitf(t, 5*time.Second, "controller did not receive PL grant for Bob")
+
 	downstream := mustCreateEvent(t, srv, room, MSC4242Event{
 		Event: federation.Event{
 			Type:       spec.MRoomTopic,
@@ -1411,7 +1430,7 @@ func testMSC4242STATE11RedactionPreservesMemberStateDAGLinks(t *testing.T) {
 			Content:    map[string]interface{}{"topic": "after member redaction"},
 			PrevEvents: []string{redactionID},
 		},
-		PrevStateEvents: []string{charlieJoin.EventID()},
+		PrevStateEvents: []string{plGrantEventID},
 	})
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{downstream}), nil)
 	alice.MustSyncUntil(t, client.SyncReq{Since: since}, client.SyncTimelineHasEventID(roomID, downstream.EventID()))

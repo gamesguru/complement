@@ -155,6 +155,7 @@ func ServerRoomImplStateDAG(t ct.TestLike, srv *federation.Server, opts ...State
 			res.Event = joinEvent.JSON()
 			res.Origin = s.ServerName()
 			res.MembersOmitted = expectPartialState
+			res.ServersInRoom = []string{}
 			for _, ev := range room.Timeline {
 				if ev.StateKey() != nil {
 					res.StateDAG = append(res.StateDAG, ev.JSON())

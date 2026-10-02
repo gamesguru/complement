@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -482,7 +483,6 @@ func testMSC4242DIVERGENCE02PermanentForkWithNoFallbackEndpoint(t *testing.T) {
 			},
 			PrevStateEvents: []string{topicEventID},
 		})
-		alice.MustSyncUntil(t, client.SyncReq{Since: sinceAlice}, client.SyncTimelineHasEventID(roomID, probe.EventID()))
 		resp, err := srv.FederationClient(deployment).SendTransaction(context.Background(), gomatrixserverlib.Transaction{
 			TransactionID: gomatrixserverlib.TransactionID(probe.EventID()),
 			Origin:        srv.ServerName(),
@@ -841,12 +841,25 @@ func testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecess
 	}))
 	must.NotEqual(t, aliceNameEventID, "", "alice's name event should have been created")
 
-	// Bob sends a concurrent room name change via federation (fork).
+	// Prove the fork shares a single parent: Alice's name event must sit
+	// directly on the PL grant, otherwise "concurrent" is meaningless.
+	aliceEvResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", aliceNameEventID})
+	var alicePrevs []string
+	for _, r := range gjson.GetBytes(client.ParseJSON(t, aliceEvResp), "prev_events").Array() {
+		alicePrevs = append(alicePrevs, r.Str)
+	}
+	must.Equal(t, slices.Equal(alicePrevs, []string{basePLID}), true,
+		"alice's name event must have the PL grant as its only prev_event so Bob's sibling is a true fork")
+
+	// Bob sends a concurrent room name change via federation (fork). Pin his
+	// prev_events to the shared parent: the mock would otherwise default to its
+	// current forward extremities, which may already include Alice's event.
 	bobNameEvent := srv.MustCreateEvent(t, room, federation.Event{
-		Type:     spec.MRoomName,
-		StateKey: &empty,
-		Sender:   bob,
-		Content:  map[string]interface{}{"name": "Bob's Name"},
+		Type:       spec.MRoomName,
+		StateKey:   &empty,
+		Sender:     bob,
+		PrevEvents: []string{basePLID},
+		Content:    map[string]interface{}{"name": "Bob's Name"},
 	})
 	room.AddEvent(bobNameEvent)
 	srv.MustSendTransaction(t, deployment, "hs1", AsEventJSONs([]gomatrixserverlib.PDU{bobNameEvent}), nil)
