@@ -114,8 +114,10 @@ func TestDelayedEvents(t *testing.T) {
 			matchDelayedEvents(t, user2, delayedEventsNumberEqual(0))
 		})
 
-		time.Sleep(1 * time.Second)
-		matchDelayedEvents(t, user, delayedEventsNumberEqual(0))
+		// Poll until all three delayed messages have been sent (the longest of
+		// the 700/800/900ms delays is 900ms) rather than sleeping a flat second
+		// and then hoping the queue has drained.
+		matchDelayedEventsWithin(t, user, 15*time.Second, delayedEventsNumberEqual(0))
 		queryParams := url.Values{}
 		queryParams.Set("dir", "f")
 		queryParams.Set("from", token)
@@ -185,8 +187,9 @@ func TestDelayedEvents(t *testing.T) {
 			StatusCode: 404,
 		})
 
-		// Wait one second which will cause the delayed state event to be sent
-		time.Sleep(1 * time.Second)
+		// No wait needed here: MustSyncUntil below polls until the delayed state
+		// event shows up, so the scheduled delay is the natural lower bound and
+		// the test proceeds the moment the event actually lands.
 
 		// Check for the state change from the delayed state event (using `MustSyncUntil` to
 		// account for any processing or worker replication delays)
@@ -253,9 +256,16 @@ func TestDelayedEvents(t *testing.T) {
 
 		stateKey := "to_never_send"
 
+		// The delay this subtest schedules with, plus the moment it was
+		// scheduled, so the later waits can target the real deadline instead of
+		// a rounded-up constant.
+		const delay = 1500 * time.Millisecond
+		var scheduledAt time.Time
+
 		// Schedule a delayed event
 		setterKey := "setter"
 		setterExpected := "none"
+		scheduledAt = time.Now()
 		res = user.MustDo(
 			t,
 			"PUT",
@@ -263,7 +273,7 @@ func TestDelayedEvents(t *testing.T) {
 			client.WithJSONBody(t, map[string]interface{}{
 				setterKey: setterExpected,
 			}),
-			getDelayQueryParam("1500"),
+			getDelayQueryParam(fmt.Sprintf("%d", delay.Milliseconds())),
 		)
 		delayID := client.GetJSONFieldStr(t, client.ParseJSON(t, res), "delay_id")
 
@@ -290,9 +300,10 @@ func TestDelayedEvents(t *testing.T) {
 
 		// Sanity check that the previously scheduled delayed event doesn't end up being sent anyway
 		//
-		// Wait another second which would cause the previously scheduled delayed to be sent
-		// as we've waited a total of 2s now (> 1.5s delay)
-		time.Sleep(1 * time.Second)
+		// Wait until the original deadline has actually passed. Counting "we slept
+		// for a second twice" was wrong: the requests in between consume part of
+		// that budget, so the check could run before the event was ever due.
+		awaitDelayedEventDue(t, scheduledAt, delay)
 		// Sanity check that the room state hasn't changed
 		res = user.Do(t, "GET", getPathForState(roomID, eventType, stateKey))
 		must.MatchResponse(t, res, match.HTTPResponse{
@@ -407,8 +418,9 @@ func TestDelayedEvents(t *testing.T) {
 			StatusCode: 404,
 		})
 
-		// Wait one second which will cause the delayed state event to be sent
-		time.Sleep(1 * time.Second)
+		// No wait needed here: MustSyncUntil below polls until the delayed state
+		// event shows up, so the scheduled delay is the natural lower bound and
+		// the test proceeds the moment the event actually lands.
 
 		// Check for the state change from the delayed state event (using `MustSyncUntil` to
 		// account for any processing or worker replication delays)
@@ -439,12 +451,14 @@ func TestDelayedEvents(t *testing.T) {
 
 		// Send an initial delayed event that will be ready to send as soon as the server
 		// comes back up.
+		const firstEventDelay = 900 * time.Millisecond
+		firstEventScheduledAt := time.Now()
 		user.MustDo(
 			t,
 			"PUT",
 			getPathForState(roomID, eventType, stateKey1),
 			client.WithJSONBody(t, map[string]interface{}{}),
-			getDelayQueryParam("900"),
+			getDelayQueryParam(fmt.Sprintf("%d", firstEventDelay.Milliseconds())),
 		)
 		numberOfDelayedEvents++
 
@@ -489,17 +503,21 @@ func TestDelayedEvents(t *testing.T) {
 
 		// Restart the server and wait until it's back up.
 		deployment.StopServer(t, hsName)
-		// Wait one second which will cause the first delayed event to be ready to be sent
-		// when the server is back up.
-		time.Sleep(1 * time.Second)
+		// Hold the server down until the first delayed event is actually due, so
+		// it is ready to send the moment the server comes back. Waiting for the
+		// real deadline means a StopServer call which already took longer than
+		// the delay costs nothing instead of adding a second on top of it.
+		awaitDelayedEventDue(t, firstEventScheduledAt, firstEventDelay)
 		deployment.StartServer(t, hsName)
 
-		delayedEventResponse := matchDelayedEvents(t, user,
-			// We should still see some delayed events left after the restart.
+		// We should still see some delayed events left after the restart, and we
+		// should see at least one fewer than before it (the first delayed event
+		// should have been sent). Other delayed events may have been sent by the
+		// time the server actually came back up. Poll until that happens rather
+		// than sleeping a flat ten seconds first: if the restart already pushed
+		// past several deadlines this returns immediately.
+		delayedEventResponse := matchDelayedEventsWithin(t, user, 60*time.Second,
 			delayedEventsNumberGreaterThan(0),
-			// We should see at-least one less than we had before the restart (the first
-			// delayed event should have been sent). Other delayed events may have been sent
-			// by the time the server actually came back up.
 			delayedEventsNumberLessThan(numberOfDelayedEvents-1),
 		)
 		// Capture whatever number of delayed events are remaining after the server restart.
@@ -511,9 +529,11 @@ func TestDelayedEvents(t *testing.T) {
 			return ev.Get("type").Str == eventType && ev.Get("state_key").Str == stateKey1
 		}))
 
-		// Wait until we see another delayed event being sent (ensure things resumed and are continuing).
-		time.Sleep(10 * time.Second)
-		matchDelayedEvents(t, user,
+		// Wait until we see another delayed event being sent (ensure things resumed and
+		// are continuing). Poll for it rather than sleeping ten seconds first: the next
+		// event is due on a 10s cadence, but if that deadline already passed while the
+		// server was down it fires as soon as it is back up.
+		matchDelayedEventsWithin(t, user, 60*time.Second,
 			delayedEventsNumberLessThan(remainingDelayedEventCount),
 		)
 		// Sanity check that the other delayed events also updated the room state correctly.
@@ -549,6 +569,18 @@ func getDelayQueryParam(delayStr string) client.RequestOpt {
 	return client.WithQueries(url.Values{
 		"org.matrix.msc4140.delay": []string{delayStr},
 	})
+}
+
+// awaitDelayedEventDue blocks until the moment a delayed event scheduled at
+// `scheduledAt` with the given delay was due. It replaces sleeps which assumed
+// "some requests happened plus one more second": those silently ignore the time
+// spent on the requests in between, and overshoot when the deadline has already
+// passed (for example because StopServer took longer than the delay).
+func awaitDelayedEventDue(t *testing.T, scheduledAt time.Time, delay time.Duration) {
+	t.Helper()
+	helpers.PollUntilf(t, delay+30*time.Second, helpers.DefaultPollInterval, func() bool {
+		return !time.Now().Before(scheduledAt.Add(delay))
+	}, "delayed event scheduled at %s with delay %s never came due", scheduledAt, delay)
 }
 
 func getDelayedEvents(t *testing.T, user *client.CSAPI) *http.Response {
@@ -630,11 +662,21 @@ func delayedEventsNumberLessThan(target int) delayedEventsCheckOpt {
 // retry to handle replication lag.
 func matchDelayedEvents(t *testing.T, user *client.CSAPI, checks ...delayedEventsCheckOpt) *http.Response {
 	t.Helper()
+	return matchDelayedEventsWithin(t, user, 500*time.Millisecond, checks...)
+}
+
+// matchDelayedEventsWithin is matchDelayedEvents with a caller-chosen retry
+// budget. Prefer it over "sleep a fixed duration, then check once": it returns
+// the instant the condition holds instead of always paying the sleep first, and
+// it keeps polling for as long as the caller says the condition is allowed to
+// take, so a slow homeserver is waited for rather than raced against.
+func matchDelayedEventsWithin(t *testing.T, user *client.CSAPI, timeout time.Duration, checks ...delayedEventsCheckOpt) *http.Response {
+	t.Helper()
 
 	// We need to retry this as replication can sometimes lag.
 	return user.MustDo(t, "GET", getPathForDelayedEvents(),
 		client.WithRetryUntil(
-			500*time.Millisecond,
+			timeout,
 			func(res *http.Response) bool {
 				for _, check := range checks {
 					err := check(res)
