@@ -180,7 +180,8 @@ func (tp *TestPackage) Deploy(t ct.TestLike, numServers int) Deployment {
 func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	tp.existingDeploymentMu.Lock()
 	defer tp.existingDeploymentMu.Unlock()
-	// do we even have a deployment?
+
+	// 1. Ensure base dirty deployment exists
 	if tp.existingDeployment == nil {
 		d, err := docker.NewDeployer("dirty", tp.complementBuilder.Config)
 		if err != nil {
@@ -193,28 +194,45 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 		}
 	}
 
-	// if we have an existing deployment, can we use it? We can use it if we have at least that number of servers deployed already.
-	if len(tp.existingDeployment.HS) >= numServers {
-		return tp.existingDeployment
+	// 2. Scale up if more servers are required
+	newlyCreated := make(map[string]bool)
+	if len(tp.existingDeployment.HS) < numServers {
+		d := tp.existingDeployment.Deployer
+		for i := 1; i <= numServers; i++ {
+			hsName := fmt.Sprintf("hs%d", i)
+			if _, ok := tp.existingDeployment.HS[hsName]; ok {
+				continue
+			}
+			hsDep, err := d.CreateDirtyServer(hsName)
+			if err != nil {
+				ct.Fatalf(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
+			}
+			tp.existingDeployment.HS[hsName] = hsDep
+			newlyCreated[hsName] = true
+		}
 	}
 
-	// we need to scale up the dirty deployment to more servers
-	d, err := docker.NewDeployer("dirty", tp.complementBuilder.Config)
-	if err != nil {
-		ct.Fatalf(t, "dirtyDeploy: NewDeployer returned error %s", err)
-	}
-	for i := 1; i <= numServers; i++ {
-		hsName := fmt.Sprintf("hs%d", i)
-		_, ok := tp.existingDeployment.HS[hsName]
-		if ok {
+	// 3. Reset homeservers being reused (skip newly created ones, which
+	// already started from a clean slate). Resets run concurrently so
+	// multi-homeserver deployments don't pay cumulative restart latency.
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(tp.existingDeployment.HS))
+	for hsName, hsDep := range tp.existingDeployment.HS {
+		if newlyCreated[hsName] {
 			continue
 		}
-		// scale up
-		hsDep, err := d.CreateDirtyServer(hsName)
-		if err != nil {
-			ct.Fatalf(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
-		}
-		tp.existingDeployment.HS[hsName] = hsDep
+		wg.Add(1)
+		go func(dep *docker.HomeserverDeployment) {
+			defer wg.Done()
+			if err := tp.existingDeployment.Deployer.ResetHomeserver(dep); err != nil {
+				errChan <- err
+			}
+		}(hsDep)
+	}
+	wg.Wait()
+	close(errChan)
+	if err := <-errChan; err != nil {
+		ct.Fatalf(t, "dirtyDeploy: failed to reset homeservers: %s", err)
 	}
 
 	return tp.existingDeployment
