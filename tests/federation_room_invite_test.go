@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"

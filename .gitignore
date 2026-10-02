@@ -14,3 +14,12 @@ complement
 
 # devenv users
 .devenv/
+
+# other top-level / misc crap
+/*.md
+/*.txt
+/*.json
+/*.jsonl
+*.diff
+*.patch
+*.log

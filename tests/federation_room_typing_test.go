@@ -7,10 +7,11 @@ package tests
 import (
 	"testing"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // sytest: Typing notifications also sent to remote room members

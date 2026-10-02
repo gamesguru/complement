@@ -1,9 +1,7 @@
 package csapi_tests
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -12,13 +10,14 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // TestMessagesPaginationStress adversarially stress-tests /messages pagination
@@ -48,8 +47,6 @@ func TestMessagesPaginationStress(t *testing.T) {
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -82,8 +79,40 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// limit=1 is a known conformance gap on both reference
+				// homeservers: Synapse (pre-existing) and Dendrite (confirmed
+				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908
+				// — backward pagination stops after essentially one request,
+				// missing the rest of the room's history: e.g.
+				// "Paginated with limit=1: 2 requests, 1 total events, pages: [1 0]"
+				// against 100 expected messages). Report it as a skip only when
+				// the failure actually reproduces, so a fix on either
+				// homeserver is caught rather than masked.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
+					return
+				}
+				// limit=3 is an intermittent Dendrite-only gap: the very first
+				// backward pagination request occasionally returns zero events
+				// with no `end` token, terminating the pagination loop
+				// immediately (e.g. "1 requests, 0 total events, pages: [0]",
+				// all 100 expected messages reported missing) — a likely
+				// indexing race right after the messages are sent, not the
+				// same root cause as the deterministic limit=1 gap above, but
+				// the same shape once it fires. Confirmed at
+				// https://github.com/gamesguru/complement/actions/runs/33334604841/job/99319138496.
+				if limit == 3 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Dendrite)
+					return
+				}
+				// limit=50 is a confirmed Dendrite-only gap: backward pagination
+				// duplicates the room's m.room.create event once, at the very
+				// last page boundary (e.g. "pages: [50 50 6 1]" with the final
+				// event repeating the previous page's last event). Confirmed at
+				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
+				if limit == 50 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
+					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
 			})
@@ -239,9 +268,11 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 		// assertForwardExtremities(t, admin, roomID, trackedEventIDs[len(trackedEventIDs)-1])
 
 		t.Logf("Total tracked message events: %d", len(trackedEventIDs))
-		t.Logf("Room should also contain: ~5 creation events, 3 topic changes, " +
-			"1 room name, 1 power level change, ~8 membership changes, 5 reactions = " +
-			"~23 non-message events interspersed throughout the timeline")
+		t.Logf("Room should also contain: 5 initial state events from room creation " +
+			"(create, member, power_levels, join_rules, history_visibility), 3 topic " +
+			"changes, 1 room name change, 1 additional power level change, 6 membership " +
+			"changes (charlie/dana/eve join+leave churn), 5 reactions = " +
+			"~21 non-message events interspersed throughout the timeline")
 
 		// Now bob joins from a federated server and paginates through all of it
 		bob.MustJoinRoom(t, roomID, []spec.ServerName{
@@ -250,8 +281,25 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// See the limit=1 note in "Clean messages only" above — same
+				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
+					return
+				}
+				// See the limit=50 note in "Clean messages only" above — same
+				// confirmed Dendrite-only room.create boundary duplicate, also
+				// hit at limit=3 and limit=7 here (this room's total event
+				// count lands the final page at size 1 for all three). limit=3
+				// also intermittently hits the separate Dendrite-only
+				// zero-events-first-page backfill gap (pages: [0], 100/100
+				// missing) documented in "Clean messages only" above, so
+				// accept either shape here too.
+				if limit == 3 || limit == 7 || limit == 50 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig)
+					}, runtime.Dendrite)
+					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
 			})
@@ -306,15 +354,35 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// See the limit=1 note in "Clean messages only" above — same
+				// confirmed gap on Synapse and Dendrite. The re-join scenario
+				// also surfaces a distinct shape here, confirmed on Dendrite
+				// only so far: a partial (not total) backfill gap with
+				// reordering — see matchesPartialBackfillReorder.
 				if limit == 1 {
-					runtime.SkipIf(t, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesBackfillGap(sig) || (runtime.Homeserver == runtime.Dendrite && matchesPartialBackfillReorder(sig))
+					}, runtime.Synapse, runtime.Dendrite)
+					return
 				}
-				// limit=3 is a known-flaky gap on Synapse (see
-				// https://github.com/gamesguru/complement/actions/runs/33318084346/job/99275077895?pr=23);
-				// report it as a skip rather than a failure, while keeping the same
-				// verbose diagnostics.
+				// See the limit=50 note in "Clean messages only" above — same
+				// confirmed Dendrite-only room.create boundary duplicate, also
+				// hit at limit=3 and limit=7 here. This re-join scenario's
+				// limit=3 case additionally shows the backfill gap, or the
+				// partial-backfill-with-reorder shape, alongside the duplicate
+				// (all share the same root cause: the re-join path's history
+				// recovery is incomplete) — but only limit=3 has actually
+				// shown those two shapes; limit=7 and limit=50 have only ever
+				// shown the plain duplicate, so don't extend the broader
+				// tolerance to them without evidence.
 				if limit == 3 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, runtime.Synapse)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
+						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig) || matchesPartialBackfillReorder(sig)
+					}, runtime.Dendrite)
+					return
+				}
+				if limit == 7 || limit == 50 {
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
@@ -328,9 +396,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 // and scrolling downward. This exercises different code paths than backward
 // pagination — forward tokens, forward ordering, and the interaction between
 // "find the oldest token" and "paginate forward from it".
-func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
+func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:gocyclo // stress test covers independent pagination branches.
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -357,7 +423,14 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 		startToken := findRoomStartToken(t, bob, roomID)
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, nil)
+				// Confirmed Dendrite-only gap at all four limits: forward
+				// pagination (dir=f) from a start token doesn't advance
+				// properly — most pages repeat the previous page's events
+				// instead of moving on (e.g. at limit=3, 52 duplicates across
+				// 53 pages; at limit=1, the single event never advances and
+				// 100/100 expected messages are reported missing). Confirmed
+				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matchesForwardPaginationStall)
 			})
 		}
 	})
@@ -366,6 +439,13 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 	t.Run("Backward from end", func(t *testing.T) {
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+				// limit=50 is the confirmed Dendrite-only room.create boundary
+				// duplicate described in NoDuplicates/"Clean messages only"
+				// above.
+				if limit == 50 {
+					assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "b", "", []string{runtime.Dendrite}, matchesRoomCreateBoundaryDuplicate)
+					return
+				}
 				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "b")
 			})
 		}
@@ -456,6 +536,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				var forwardTypes []string
 				fromToken = startToken
 				requestCount := 0
+				nonAdvancingToken := false
 
 				for {
 					queryParams := url.Values{
@@ -480,7 +561,12 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 					if !endToken.Exists() {
 						break
 					}
-					fromToken = endToken.Str
+					nextToken := endToken.Str
+					if nextToken == fromToken {
+						nonAdvancingToken = true
+						break
+					}
+					fromToken = nextToken
 
 					if requestCount > 500 {
 						t.Fatalf("forward pagination did not terminate after %d requests", requestCount)
@@ -488,6 +574,12 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				}
 
 				t.Logf("Forward phase: collected %d events over %d pages", len(forwardEventIDs), requestCount)
+
+				// Failures are collected rather than reported immediately, so the
+				// confirmed Dendrite forward-pagination gap (see "Forward from
+				// start" above — same root cause, same evidence) can be turned
+				// into a skip instead of a hard failure.
+				var failures []string
 
 				// CHECK: No duplicates in forward pagination
 				seen := make(map[string]int)
@@ -508,8 +600,8 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 						shown = shown[:20]
 						shown = append(shown, fmt.Sprintf("  ... and %d more", len(duplicates)-20))
 					}
-					t.Errorf("FORWARD PAGINATION DUPLICATES (%d):\n%s",
-						len(duplicates), strings.Join(shown, "\n"))
+					failures = append(failures, fmt.Sprintf("FORWARD PAGINATION DUPLICATES (%d):\n%s",
+						len(duplicates), strings.Join(shown, "\n")))
 				}
 
 				// CHECK: All expected messages present in forward scan
@@ -525,8 +617,8 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 						shown = shown[:20]
 						shown = append(shown, fmt.Sprintf("  ... and %d more", len(missing)-20))
 					}
-					t.Errorf("FORWARD PAGINATION MISSING (%d of %d):\n%s",
-						len(missing), len(eventIDs), strings.Join(shown, "\n"))
+					failures = append(failures, fmt.Sprintf("FORWARD PAGINATION MISSING (%d of %d):\n%s",
+						len(missing), len(eventIDs), strings.Join(shown, "\n")))
 				}
 
 				// CHECK: Forward order should be chronological (not reversed)
@@ -545,10 +637,29 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 				}
 				for i := 0; i < minLen; i++ {
 					if forwardMsgIDs[i] != eventIDs[i] {
-						t.Errorf("FORWARD ORDER MISMATCH at position %d: got %s, want %s",
-							i, forwardMsgIDs[i], eventIDs[i])
+						failures = append(failures, fmt.Sprintf("FORWARD ORDER MISMATCH at position %d: got %s, want %s",
+							i, forwardMsgIDs[i], eventIDs[i]))
 						break
 					}
+				}
+
+				if len(failures) == 0 {
+					return
+				}
+				sig := paginationFailureSignature{
+					duplicateCount:       len(duplicates),
+					missingCount:         len(missing),
+					expectedMessageCount: len(eventIDs),
+					nonAdvancingToken:    nonAdvancingToken,
+				}
+				// Only skip when the failure actually matches the documented
+				// forward-pagination-stall shape. A single duplicate or missing
+				// event from another regression must still fail.
+				if runtime.Homeserver == runtime.Dendrite && matchesForwardPaginationStall(sig) {
+					t.Skipf("known Dendrite forward-pagination gap, skipping:\n%s", strings.Join(failures, "\n"))
+				}
+				for _, failure := range failures {
+					t.Error(failure)
 				}
 			})
 		}
@@ -572,9 +683,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) {
 //   - Gaps appear between the "pre-away" and "post-away" pagination results
 //   - Duplicates appear at the token boundary
 //   - New membership/state events confuse the token position
-func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
+func testMessagesPaginationStressStaleTokenResume(t *testing.T) { //nolint:gocyclo // stress test covers independent pagination branches.
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -609,6 +718,18 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			bob.MustJoinRoom(t, roomID, []spec.ServerName{
 				deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 			})
+			// Wait for bob's partial-state join to fully resync before flooding
+			// the room. Sending events into a still-partial-stated room races
+			// the un-partial-state transition: inbound federation events land
+			// mid-resync, get rejected with "room has been un-partial stated",
+			// and get retried one at a time instead of batched, serializing
+			// event_persister throughput for several seconds afterward.
+			// Confirmed in CI (postgres+workers) — the room this raced in
+			// showed a solid ~3.7s stretch of batch-of-1 persister throughput
+			// immediately following the retry. Waiting for resync to complete
+			// first (~480ms) avoids that collision entirely, rather than
+			// papering over the resulting slowdown with a longer sync timeout.
+			bob.MustAwaitPartialStateJoinCompletion(t, roomID)
 
 			// === PRE-AWAY PHASE: Initial room activity ===
 			var allTrackedEventIDs []string
@@ -770,9 +891,16 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 			allCollected := append(preAwayCollected, resumeCollected...)
 			allTypes := append(preAwayTypes, resumeTypes...)
 
+			// Failures are collected rather than reported immediately, so the
+			// confirmed Dendrite gap below (a single room.create duplicate at
+			// the pre-away/resume boundary) can be turned into a skip instead
+			// of a hard failure.
+			var failures []string
+
 			// CHECK 1: No duplicates across the entire session
 			seen := make(map[string]int)
 			var duplicates []string
+			duplicateTypeCounts := make(map[string]int)
 			for i, eventID := range allCollected {
 				if firstIdx, exists := seen[eventID]; exists {
 					duplicates = append(duplicates, fmt.Sprintf(
@@ -788,6 +916,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 							return "within resume"
 						}(),
 					))
+					duplicateTypeCounts[allTypes[i]]++
 				} else {
 					seen[eventID] = i
 				}
@@ -798,8 +927,8 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 					shown = shown[:20]
 					shown = append(shown, fmt.Sprintf("  ... and %d more", len(duplicates)-20))
 				}
-				t.Errorf("STALE TOKEN RESUME: DUPLICATES (%d) across pre-away + resume:\n%s",
-					len(duplicates), strings.Join(shown, "\n"))
+				failures = append(failures, fmt.Sprintf("STALE TOKEN RESUME: DUPLICATES (%d) across pre-away + resume:\n%s",
+					len(duplicates), strings.Join(shown, "\n")))
 			}
 
 			// CHECK 2: All pre-away messages present somewhere.
@@ -817,8 +946,27 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 					shown = shown[:20]
 					shown = append(shown, fmt.Sprintf("  ... and %d more", len(missingPreAway)-20))
 				}
-				t.Errorf("STALE TOKEN RESUME: MISSING PRE-AWAY EVENTS (%d of %d):\n%s",
-					len(missingPreAway), len(preAwayMessageIDs), strings.Join(shown, "\n"))
+				failures = append(failures, fmt.Sprintf("STALE TOKEN RESUME: MISSING PRE-AWAY EVENTS (%d of %d):\n%s",
+					len(missingPreAway), len(preAwayMessageIDs), strings.Join(shown, "\n")))
+			}
+
+			if len(failures) > 0 {
+				// Confirmed Dendrite-only gap (limit=3 and limit=7 both hit
+				// it): a single m.room.create duplicate at the pre-away/resume
+				// boundary, and nothing else wrong. Confirmed at
+				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
+				// Only skip when the failure actually has that shape — a
+				// different duplicate, more than one duplicate, or any
+				// missing pre-away event is a different bug and must still
+				// fail.
+				matchesKnownGap := len(duplicates) == 1 && len(duplicateTypeCounts) == 1 &&
+					duplicateTypeCounts["m.room.create"] == 1 && len(missingPreAway) == 0
+				if runtime.Homeserver == runtime.Dendrite && matchesKnownGap {
+					t.Skipf("known Dendrite stale-token-resume gap, skipping:\n%s", strings.Join(failures, "\n"))
+				}
+				for _, failure := range failures {
+					t.Error(failure)
+				}
 			}
 
 			// CHECK 3: Event type breakdown for diagnostics
@@ -840,8 +988,6 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) {
 // events. This catches bugs where pagination tokens encode limit-dependent
 // state that breaks when clients retry with different parameters.
 func testMessagesPaginationStressTokenStability(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
-
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -944,15 +1090,8 @@ type paginationResult struct {
 	requestCount int
 	// Events per page (for diagnostics)
 	eventsPerPage []int
-}
-
-type forwardExtremitiesResponse struct {
-	Count   int                     `json:"count"`
-	Results []forwardExtremityEntry `json:"results"`
-}
-
-type forwardExtremityEntry struct {
-	EventID string `json:"event_id"`
+	// True when a response repeats the token it was asked to paginate from.
+	nonAdvancingToken bool
 }
 
 // findRoomStartToken paginates backward through a room with large pages to find
@@ -998,59 +1137,12 @@ func findRoomStartToken(t *testing.T, user *client.CSAPI, roomID string) string 
 	return startToken
 }
 
-func assertForwardExtremities(t *testing.T, admin *client.CSAPI, roomID string, expectedEventIDs ...string) {
-	t.Helper()
-
-	if len(expectedEventIDs) == 0 {
-		t.Fatal("assertForwardExtremities requires at least one expected event ID")
-	}
-
-	res := admin.Do(t, "GET", []string{"_synapse", "admin", "v1", "rooms", roomID, "forward_extremities"})
-	if res.StatusCode != http.StatusOK {
-		if res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusMethodNotAllowed {
-			t.Logf("Skipping forward extremities assertion for %s: admin endpoint returned HTTP %d", roomID, res.StatusCode)
-			return
-		}
-		body := client.ParseJSON(t, res)
-		t.Fatalf("forward extremities admin endpoint for %s returned HTTP %d: %s", roomID, res.StatusCode, string(body))
-	}
-
-	body := client.ParseJSON(t, res)
-	var got forwardExtremitiesResponse
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("failed to decode forward extremities response for %s: %s\nbody=%s", roomID, err, string(body))
-	}
-
-	gotEventIDs := make([]string, 0, len(got.Results))
-	for _, result := range got.Results {
-		gotEventIDs = append(gotEventIDs, result.EventID)
-	}
-
-	expected := append([]string(nil), expectedEventIDs...)
-	slices.Sort(expected)
-	slices.Sort(gotEventIDs)
-
-	if got.Count != len(expectedEventIDs) {
-		t.Fatalf("forward extremities count mismatch for %s: got %d (results=%d), want %d; got=%v want=%v",
-			roomID, got.Count, len(gotEventIDs), len(expectedEventIDs), gotEventIDs, expected)
-	}
-
-	if !slices.Equal(gotEventIDs, expected) {
-		t.Fatalf("forward extremities mismatch for %s: got %v want %v", roomID, gotEventIDs, expected)
-	}
-}
-
 // paginateRoom paginates through a room's /messages endpoint in the given
 // direction ("b" for backwards, "f" for forwards), collecting ALL events
 // (including state events) without any filtering.
 func paginateRoom(t *testing.T, user *client.CSAPI, roomID string, limit int) paginationResult {
 	t.Helper()
 	return paginateRoomDirFrom(t, user, roomID, limit, "b", "")
-}
-
-func paginateRoomDir(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string) paginationResult {
-	t.Helper()
-	return paginateRoomDirFrom(t, user, roomID, limit, dir, "")
 }
 
 func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit int, dir string, initialToken string) paginationResult {
@@ -1093,7 +1185,12 @@ func paginateRoomDirFrom(t *testing.T, user *client.CSAPI, roomID string, limit 
 		if !endTokenRes.Exists() {
 			break
 		}
-		fromToken = endTokenRes.Str
+		nextToken := endTokenRes.Str
+		if nextToken == fromToken {
+			result.nonAdvancingToken = true
+			return result
+		}
+		fromToken = nextToken
 
 		// Safety valve: don't loop forever
 		if result.requestCount > 500 {
@@ -1133,23 +1230,109 @@ func assertPaginationIntegrity(
 	limit int,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", nil)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", nil, nil)
+}
+
+// paginationFailureSignature summarizes what CHECKs 1-3 below detected, so a
+// known-issue skip can be scoped to the specific documented symptom instead
+// of firing on any failure that happens to occur at that call site — an
+// unrelated new regression (e.g. a totally different missing-event bug)
+// must not be silently masked just because it shares a call site with a
+// known, narrower issue.
+type paginationFailureSignature struct {
+	duplicateCount       int
+	duplicateTypes       map[string]int
+	missingCount         int
+	expectedMessageCount int
+	orderMismatch        bool
+	nonAdvancingToken    bool
+	// missingIsPrefixOfOldest is true when every missing expected message is
+	// among the oldest N (i.e. the missing set is exactly the first
+	// sig.missingCount entries of the expected list), rather than scattered
+	// gaps throughout.
+	missingIsPrefixOfOldest bool
+}
+
+// onlyDuplicateType reports whether every detected duplicate was of the
+// given event type (and at least one duplicate was found).
+func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
+	if s.duplicateCount == 0 {
+		return false
+	}
+	return len(s.duplicateTypes) == 1 && s.duplicateTypes[eventType] == s.duplicateCount
+}
+
+// matchesForwardPaginationStall matches the confirmed Dendrite-only gap where
+// forward pagination (dir=f) from a start token doesn't advance properly:
+// most pages repeat the previous page's events instead of moving on,
+// producing either many duplicates or, at small limits, entirely missing
+// expected messages. At limit=1 the stall can consume one slot as a
+// duplicate before repeating, so the missing count comes in one short of the
+// full expected set rather than exactly matching it (e.g. 99 of 100, pages
+// [1 1 1], 1 duplicate) — still the same stall shape, so account for that
+// duplicate-consumed slot rather than requiring an exact missingCount match.
+func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
+	// A lone duplicate or missing event on its own is not this issue. The
+	// known failure either returns the same pagination token, repeats enough
+	// pages to produce multiple duplicates, or drops the entire requested
+	// message set (short by no more than the slots its own duplicates ate).
+	return sig.nonAdvancingToken || sig.duplicateCount >= 2 ||
+		(sig.missingCount > 0 && sig.missingCount >= sig.expectedMessageCount-sig.duplicateCount)
+}
+
+// matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
+// where backward pagination duplicates the room's m.room.create event once,
+// at the final page boundary, with nothing else wrong.
+func matchesRoomCreateBoundaryDuplicate(sig paginationFailureSignature) bool {
+	return sig.duplicateCount == 1 && sig.onlyDuplicateType("m.room.create") && sig.missingCount == 0 && !sig.orderMismatch
+}
+
+// matchesBackfillGap matches the confirmed Synapse+Dendrite gap where
+// backward pagination stops well short of the room's full history, reporting
+// expected messages as missing.
+func matchesBackfillGap(sig paginationFailureSignature) bool {
+	// The documented truncation stops before any expected message is returned,
+	// rather than merely omitting one event from an otherwise complete page.
+	return sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount
+}
+
+// matchesPartialBackfillReorder matches a confirmed Dendrite-only gap distinct
+// from matchesBackfillGap: rather than truncating the entire history, backward
+// pagination drops a small subset of the oldest expected messages (not all of
+// them). Seen specifically in the leave-then-rejoin scenario, where the
+// rejoining server's history recovery is incomplete rather than entirely
+// absent. Confirmed at
+// https://github.com/gamesguru/complement/actions/runs/33349406241/job/99359658735
+// (limit=1: 7 of 100 missing; limit=3: 5 of 100 missing) and again at
+// https://github.com/gamesguru/complement/actions/runs/33362873101/job/99397538757
+// with the identical missing counts. The first run's cruder order check also
+// flagged an order mismatch at position 0; the second, under the corrected
+// relative-index inversion check (see CHECK 3 above), does not — the missing
+// messages are simply the oldest N with no true inversion among the events
+// that were returned. Both runs are the same underlying non-conformance (the
+// rejoining server's recovered history is missing its oldest slice), so match
+// on either signal: an actual reordering, or the missing set being exactly
+// that oldest prefix.
+func matchesPartialBackfillReorder(sig paginationFailureSignature) bool {
+	return sig.missingCount > 0 && sig.missingCount < sig.expectedMessageCount &&
+		(sig.orderMismatch || sig.missingIsPrefixOfOldest)
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but
 // treats a failure as a skip (rather than a fatal test failure) when running against
-// one of knownFailureHomeservers. The same verbose diagnostic logging still happens
-// either way.
+// one of knownFailureHomeservers AND matchesKnownFailure confirms the failure actually
+// has the documented shape. The same verbose diagnostic logging still happens either way.
 func assertPaginationIntegrityKnownIssue(
 	t *testing.T,
 	user *client.CSAPI,
 	roomID string,
 	expectedMessageEventIDs []string,
 	limit int,
+	matchesKnownFailure func(paginationFailureSignature) bool,
 	knownFailureHomeservers ...string,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", knownFailureHomeservers)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, "b", "", knownFailureHomeservers, matchesKnownFailure)
 }
 
 // assertPaginationIntegrityWithDir paginates a room in the given direction and
@@ -1168,16 +1351,18 @@ func assertPaginationIntegrityWithDir(
 	dir string,
 ) {
 	t.Helper()
-	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "", nil)
+	assertPaginationIntegrityWithDirFrom(t, user, roomID, expectedMessageEventIDs, limit, dir, "", nil, nil)
 }
 
 // assertPaginationIntegrityWithDirFrom is the same as assertPaginationIntegrityWithDir
 // but accepts an initial pagination token (e.g. a start-of-room token for forward pagination).
 //
-// If knownFailureHomeservers is non-empty and the currently running homeserver is one
-// of them, a failure is reported via t.Skipf (after logging all the same diagnostics)
-// instead of failing the test outright.
-func assertPaginationIntegrityWithDirFrom(
+// If knownFailureHomeservers is non-empty, the currently running homeserver is one
+// of them, AND matchesKnownFailure(sig) returns true for the detected failure
+// signature, the failure is reported via t.Skipf (after logging all the same
+// diagnostics) instead of failing the test outright. matchesKnownFailure may be nil
+// only when knownFailureHomeservers is also empty/nil.
+func assertPaginationIntegrityWithDirFrom( //nolint:gocyclo // assertion helper validates multiple pagination modes.
 	t *testing.T,
 	user *client.CSAPI,
 	roomID string,
@@ -1186,6 +1371,7 @@ func assertPaginationIntegrityWithDirFrom(
 	dir string,
 	initialToken string,
 	knownFailureHomeservers []string,
+	matchesKnownFailure func(paginationFailureSignature) bool,
 ) {
 	t.Helper()
 
@@ -1198,6 +1384,10 @@ func assertPaginationIntegrityWithDirFrom(
 	// issue on knownFailureHomeservers can be turned into a skip (with the same
 	// diagnostics logged) instead of a hard test failure.
 	var failures []string
+	var sig paginationFailureSignature
+	sig.duplicateTypes = make(map[string]int)
+	sig.expectedMessageCount = len(expectedMessageEventIDs)
+	sig.nonAdvancingToken = result.nonAdvancingToken
 
 	// =====================================================================
 	// CHECK 1: No duplicate events across pages
@@ -1210,6 +1400,8 @@ func assertPaginationIntegrityWithDirFrom(
 				"  %s appeared at positions %d and %d (type: %s)",
 				eventID, firstIdx, i, result.allEventTypes[i],
 			))
+			sig.duplicateCount++
+			sig.duplicateTypes[result.allEventTypes[i]]++
 		} else {
 			seen[eventID] = i
 		}
@@ -1229,10 +1421,22 @@ func assertPaginationIntegrityWithDirFrom(
 	// CHECK 2: No missing message events
 	// =====================================================================
 	var missing []string
+	sig.missingIsPrefixOfOldest = true
 	for i, expectedID := range expectedMessageEventIDs {
 		if _, exists := seen[expectedID]; !exists {
 			missing = append(missing, fmt.Sprintf("  message %d: %s", i, expectedID))
+			// A missing prefix means every missing message's index equals its
+			// position in missing-so-far, i.e. the missing set is exactly
+			// {0, 1, ..., sig.missingCount}: the oldest N expected messages,
+			// with no gaps once messages start being found.
+			if i != sig.missingCount {
+				sig.missingIsPrefixOfOldest = false
+			}
+			sig.missingCount++
 		}
+	}
+	if sig.missingCount == 0 {
+		sig.missingIsPrefixOfOldest = false
 	}
 	if len(missing) > 0 {
 		// Show at most 20 missing to avoid flooding
@@ -1265,17 +1469,25 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 	// If dir == "f", it's already chronological
 
-	// Find first out-of-order event
-	minLen := len(chronological)
-	if len(expectedMessageEventIDs) < minLen {
-		minLen = len(expectedMessageEventIDs)
+	// A missing event does not itself prove reordering: A,C is still ordered
+	// relative to A,B,C. Report an order mismatch only when two returned,
+	// expected messages are inverted.
+	expectedIndex := make(map[string]int, len(expectedMessageEventIDs))
+	for i, eventID := range expectedMessageEventIDs {
+		expectedIndex[eventID] = i
 	}
-	for i := 0; i < minLen; i++ {
-		if chronological[i] != expectedMessageEventIDs[i] {
-			failures = append(failures, fmt.Sprintf("ORDER MISMATCH at position %d (limit=%d): got %s, want %s",
-				i, limit, chronological[i], expectedMessageEventIDs[i]))
+	lastExpectedIndex := -1
+	for _, eventID := range chronological {
+		index, expected := expectedIndex[eventID]
+		if !expected {
+			continue
+		}
+		if index < lastExpectedIndex {
+			failures = append(failures, fmt.Sprintf("ORDER MISMATCH (limit=%d): %s appeared after a later expected message", limit, eventID))
+			sig.orderMismatch = true
 			break
 		}
+		lastExpectedIndex = index
 	}
 
 	// =====================================================================
@@ -1296,32 +1508,14 @@ func assertPaginationIntegrityWithDirFrom(
 	}
 
 	report := strings.Join(failures, "\n")
-	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) {
+	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) && matchesKnownFailure != nil && matchesKnownFailure(sig) {
 		// Log the same diagnostics as a real failure would, but mark the test as
-		// skipped rather than failed since this is a known issue on this homeserver.
+		// skipped rather than failed since this failure matches the documented
+		// known issue's shape on this homeserver. A failure that doesn't match
+		// (e.g. an unrelated new regression) still fails outright below.
 		t.Skipf("known pagination issue on %s, skipping:\n%s", runtime.Homeserver, report)
 	}
 	for _, failure := range failures {
 		t.Error(failure)
-	}
-}
-
-// dumpEventDetails is a test helper that can be called to log all raw events from
-// pagination for debugging purposes. This is intentionally verbose.
-func dumpEventDetails(t *testing.T, messagesResBody json.RawMessage, pageNum int) {
-	t.Helper()
-
-	chunkRes := gjson.GetBytes(messagesResBody, "chunk")
-	if !chunkRes.Exists() {
-		return
-	}
-
-	for i, event := range chunkRes.Array() {
-		t.Logf("  Page %d, event %d: type=%s event_id=%s state_key=%s",
-			pageNum, i,
-			event.Get("type").Str,
-			event.Get("event_id").Str,
-			event.Get("state_key").Str,
-		)
 	}
 }

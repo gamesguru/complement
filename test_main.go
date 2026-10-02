@@ -3,6 +3,7 @@ package complement
 import (
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 
 	"github.com/matrix-org/complement/b"
@@ -13,6 +14,7 @@ import (
 var (
 	testPackage    *TestPackage
 	customDeployer func(t ct.TestLike, numServers int, config *config.Complement) Deployment
+	setupFailed    atomic.Bool
 )
 
 type complementOpts struct {
@@ -86,10 +88,20 @@ func TestMain(m *testing.M, namespace string, customOpts ...opt) {
 			defer opts.cleanup(testPackage.Config)
 		}
 
-		return m.Run()
+		code := m.Run()
+		if setupFailed.Load() {
+			fmt.Fprintln(os.Stderr, "Complement setup failed; test results are not valid")
+			return 2
+		}
+		return code
 	}
 
 	os.Exit(runAndCleanup())
+}
+
+func operationalSetupFailure(t ct.TestLike, format string, args ...interface{}) {
+	setupFailed.Store(true)
+	t.Skipf("Complement setup failure: "+format, args...)
 }
 
 // Deploy will deploy the given blueprint or terminate the test.
