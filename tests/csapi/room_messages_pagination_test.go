@@ -47,16 +47,7 @@ func TestMessagesPaginationStress(t *testing.T) {
 // joins, leaves, kicks, and reactions interleaved with messages — not just a
 // clean sequence of m.room.message events.
 func testMessagesPaginationStressNoDuplicates(t *testing.T) {
-	// This test builds several rooms and relies on pristine pagination history.
-	// Dirty deployment reuse would carry rooms/events from other tests into the
-	// same homeservers and invalidate the page-boundary assertions.
-	deployment := complement.OldDeploy(t, b.Blueprint{
-		Name: "messages_pagination_stress_clean",
-		Homeservers: []b.Homeserver{
-			{Name: "hs1"},
-			{Name: "hs2"},
-		},
-	})
+	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
