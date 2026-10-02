@@ -15,7 +15,7 @@ import (
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
-	"golang.org/x/crypto/blake2b"
+	"github.com/zeebo/blake3"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
@@ -36,7 +36,7 @@ func TestMSC4500State(t *testing.T) {
 }
 
 // testMSC4500StateAccumulator verifies that the state_accumulator endpoint
-// returns a valid 2048-byte base64url encoded lattice and the matching BLAKE2b-256 digest.
+// returns a valid 2048-byte base64url encoded lattice and the matching BLAKE3-256 digest.
 func testMSC4500StateAccumulator(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -96,10 +96,10 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	must.NotError(t, "base64 decode", err)
 	must.Equal(t, len(latticeBytes), 2048, "Lattice is not 2048 bytes")
 
-	hash := blake2b.Sum256(latticeBytes)
+	hash := blake3.Sum256(latticeBytes)
 	expectedDigestB64 := base64.RawURLEncoding.EncodeToString(hash[:])
 
-	must.Equal(t, digestB64, expectedDigestB64, "Digest does not match BLAKE2b-256 of lattice")
+	must.Equal(t, digestB64, expectedDigestB64, "Digest does not match BLAKE3-256 of lattice")
 }
 
 func testMSC4500StateHashMatch(t *testing.T) {
