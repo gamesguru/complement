@@ -433,8 +433,12 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			responseChan <- response
 		}()
 
-		// Try to wait for the sync to actually start, then un-partial-state the room
-		time.Sleep(2 * time.Second)
+		// Wait for the sync to actually start rather than sleeping a fixed two
+		// seconds: the /state_ids handler below holds its response, so that
+		// request being outstanding both proves the sync has begun and proves it
+		// is now blocked. That makes the sanity check below meaningful instead of
+		// a race against request start-up.
+		psjResult.AwaitStateIdsRequest(t)
 
 		// Sanity check that the sync hasn't completed
 		select {
@@ -444,8 +448,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			t.Logf("No sync response yet")
 		}
 
-		// wait for the state_ids request to arrive
-		psjResult.AwaitStateIdsRequest(t)
 		// release the federation /state response
 		psjResult.FinishStateRequest()
 
@@ -3905,10 +3907,12 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 			// Cleanup.
 			psjResult.FinishStateRequest()
-			// Dirty hack to allow the homeserver under test to finish making requests to the
-			// Complement homeserver as part of syncing the full state.
+			// Wait for the homeserver to resume its full-state sync: the
+			// outstanding /state_ids request proves it has started making
+			// requests again, then AwaitQuiescence waits for that burst to
+			// actually stop instead of guessing at a fixed half second.
 			psjResult.AwaitStateIdsRequest(t)
-			time.Sleep(time.Second / 2)
+			psjResult.Server.AwaitQuiescence(t, 150*time.Millisecond, 5*time.Second)
 		})
 
 		t.Run("can be triggered by remote ban", func(t *testing.T) {
@@ -3970,10 +3974,12 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 			// Cleanup.
 			psjResult.FinishStateRequest()
-			// Dirty hack to allow the homeserver under test to finish making requests to the
-			// Complement homeserver as part of syncing the full state.
+			// Wait for the homeserver to resume its full-state sync: the
+			// outstanding /state_ids request proves it has started making
+			// requests again, then AwaitQuiescence waits for that burst to
+			// actually stop instead of guessing at a fixed half second.
 			psjResult.AwaitStateIdsRequest(t)
-			time.Sleep(time.Second / 2)
+			psjResult.Server.AwaitQuiescence(t, 150*time.Millisecond, 5*time.Second)
 		})
 	})
 

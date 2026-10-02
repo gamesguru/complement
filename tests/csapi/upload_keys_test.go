@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tidwall/gjson"
 
@@ -182,11 +181,13 @@ func TestKeyClaimOrdering(t *testing.T) {
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 	deviceKeys, oneTimeKeys := alice.MustGenerateOneTimeKeys(t, 2)
 
-	// first upload key 1, sleep a bit, then upload key 0.
+	// first upload key 1, then upload key 0.
 	otk1 := map[string]interface{}{"signed_curve25519:1": oneTimeKeys["signed_curve25519:1"]}
 	alice.MustUploadKeys(t, deviceKeys, otk1)
-	// Ensure that there is a difference in timestamp between the two upload requests.
-	time.Sleep(1 * time.Second)
+	// No wait needed for ordering: keys are stored under an 8-byte big-endian
+	// `next_count()` upload counter, so two back-to-back uploads are already
+	// strictly ordered. Ordering on wall-clock time would be a bug, so a sleep
+	// here would only hide one.
 
 	otk0 := map[string]interface{}{"signed_curve25519:0": oneTimeKeys["signed_curve25519:0"]}
 	alice.MustUploadKeys(t, nil, otk0)

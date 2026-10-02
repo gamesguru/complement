@@ -240,8 +240,9 @@ func TestFederatedEventRelationships(t *testing.T) {
 		},
 	})
 	room.AddEvent(eventB)
-	// wait 1ms to ensure that the timestamp changes, which is important when using the recent_first flag
-	time.Sleep(1 * time.Millisecond)
+	// wait for the wall-clock millisecond to tick so the timestamp changes, which
+	// is important when using the recent_first flag
+	helpers.WaitForNewMillis(t)
 	eventC := srv.MustCreateEvent(t, room, federation.Event{
 		Type:   "m.room.message",
 		Sender: charlie,

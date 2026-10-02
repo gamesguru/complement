@@ -60,7 +60,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			timeBeforeRoomCreation := time.Now()
 			// Guard so createRoom cannot share this sample's millisecond; a
 			// backward search there would return m.room.create instead of nothing.
-			time.Sleep(tsBoundaryGuard)
+			helpers.WaitForNewMillis(t)
 			roomID, _, _ := createTestRoom(t, alice)
 			mustCheckEventisReturnedForTime(t, alice, roomID, timeBeforeRoomCreation, "b", "")
 		})
@@ -82,7 +82,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			})
 
 			// Guard so the join cannot share a millisecond with the messages below.
-			time.Sleep(tsBoundaryGuard)
+			helpers.WaitForNewMillis(t)
 
 			// Send a couple messages with the same timestamp after the other test
 			// messages in the room.
@@ -107,7 +107,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			})
 
 			// Guard so the join cannot share a millisecond with the messages below.
-			time.Sleep(tsBoundaryGuard)
+			helpers.WaitForNewMillis(t)
 
 			// Send a couple messages with the same timestamp after the other test
 			// messages in the room.
@@ -124,7 +124,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		t.Run("should not be able to query a private room you are not a member of", func(t *testing.T) {
 			t.Parallel()
 			timeBeforeRoomCreation := time.Now()
-			time.Sleep(tsBoundaryGuard)
+			helpers.WaitForNewMillis(t)
 
 			// Alice will create the private room
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
@@ -153,7 +153,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 		t.Run("should not be able to query a public room you are not a member of", func(t *testing.T) {
 			t.Parallel()
 			timeBeforeRoomCreation := time.Now()
-			time.Sleep(tsBoundaryGuard)
+			helpers.WaitForNewMillis(t)
 
 			// Alice will create the public room
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{
@@ -202,7 +202,7 @@ func TestJumpToDateEndpoint(t *testing.T) {
 			t.Run("when looking backwards before the room was created, should be able to find event that was imported", func(t *testing.T) {
 				t.Parallel()
 				timeBeforeRoomCreation := time.Now()
-				time.Sleep(tsBoundaryGuard)
+				helpers.WaitForNewMillis(t)
 				roomID, _, _ := createTestRoom(t, alice)
 
 				// Join from the application service bridge user so we can use it to send
@@ -346,15 +346,17 @@ type eventTime struct {
 	AfterTimestamp  time.Time
 }
 
-// tsBoundaryGuard is a pause inserted around (before and after) where we create events
-// so that `time.Now()` samples and subsequent event `origin_server_ts` don't collide at
-// the same millisecond granularity. /timestamp_to_event returns the boundary event
-// inclusively (forward picks the earliest event with ts >= query, backward picks the
-// latest with ts <= query), so a shared millisecond between events means the wrong
-// event can be picked. Adding one whole millisecond to a timestamp always carries it
-// into the next millisecond bucket, so 1ms is enough to separate the sample from every
-// event stamped after the pause.
-const tsBoundaryGuard = 1 * time.Millisecond
+// The guards around `time.Now()` samples and event creation call
+// helpers.WaitForNewMillis rather than sleeping a fixed millisecond.
+//
+// /timestamp_to_event returns the boundary event inclusively (forward picks the
+// earliest event with ts >= query, backward picks the latest with ts <= query),
+// so a `time.Now()` sample and the `origin_server_ts` of events created around
+// it must not share a millisecond bucket: a shared bucket means the wrong event
+// can be picked. Waiting for the wall-clock millisecond to tick guarantees the
+// sample and every event stamped after the wait land in distinct buckets, and
+// returns the moment the tick happens instead of always paying a full
+// millisecond plus timer overshoot.
 
 func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, eventB *eventTime) {
 	t.Helper()
@@ -364,9 +366,9 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 	})
 	// timeBeforeEventA doubles as the initial creation events after-timestamp, so guard it on
 	// both sides to keep it between the two events.
-	time.Sleep(tsBoundaryGuard)
+	helpers.WaitForNewMillis(t)
 	timeBeforeEventA := time.Now()
-	time.Sleep(tsBoundaryGuard)
+	helpers.WaitForNewMillis(t)
 	eventAID := c.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
 		Content: map[string]interface{}{
@@ -377,9 +379,9 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 
 	// timeBeforeEventB doubles as eventA's after-timestamp, so guard it on
 	// both sides to keep it between the two events.
-	time.Sleep(tsBoundaryGuard)
+	helpers.WaitForNewMillis(t)
 	timeBeforeEventB := time.Now()
-	time.Sleep(tsBoundaryGuard)
+	helpers.WaitForNewMillis(t)
 	eventBID := c.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
 		Content: map[string]interface{}{
@@ -388,7 +390,7 @@ func createTestRoom(t *testing.T, c *client.CSAPI) (roomID string, eventA, event
 		},
 	})
 
-	time.Sleep(tsBoundaryGuard)
+	helpers.WaitForNewMillis(t)
 	timeAfterEventB := time.Now()
 
 	eventA = &eventTime{EventID: eventAID, BeforeTimestamp: timeBeforeEventA, AfterTimestamp: timeBeforeEventB}

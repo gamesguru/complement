@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/matrix-org/gomatrix"
@@ -68,6 +69,11 @@ type Server struct {
 	// List of rooms known to this server
 	rooms   map[string]*ServerRoom
 	keyRing *gomatrixserverlib.KeyRing
+
+	// requestsReceived counts every HTTP request accepted by this server so
+	// callers can poll for federation traffic to settle (see
+	// AwaitQuiescence) instead of sleeping a fixed duration.
+	requestsReceived atomic.Int64
 }
 
 // EXPERIMENTAL
@@ -112,6 +118,7 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 	srv.mux.Use(func(h http.Handler) http.Handler {
 		// Return a json Content-Type header to all requests by default
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv.requestsReceived.Add(1)
 			w.Header().Add("Content-Type", "application/json")
 			h.ServeHTTP(w, r)
 		})
@@ -619,6 +626,48 @@ func (s *Server) ValidFederationRequest(t ct.TestLike, handler func(fr *fclient.
 // Mux returns this server's router so you can attach additional paths.
 func (s *Server) Mux() *mux.Router {
 	return s.mux
+}
+
+// RequestsReceived returns how many HTTP requests this server has accepted so
+// far. Take a snapshot before releasing a deliberately-blocked request to learn
+// how much follow-up traffic to expect.
+func (s *Server) RequestsReceived() int64 {
+	return s.requestsReceived.Load()
+}
+
+// AwaitQuiescence blocks until no new request has arrived for `quiet`, or until
+// the timeout elapses, failing the test in the latter case.
+//
+// This replaces fixed "let the homeserver finish talking to us" sleeps: it
+// returns as soon as traffic actually stops, and waits longer when a burst runs
+// long, so it is both faster and less flaky than any single duration.
+//
+// Callers should first ensure traffic has started (for example by waiting for a
+// specific request to arrive), otherwise the very first sample already looks
+// quiet and the call returns before the burst begins.
+func (s *Server) AwaitQuiescence(t ct.TestLike, quiet, timeout time.Duration) {
+	t.Helper()
+	const pollInterval = 25 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	lastCount := s.requestsReceived.Load()
+	quietSince := time.Now()
+	for {
+		time.Sleep(pollInterval)
+		if count := s.requestsReceived.Load(); count != lastCount {
+			lastCount = count
+			quietSince = time.Now()
+			continue
+		}
+		if time.Since(quietSince) >= quiet {
+			return
+		}
+		if time.Now().After(deadline) {
+			ct.Fatalf(t,
+				"federation server still receiving requests after %f seconds (last request count %d)",
+				timeout.Seconds(), lastCount,
+			)
+		}
+	}
 }
 
 // Keep track of the ports that we've previously used so that we never use the same port

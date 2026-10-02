@@ -99,10 +99,12 @@ func TestToDeviceMessagesOverFederation(t *testing.T) {
 
 				return reflect.DeepEqual(evContent, content)
 			}
-			// just in case the server returns 200 OK before flushing to disk, give it a grace period.
-			// This is too nice of us given in the real world no grace is provided..
-			time.Sleep(time.Second)
-
+			// No grace period needed: send_reliable_edu_server writes the
+			// outbound transaction to the database inside the PUT handler, so
+			// the 200 OK already implies it is durable across the process
+			// restart performed by the "stopped server" case below. Waiting
+			// here would only add padding; bob.MustSyncUntil below is the
+			// poll that actually waits for delivery.
 			tc.makeReachable(t)
 
 			bob.MustSyncUntil(t, client.SyncReq{Since: bobSince}, func(clientUserID string, topLevelSyncJSON gjson.Result) error {

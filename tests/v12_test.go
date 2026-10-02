@@ -974,8 +974,16 @@ func TestMSC4297StateResolutionV2_1_starts_from_empty_set(t *testing.T) {
 	room.WaiterForEvent(joinRuleInviteOnlyEventID).Waitf(t, 5*time.Second, "failed to see invite join rule event")
 
 	alice.MustLeaveRoom(t, roomID)
-	// Wait for Charlie to see it
-	time.Sleep(time.Second)
+	// Wait for Charlie to see it. Poll the federation server's view rather than
+	// sleeping a fixed second, so the test proceeds the moment the leave lands.
+	helpers.PollUntilf(t, 5*time.Second, helpers.DefaultPollInterval, func() bool {
+		ev := room.CurrentState(spec.MRoomMember, alice.UserID)
+		if ev == nil {
+			return false
+		}
+		membership, err := ev.Membership()
+		return err == nil && membership == spec.Leave
+	}, "failed to see Alice leave the room")
 	aliceLeaveEvent := room.CurrentState(spec.MRoomMember, alice.UserID)
 	if membership, err := aliceLeaveEvent.Membership(); err != nil || membership != spec.Leave {
 		ct.Fatalf(t, "failed to see Alice leave the room, alice event is %s", string(aliceLeaveEvent.JSON()))

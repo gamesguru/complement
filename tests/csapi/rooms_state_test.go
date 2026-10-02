@@ -19,6 +19,13 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
+// stabilityWindow is how long a state event ID must hold steady before a
+// "twice is idempotent" style assertion considers the state settled. A duplicate
+// would be committed synchronously with the request that creates it, so a short
+// window is ample; it replaces the multi-second blanket sleeps these checks used
+// to pay for.
+const stabilityWindow = 500 * time.Millisecond
+
 func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -128,15 +135,26 @@ func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 
 			alice.MustJoinRoom(t, roomID, nil)
 
-			// Unfortunately there is no way to definitively wait
-			// for a 'potentially false second join event' without
-			// also failing the test on timeout, with the current APIs.
-			//
-			// So we take a conservative estimate of a 5-second sleep delay
-			// before we check on the server again.
-			time.Sleep(5 * time.Second)
-
-			secondID := *getEventIdForState(t, alice, roomID, "m.room.member", alice.UserID)
+			// The second join returns synchronously, so a server which were going
+			// to create a spurious duplicate join event would already have
+			// committed it by now. Rather than sleeping a blanket 5s and hoping,
+			// poll the state event: bail out the moment the ID changes (so a
+			// regression fails fast) and return once it has held steady for a
+			// short window. The overall deadline still bounds the wait.
+			secondID := firstID
+			stableSince := time.Now()
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				got := *getEventIdForState(t, alice, roomID, "m.room.member", alice.UserID)
+				if got != firstID {
+					secondID = got
+					break
+				}
+				if time.Since(stableSince) >= stabilityWindow {
+					break
+				}
+				time.Sleep(helpers.DefaultPollInterval)
+			}
 
 			if firstID != secondID {
 				t.Fatalf("Both Event IDs from supposedly-idempotent room joins differ, %s != %s", firstID, secondID)

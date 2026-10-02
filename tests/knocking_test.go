@@ -148,14 +148,12 @@ func knockingBetweenTwoUsersTest(
 
 	t.Run("Users in the room see a user's membership update when they knock", func(t *testing.T) {
 		// wait for the membership to arrive over federation
-		start := time.Now()
-		knockerState := serverRoom.CurrentState("m.room.member", knockingUser.UserID)
-		for knockerState == nil && time.Since(start) < 5*time.Second {
-			time.Sleep(100 * time.Millisecond)
-			knockerState = serverRoom.CurrentState("m.room.member", knockingUser.UserID)
-		}
+		helpers.PollUntilf(t, 5*time.Second, helpers.DefaultPollInterval, func() bool {
+			return serverRoom.CurrentState("m.room.member", knockingUser.UserID) != nil
+		}, "knock membership did not arrive over federation")
 
 		// check the membership seen over the federation
+		knockerState := serverRoom.CurrentState("m.room.member", knockingUser.UserID)
 		if knockerState == nil {
 			t.Errorf("Did not get membership state for knocking user")
 		} else {

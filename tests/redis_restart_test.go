@@ -94,13 +94,13 @@ func TestRedisRestartRecovery(t *testing.T) {
 	// never becomes true the test should fail loudly rather than mask the
 	// crash by timing out later in MustSyncUntil with a confusing error.
 	respawned := false
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 200; i++ {
 		newPID, _ := findRedisServerPID(containerID)
 		if newPID != "" && newPID != pid {
 			respawned = true
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(helpers.DefaultPollInterval)
 	}
 	if !respawned {
 		t.Fatalf("redis-server did not respawn within 5s of being killed -- supervisord autorestart appears broken, not just slow")
