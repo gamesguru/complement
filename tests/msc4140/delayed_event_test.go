@@ -277,8 +277,12 @@ func TestDelayedEvents(t *testing.T) {
 		)
 		delayID := client.GetJSONFieldStr(t, client.ParseJSON(t, res), "delay_id")
 
-		// Wait a bit but not long enough for the delayed state event to be sent
-		time.Sleep(1 * time.Second)
+		// Wait until just before the delayed event's deadline, but not past it: the
+		// event must provably still be scheduled right up until we cancel it, and
+		// waiting to the last moment is both a stronger check and cheaper than the
+		// rounded-up second this used to sleep (the past-deadline wait below is
+		// what actually has to cover the full delay).
+		awaitDelayedEventDue(t, scheduledAt, delay-100*time.Millisecond)
 		// We should still see the scheduled delayed event (hasn't been sent yet)
 		matchDelayedEvents(t, user, delayedEventsNumberEqual(1))
 
