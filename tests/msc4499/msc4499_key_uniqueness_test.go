@@ -41,6 +41,14 @@ import (
 	"github.com/matrix-org/complement/runtime"
 )
 
+// negativeEventWindowMillis is how long the "must not appear in sync"
+// assertions wait for an event that should never be delivered. The wait is made
+// as a server-side sync long-poll rather than a client-side sleep, so the check
+// returns the instant the event shows up -- failures are immediate instead of
+// always paying the full window first -- while the pass path still gets the
+// whole window to catch a slow or asynchronous acceptance.
+const negativeEventWindowMillis = "500"
+
 type MockKeyServer struct {
 	serverName spec.ServerName
 	keyID      gomatrixserverlib.KeyID
@@ -57,6 +65,54 @@ type MockKeyServer struct {
 	delay        time.Duration
 	requestCount int32
 	shouldFail   bool
+}
+
+// requestCountNow returns the number of requests served so far.
+func (m *MockKeyServer) requestCountNow() int32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.requestCount
+}
+
+// AwaitQuiescence blocks until no new request has arrived for `quiet`, or until
+// the timeout elapses (failing the test). It replaces the fixed "wait for
+// deferred retries to settle" sleeps: it returns as soon as the mock stops
+// being hit, and waits longer when a retry burst runs long, so it is both
+// faster on the happy path and stricter when something is still in flight.
+func (m *MockKeyServer) AwaitQuiescence(t *testing.T, quiet, timeout time.Duration) {
+	t.Helper()
+	const pollInterval = 25 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	lastCount := m.requestCountNow()
+	quietSince := time.Now()
+	for {
+		time.Sleep(pollInterval)
+		if count := m.requestCountNow(); count != lastCount {
+			lastCount = count
+			quietSince = time.Now()
+			continue
+		}
+		if time.Since(quietSince) >= quiet {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("mock key server still receiving requests after %f seconds (last request count %d)",
+				timeout.Seconds(), lastCount)
+		}
+	}
+}
+
+// AwaitValidUntil blocks until the mock's advertised valid_until_ts is in the
+// past, i.e. until a homeserver which cached our keys is permitted to re-fetch
+// them. Tests previously overshot this with a fixed second-long sleep even when
+// the deadline was only half a second away.
+func (m *MockKeyServer) AwaitValidUntil(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	helpers.PollUntilf(t, timeout, 25*time.Millisecond, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return time.Now().After(m.validUntil)
+	}, "valid_until_ts never expired")
 }
 
 func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -1307,8 +1363,7 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 
 	if !rejected {
 		// If no explicit rejection, check sync to see if Alice received the poisoned event
-		time.Sleep(500 * time.Millisecond)
-		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: negativeEventWindowMillis})
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
 			if ev.Get("event_id").Str == eventPoisoned.EventID() {
@@ -1728,7 +1783,7 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 	}
 
 	// Wait for any deferred retries or background tasks from the first query to settle (quiescence)
-	time.Sleep(100 * time.Millisecond)
+	mockKeyServer.AwaitQuiescence(t, 50*time.Millisecond, 2*time.Second)
 
 	// Unblock mock key server and reset counter for Phase 2
 	mockKeyServer.mu.Lock()
@@ -1837,8 +1892,8 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
 
-	// Small sleep to let valid_until_ts expire so hs1 will re-fetch
-	time.Sleep(1 * time.Second)
+	// Wait until valid_until_ts expires so hs1 will re-fetch
+	mockKeyServer.AwaitValidUntil(t, 5*time.Second)
 
 	// === Event A: Backdated origin_server_ts BEFORE expired_ts → MUST ACCEPT ===
 	// This is the legitimate "historical event verification" case: an event that was
@@ -1940,8 +1995,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 
 	if !rejected {
 		// Wait and check sync to see if Alice received the invalid event
-		time.Sleep(500 * time.Millisecond)
-		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: negativeEventWindowMillis})
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
 			if ev.Get("event_id").Str == eventB.EventID() {
@@ -2325,8 +2379,7 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 
 	if !rejected {
 		// Check sync — the conflicting event must NOT appear
-		time.Sleep(500 * time.Millisecond)
-		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: negativeEventWindowMillis})
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
 			if ev.Get("event_id").Str == eventConflict.EventID() {
@@ -2534,7 +2587,9 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyIDA), 0, pubKeyABase64)
 
-	time.Sleep(1 * time.Second)
+	// Phase 1 cached key A under the 500ms valid_until set above; phase 2 needs
+	// that cache to be stale before hs1 will re-fetch the rotated payload.
+	mockKeyServer.AwaitValidUntil(t, 5*time.Second)
 
 	// Phase 2: Rotate the origin to a new active key and publish a full
 	// 3,000-entry old_verify_keys payload: corroborated retired key A plus
@@ -2797,8 +2852,8 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 	// Phase 1: Query hs1 → hs1 consults hs2 as its trusted notary and caches key A
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
-	// Phase 2: Wait for valid_until_ts to expire
-	time.Sleep(1 * time.Second)
+	// Phase 2: Wait for valid_until_ts to expire so hs1 re-fetches
+	mockKeyServer.AwaitValidUntil(t, 5*time.Second)
 
 	// Phase 3: Switch mock to serve key B for the same key ID.
 	// Set far-future valid_until so the re-fetch satisfies any constraint.
@@ -3107,7 +3162,7 @@ func testMSC4499KeyAdminStartupGuardrails(t *testing.T) {
 			if time.Now().After(deadline) {
 				t.Skip("homeserver came up cleanly after same-key-id key-body mutation; MSC4499 recommends but does not require a startup guardrail here")
 			}
-			time.Sleep(50 * time.Millisecond)
+			time.Sleep(helpers.DefaultPollInterval)
 		}
 	}
 

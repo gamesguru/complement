@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/matrix-org/complement/ct"
@@ -64,7 +65,22 @@ func PollUntilf(t ct.TestLike, timeout, interval time.Duration, cond func() bool
 func WaitForNewMillis(t ct.TestLike) {
 	t.Helper()
 	start := time.Now().UnixMilli()
-	PollUntil(t, 5*time.Second, 0, func() bool {
-		return time.Now().UnixMilli() > start
-	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		now := time.Now()
+		if now.UnixMilli() > start {
+			return
+		}
+		if now.After(deadline) {
+			ct.Fatalf(t, "wall clock did not advance past millisecond %d within 5 seconds", start)
+		}
+		// Sleep only until the next millisecond boundary. Handing this to
+		// PollUntil would fall back to DefaultPollInterval, so a wait that is
+		// never longer than a millisecond would cost 25ms every time.
+		if until := time.Until(time.UnixMilli(start + 1)); until > 0 {
+			time.Sleep(until)
+		} else {
+			runtime.Gosched()
+		}
+	}
 }

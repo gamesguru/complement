@@ -20,11 +20,12 @@ import (
 )
 
 // stabilityWindow is how long a state event ID must hold steady before a
-// "twice is idempotent" style assertion considers the state settled. A duplicate
-// would be committed synchronously with the request that creates it, so a short
-// window is ample; it replaces the multi-second blanket sleeps these checks used
-// to pay for.
-const stabilityWindow = 500 * time.Millisecond
+// "twice is idempotent" style assertion considers the state settled. The second
+// join is synchronous, so a duplicate would already be committed by the time it
+// returns; the window only covers any read-after-write settling on the state
+// endpoint. It replaces the multi-second blanket sleep these checks used to pay
+// for.
+const stabilityWindow = 50 * time.Millisecond
 
 func TestRoomCreationReportsEventsToMyself(t *testing.T) {
 	deployment := complement.Deploy(t, 1)

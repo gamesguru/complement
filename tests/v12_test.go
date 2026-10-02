@@ -976,18 +976,21 @@ func TestMSC4297StateResolutionV2_1_starts_from_empty_set(t *testing.T) {
 	alice.MustLeaveRoom(t, roomID)
 	// Wait for Charlie to see it. Poll the federation server's view rather than
 	// sleeping a fixed second, so the test proceeds the moment the leave lands.
+	// aliceLeaveEvent is reused below as Alice's entry in the /state_ids
+	// response, so the poll only succeeds once it is genuinely the leave event.
+	var aliceLeaveEvent gomatrixserverlib.PDU
 	helpers.PollUntilf(t, 5*time.Second, helpers.DefaultPollInterval, func() bool {
 		ev := room.CurrentState(spec.MRoomMember, alice.UserID)
 		if ev == nil {
 			return false
 		}
 		membership, err := ev.Membership()
-		return err == nil && membership == spec.Leave
+		if err != nil || membership != spec.Leave {
+			return false
+		}
+		aliceLeaveEvent = ev
+		return true
 	}, "failed to see Alice leave the room")
-	aliceLeaveEvent := room.CurrentState(spec.MRoomMember, alice.UserID)
-	if membership, err := aliceLeaveEvent.Membership(); err != nil || membership != spec.Leave {
-		ct.Fatalf(t, "failed to see Alice leave the room, alice event is %s", string(aliceLeaveEvent.JSON()))
-	}
 
 	// Now only Bob (server under test) and Charlie (Complement server) are left in the room.
 	// Charlie is going to send an event with unknown prev_event, causing /get_missing_events
