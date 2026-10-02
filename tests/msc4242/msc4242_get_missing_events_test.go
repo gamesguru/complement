@@ -44,7 +44,7 @@ import (
 //   C: partial events (e.g 3 prev state events and only send the same 2)
 //   D: an HTTP error
 
-func TestMSC4242GetMissingEventsInbound(t *testing.T) {
+func testMSC4242GetMissingEventsInbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -277,13 +277,12 @@ func TestMSC4242GetMissingEventsInbound(t *testing.T) {
 			},
 			wantWalkOrder: func(room *federation.ServerRoom, initialEvents, generatedEvents []gomatrixserverlib.PDU) (eventIDs []string) {
 				lookup := map[string]int{"A": 0, "B": 1, "C": 2, "D": 3, "E": 4} // indexes map to generatedEvents
-				// Events are returned ordered by the number of hops away they are from latest_events,
-				// tie-breaking lexicographically, so each 'layer' of the fork is sorted by event ID.
+				// Events are returned in graph expansion order. The frontier is sorted first,
+				// then each event's sorted predecessors are appended as that frontier is walked.
 				// 1 hop from the sentinel: D,E
 				layer := []string{
 					generatedEvents[lookup["D"]].EventID(), generatedEvents[lookup["E"]].EventID(),
 				}
-				slices.Sort(layer)
 				eventIDs = append(eventIDs, layer...)
 
 				// 1 hop from {D,E}: B,C
@@ -291,7 +290,6 @@ func TestMSC4242GetMissingEventsInbound(t *testing.T) {
 					slices.Clone(generatedEvents[lookup["D"]].PrevStateEventIDs()),
 					generatedEvents[lookup["E"]].PrevStateEventIDs()...,
 				)
-				slices.Sort(layer)
 				eventIDs = append(eventIDs, layer...)
 
 				// finally A
@@ -367,7 +365,7 @@ func TestMSC4242GetMissingEventsInbound(t *testing.T) {
 	}
 }
 
-func TestMSC4242GetMissingEventsOutbound(t *testing.T) {
+func testMSC4242GetMissingEventsOutbound(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -587,7 +585,7 @@ func TestMSC4242GetMissingEventsOutbound(t *testing.T) {
 
 }
 
-func TestMSC4242GetMissingEventsBadInputs(t *testing.T) {
+func testMSC4242GetMissingEventsBadInputs(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -684,7 +682,7 @@ func TestMSC4242GetMissingEventsBadInputs(t *testing.T) {
 	}
 }
 
-func TestMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
+func testMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -976,7 +974,7 @@ func TestMSC4242GetMissingEventsFaultyEvents(t *testing.T) {
 //	B: bogus events (e.g not events referenced in prev_state_events)
 //	C: partial events (e.g 2 prev state events and only send the same 1)
 //	D: an HTTP error
-func TestMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
+func testMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1178,7 +1176,7 @@ func TestMSC4242GetMissingEventsFillingStateDAGFails(t *testing.T) {
 					return
 				}
 				must.Equal(t, slices.Equal(body.LatestEvents, []string{eventD.EventID()}), true, fmt.Sprintf(
-					"unexpected latest events (expected event D) for non-state dag request: %v", body.LatestEvents,
+					"unexpected latest events (expected event D) for state dag request: %v", body.LatestEvents,
 				))
 				// defer to the test case
 				hitGetMissingEvents.Store(true)

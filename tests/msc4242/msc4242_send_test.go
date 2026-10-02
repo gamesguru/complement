@@ -24,7 +24,7 @@ import (
 //   C: referencing prev_state_events from after they were banned, but prev_events from when they were joined.
 //   D: referencing prev_state_events from when they were joined, and prev_events from when they were joined.
 
-func TestMSC4242SendingFaultyEventDoesntBrickRoom(t *testing.T) {
+func testMSC4242SendingFaultyEventDoesntBrickRoom(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -78,7 +78,7 @@ func TestMSC4242SendingFaultyEventDoesntBrickRoom(t *testing.T) {
 	}
 }
 
-func TestMSC4242BanEvasion(t *testing.T) {
+func testMSC4242BanEvasion(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})

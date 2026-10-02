@@ -18,8 +18,8 @@ const (
 
 var Homeserver string
 
-// ContainerKillFunc is used to destroy a container, it can be overwritten by Homeserver implementations
-// to e.g. gracefully stop a container.
+// ContainerKillFunc sends SIGKILL to a container by default and returns the Docker error.
+// Homeserver implementations can override it to stop a container gracefully.
 var ContainerKillFunc = func(cli *client.Client, containerID string) error {
 	_, err := cli.ContainerKill(context.Background(), containerID, client.ContainerKillOptions{
 		Signal: "SIGKILL",
@@ -57,7 +57,7 @@ func SkipIf(t ct.TestLike, hses ...string) {
 }
 
 // SkipUnless is the inverse of SkipIf: if the homeserver being tested is not present in the provided set, the test is skipped.
-// This also means running without a blacklist tag will always skip.
+// Without a blacklist tag, Homeserver is empty, so the test is skipped unless hses contains "".
 func SkipUnless(t ct.TestLike, hses ...string) {
 	t.Helper()
 	if slices.Contains(hses, Homeserver) {
