@@ -1149,7 +1149,6 @@ func testMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
 		ConnID:     "extensions-to-device",
 		Pos:        pos,
-		Timeout:    5000,
 		Lists:      allRoomsList(1, 0, 0),
 		Extensions: toDeviceExt,
 	})
