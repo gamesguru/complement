@@ -4,14 +4,15 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/tidwall/gjson"
 )
 
 // TestTxnInEvent checks that the transaction ID is present when getting the event from the /rooms/{roomID}/event/{eventID} endpoint.
@@ -244,7 +245,7 @@ func TestTxnIdWithRefreshToken(t *testing.T) {
 	}, txnId)
 
 	// Use the refresh token to get a new access token.
-	c.AccessToken, refreshToken, _ = c.ConsumeRefreshToken(t, refreshToken)
+	c.AccessToken, _, _ = c.ConsumeRefreshToken(t, refreshToken)
 
 	// When syncing, we should find the event and it should also have the correct transaction ID even
 	// though the access token is different.

@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
@@ -19,7 +21,6 @@ import (
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/complement/should"
-	"github.com/tidwall/gjson"
 )
 
 const hsName = "hs1"
@@ -106,7 +107,6 @@ func TestDelayedEvents(t *testing.T) {
 			})
 		}
 
-		countExpected = 0
 		matchDelayedEvents(t, user, delayedEventsNumberEqual(numEvents))
 
 		t.Run("cannot get delayed events of another user", func(t *testing.T) {

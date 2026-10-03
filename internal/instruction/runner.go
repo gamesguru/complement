@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -213,21 +212,23 @@ func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []ins
 				return err
 			}
 		}
-		defer internal.CloseIO(
-			res.Body,
-			fmt.Sprintf(
-				"runInstructionSet: response body from %s %s",
-				res.Request.Method,
-				res.Request.URL.String(),
-			),
-		)
+		if res == nil {
+			continue
+		}
+		if res.Body != nil {
+			responseMethod, responseURL := req.Method, req.URL.String()
+			if res.Request != nil {
+				responseMethod, responseURL = res.Request.Method, res.Request.URL.String()
+			}
+			defer internal.CloseIO(res.Body, fmt.Sprintf("runInstructionSet: response body from %s %s", responseMethod, responseURL))
+		}
 
 		// parse the response if we have one (if bestEffort=true then we don't return an error above)
 		if res != nil && res.Body != nil {
 			if i < 100 || i%200 == 0 {
 				r.log("%s [%d/%d] %s => HTTP %s\n", contextStr, i, len(instrs), req.URL.String(), res.Status)
 			}
-			body, err := ioutil.ReadAll(res.Body)
+			body, err := io.ReadAll(res.Body)
 			if err != nil {
 				err = isFatalErr(fmt.Errorf("%s : failed to read response body: %w", contextStr, err))
 				if err != nil {

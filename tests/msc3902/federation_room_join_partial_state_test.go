@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -126,33 +125,6 @@ func (s *server) AddEDUHandler(eduHandler func(gomatrixserverlib.EDU) bool) func
 	}
 }
 
-// isInRoom reports whether this Complement server has a joined user in the room,
-// according to its own `ServerRoom` view. The server reliably tracks its own
-// users' membership (it created their join/leave events), so this answers "will
-// the homeserver federate events in this room to us?".
-func (s *server) isInRoom(room *federation.ServerRoom) bool {
-	for _, serverInRoom := range room.ServersInRoom() {
-		if serverInRoom == s.ServerName() {
-			return true
-		}
-	}
-	return false
-}
-
-// userIsJoinedTo reports whether the user is currently joined to the room,
-// according to the user's own homeserver.
-func userIsJoinedTo(t *testing.T, user *client.CSAPI, roomID string) bool {
-	t.Helper()
-	res := user.MustDo(t, "GET", []string{"_matrix", "client", "v3", "joined_rooms"})
-	joinedRooms := gjson.ParseBytes(client.ParseJSON(t, res)).Get("joined_rooms")
-	for _, joinedRoom := range joinedRooms.Array() {
-		if joinedRoom.Str == roomID {
-			return true
-		}
-	}
-	return false
-}
-
 // Wait for the server to receive the event with given event ID.
 func (s *server) WaitForEvent(
 	t *testing.T, room *federation.ServerRoom, eventID string,
@@ -185,7 +157,7 @@ func (s *server) WaitForEvent(
 	}
 }
 
-func TestPartialStateJoin(t *testing.T) {
+func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // this is the table of partial-state join scenarios.
 	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
 
@@ -439,7 +411,7 @@ func TestPartialStateJoin(t *testing.T) {
 		// Sanity check that the sync hasn't completed
 		select {
 		case response := <-responseChan:
-			t.Fatalf("Recieved sync response too soon: %s", response.Raw)
+			t.Fatalf("Received sync response too soon: %s", response.Raw)
 		default:
 			t.Logf("No sync response yet")
 		}
@@ -775,7 +747,7 @@ func TestPartialStateJoin(t *testing.T) {
 		// Check that Alice is told that Derek's devices have changed.
 		// (Alice does not get told this during the resync, since we can't know
 		// for certain who is in that room until the resync completes.)
-		aliceNextBatch = alice.MustSyncUntil(
+		alice.MustSyncUntil(
 			t,
 			client.SyncReq{
 				Filter: buildLazyLoadingSyncFilter(nil),
@@ -1232,7 +1204,7 @@ func TestPartialStateJoin(t *testing.T) {
 		psjResult.FinishStateRequest()
 
 		// the /sync request should now complete, with the new room
-		nextBatch = alice.MustSyncUntil(
+		alice.MustSyncUntil(
 			t,
 			client.SyncReq{Since: nextBatch},
 			client.SyncJoinedTo(alice.UserID, serverRoom.RoomID),
@@ -1329,7 +1301,7 @@ func TestPartialStateJoin(t *testing.T) {
 
 		// We expect hs2 to fall back to requesting state from hs1, in order to
 		// complete the partial state join
-		nextBatch = charlie.MustSyncUntil(
+		charlie.MustSyncUntil(
 			t,
 			client.SyncReq{Since: nextBatch},
 			client.SyncJoinedTo(charlie.UserID, roomID),
@@ -2193,7 +2165,7 @@ func TestPartialStateJoin(t *testing.T) {
 				close(deviceListUpdateChannel1)
 				close(deviceListUpdateChannel2)
 			}
-			return
+			return //nolint:nakedret // cleanup closure uses the enclosing named result.
 		}
 
 		// renameDevice triggers an outgoing device list update
@@ -2722,7 +2694,7 @@ func TestPartialStateJoin(t *testing.T) {
 						http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 							t.Logf("Incoming %s %s", req.Method, req.URL.Path)
 
-							body, err := ioutil.ReadAll(req.Body)
+							body, err := io.ReadAll(req.Body)
 							if err != nil {
 								t.Fatalf("unable to read /user/keys/query request body: %s", err)
 							}
@@ -2796,7 +2768,7 @@ func TestPartialStateJoin(t *testing.T) {
 				cancel()
 				close(userDevicesQueryChannel)
 			}
-			return
+			return //nolint:nakedret // cleanup closure uses the enclosing named result.
 		}
 
 		// mustQueryKeys makes a /keys/query request to the homeserver under test.
@@ -3650,7 +3622,7 @@ func TestPartialStateJoin(t *testing.T) {
 			leaveCompleted.Wait(t, 1*time.Second)
 
 			t.Log("Alice waits to see her leave appear down /sync")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3698,7 +3670,7 @@ func TestPartialStateJoin(t *testing.T) {
 				},
 			)
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3753,14 +3725,14 @@ func TestPartialStateJoin(t *testing.T) {
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
 			)
 
 			t.Log("Bob sees Alice's leave")
-			bobNextBatch = bob.MustSyncUntil(
+			bob.MustSyncUntil(
 				t,
 				client.SyncReq{Since: bobNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3791,7 +3763,7 @@ func TestPartialStateJoin(t *testing.T) {
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3800,7 +3772,7 @@ func TestPartialStateJoin(t *testing.T) {
 			// The resync has not completed because we have not called psjResult.FinishStateRequest()
 			t.Log("Alice rejoins her room")
 			alice.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncJoinedTo(alice.UserID, serverRoom.RoomID),
@@ -3835,7 +3807,7 @@ func TestPartialStateJoin(t *testing.T) {
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3897,7 +3869,7 @@ func TestPartialStateJoin(t *testing.T) {
 			// The kick occurs mid-resync, because we have not yet called
 			// psjResult.FinishStateRequest().
 			t.Log("Alice sees that she's been kicked")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncLeftFrom(alice.UserID, serverRoom.RoomID),
@@ -3956,7 +3928,7 @@ func TestPartialStateJoin(t *testing.T) {
 			// The ban occurs mid-resync, because we have not yet called
 			// psjResult.FinishStateRequest().
 			t.Log("Alice sees that she's been banned")
-			aliceNextBatch = alice.MustSyncUntil(
+			alice.MustSyncUntil(
 				t,
 				client.SyncReq{Since: aliceNextBatch, Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncBannedFrom(alice.UserID, serverRoom.RoomID),
@@ -4009,10 +3981,7 @@ func TestPartialStateJoin(t *testing.T) {
 						t.Fatalf("something broke: %v", err)
 					}
 					numJoinedMembers := gjson.GetBytes(body, "chunk.0.num_joined_members")
-					if numJoinedMembers.Int() == expectedMemberCount {
-						return true
-					}
-					return false
+					return numJoinedMembers.Int() == expectedMemberCount
 				}))
 		}
 
@@ -4055,15 +4024,12 @@ func TestPartialStateJoin(t *testing.T) {
 			// the job should have finished and the user directory should be up to date.
 			rocky.MustDo(t, "POST", []string{"_matrix", "client", "v3", "user_directory", "search"}, reqBody,
 				client.WithRetryUntil(time.Second*3, func(res *http.Response) bool {
-					body, err := ioutil.ReadAll(res.Body)
+					body, err := io.ReadAll(res.Body)
 					if err != nil {
 						t.Fatalf("something broke: %v", err)
 					}
 					user_id := gjson.GetBytes(body, "results.0.user_id")
-					if user_id.Str == userID {
-						return true
-					}
-					return false
+					return user_id.Str == userID
 				}))
 		}
 
@@ -4091,7 +4057,7 @@ func TestPartialStateJoin(t *testing.T) {
 
 	t.Run("Purge during resync", func(t *testing.T) {
 		if runtime.Homeserver != runtime.Synapse {
-			// TOOD: Pull this into a Synapse-specific suite when someone figures out how
+			// TODO: Pull this into a Synapse-specific suite when someone figures out how
 			// to do that (https://github.com/matrix-org/complement/issues/226)
 			t.Skipf("Skipping test of Synapse-internal API on %s", runtime.Homeserver)
 		}
@@ -4539,7 +4505,7 @@ func handleGetMissingEventsRequests(
 	expectedLatestEvents []string, eventsToReturn []gomatrixserverlib.PDU,
 ) {
 	srv.Mux().HandleFunc(fmt.Sprintf("/_matrix/federation/v1/get_missing_events/%s", serverRoom.RoomID), func(w http.ResponseWriter, req *http.Request) {
-		body, err := ioutil.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatalf("unable to read /get_missing_events request body: %s", err)
 		}

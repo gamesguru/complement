@@ -7,21 +7,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"maps"
 	"net/http"
 	"net/url"
 	"testing"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
+
+	"github.com/matrix-org/gomatrixserverlib"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib"
 )
 
 // TODO:
@@ -224,7 +225,7 @@ func TestRegistration(t *testing.T) {
 				"device_id":                   "xyzzy",
 				"initial_device_display_name": "display_name"}
 			resp := unauthedClient.Do(t, "POST", []string{"_matrix", "client", "v3", "register"}, client.WithJSONBody(t, reqJson))
-			body, err := ioutil.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
 			session := gjson.GetBytes(body, "session")
 			if err != nil {
 				t.Fatalf("Failed to read response body: %s", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -52,7 +51,7 @@ func LoadSyncData(hsURL, token, tempFile string) (json.RawMessage, error) {
 	}
 
 	// dump it straight to disk first
-	err := ioutil.WriteFile(tempFile, body, 0644)
+	err := os.WriteFile(tempFile, body, 0600)
 	if err != nil {
 		log.Printf("WARNING: failed to write sync data to disk: %s", err)
 	}
@@ -61,7 +60,7 @@ func LoadSyncData(hsURL, token, tempFile string) (json.RawMessage, error) {
 }
 
 func loadDataFromDisk(tempFile string) json.RawMessage {
-	data, err := ioutil.ReadFile(tempFile)
+	data, err := os.ReadFile(tempFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil

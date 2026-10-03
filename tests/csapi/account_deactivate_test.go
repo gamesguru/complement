@@ -4,8 +4,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
@@ -48,6 +49,10 @@ func TestDeactivateAccount(t *testing.T) {
 	outer:
 		for _, flow := range flowList {
 			flowObject, ok := flow.(map[string]interface{})
+			if !ok {
+				t.Fatalf("flow is not an object")
+				return
+			}
 			stageList, ok := flowObject["stages"].([]interface{})
 			if !ok {
 				t.Fatalf("stages is not a list")

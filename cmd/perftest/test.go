@@ -25,7 +25,7 @@ func withSpan(spanName, desc string, snapshots []Snapshot, absStartTime time.Tim
 
 func runTest(testName string, builder *docker.Builder, deployer *docker.Deployer, seed int64) ([]Snapshot, error) {
 	randSource := rand.NewSource(seed)
-	rnd := rand.New(randSource)
+	rnd := rand.New(randSource) //nolint:gosec // benchmark input must be reproducible.
 	// deploy a base image
 	if err := builder.ConstructBlueprintIfNotExist(b.BlueprintCleanHS); err != nil {
 		return nil, err
@@ -171,7 +171,7 @@ func runTest(testName string, builder *docker.Builder, deployer *docker.Deployer
 			},
 		}
 	}
-	snapshots, err = withSpan("initial_syncs", fmt.Sprintf("performs /sync with no since token and timeout=0 for all users"), snapshots, absStartTime, deployment, func() error {
+	snapshots, err = withSpan("initial_syncs", "performs /sync with no since token and timeout=0 for all users", snapshots, absStartTime, deployment, func() error {
 		return runner.RunInstructions(runOpts, syncInstructions)
 	})
 	if err != nil {

@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"net/http"
@@ -118,7 +117,7 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 	})
 	srv.mux.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if srv.UnexpectedRequestsAreErrors {
-			body, _ := ioutil.ReadAll(req.Body)
+			body, _ := io.ReadAll(req.Body)
 			ct.Errorf(t, "Server.UnexpectedRequestsAreErrors=true received unexpected request to server: %s %s\n%s", req.Method, req.URL.Path, string(body))
 		} else {
 			t.Logf("Server.UnexpectedRequestsAreErrors=false received unexpected request to server: %s %s - sending 404 which may cause the HS to backoff from Complement", req.Method, req.URL.Path)
@@ -390,7 +389,7 @@ func (s *Server) MustJoinRoom(t ct.TestLike, deployment FederationDeployment, re
 		if err != nil {
 			ct.Fatalf(t, "MustJoinRoom: failed generating senderID: %v", err)
 		}
-		senderID, signingKey, err = spec.SenderIDFromPseudoIDKey(key), key, nil
+		senderID, signingKey = spec.SenderIDFromPseudoIDKey(key), key
 		keyID = "ed25519:1"
 		origin = spec.ServerName(senderID)
 		mapping := gomatrixserverlib.MXIDMapping{
@@ -705,7 +704,7 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
-		return
+		return nil
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -764,8 +763,9 @@ func WithRoomOpts(opts ...ServerRoomOpt) JoinRoomOpt {
 func federationServer(cfg *config.Complement, h http.Handler) (*http.Server, error) {
 	var derBytes []byte
 	srv := &http.Server{
-		Addr:    ":8448",
-		Handler: h,
+		Addr:              ":8448",
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	certificateDuration := time.Hour
 	priv, err := rsa.GenerateKey(rand.Reader, 4096)
@@ -829,7 +829,7 @@ type nopKeyDatabase struct {
 	gomatrixserverlib.KeyFetcher
 }
 
-func (d *nopKeyDatabase) StoreKeys(ctx context.Context, results map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult) error {
+func (f *nopKeyDatabase) StoreKeys(ctx context.Context, results map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult) error {
 	return nil
 }
 func (f *nopKeyDatabase) FetchKeys(

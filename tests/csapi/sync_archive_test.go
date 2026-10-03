@@ -507,7 +507,7 @@ func TestLeaveEventInviteRejection(t *testing.T) {
 
 	bob.MustInviteRoom(t, roomID, alice.UserID)
 
-	aliceSince = alice.MustSyncUntil(
+	alice.MustSyncUntil(
 		t,
 		client.SyncReq{Filter: aliceFilter, Since: aliceSince},
 		client.SyncInvitedTo(alice.UserID, roomID),
@@ -515,7 +515,7 @@ func TestLeaveEventInviteRejection(t *testing.T) {
 
 	alice.MustLeaveRoom(t, roomID)
 
-	aliceSince = alice.MustSyncUntil(
+	alice.MustSyncUntil(
 		t,
 		client.SyncReq{Filter: aliceFilter, Since: aliceSince},
 		client.SyncLeftFrom(alice.UserID, roomID),

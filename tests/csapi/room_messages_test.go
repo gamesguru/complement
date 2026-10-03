@@ -12,6 +12,8 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -19,7 +21,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // sytest: GET /rooms/:room_id/messages returns a message
@@ -373,7 +374,7 @@ func TestMessagesOverFederation(t *testing.T) {
 				// Bob leaves the room
 				bob.MustLeaveRoom(t, roomID)
 				// Make sure the leave has federated
-				aliceSince = alice.MustSyncUntil(t, client.SyncReq{Since: aliceSince}, client.SyncLeftFrom(bob.UserID, roomID))
+				alice.MustSyncUntil(t, client.SyncReq{Since: aliceSince}, client.SyncLeftFrom(bob.UserID, roomID))
 
 				// Send messages and make sure we can see them in `/messages`
 				_sendAndTestMessageHistory(
