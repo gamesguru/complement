@@ -379,7 +379,6 @@ type msc4500Accumulator struct {
 	eventID      string
 	algorithm    string
 	latticeB64   string
-	latticeBytes []byte
 	digestB64    string
 	nStateEvents uint64
 }
@@ -426,7 +425,6 @@ func mustGetAccumulator(
 		eventID:      eventID,
 		algorithm:    fedBody.Get("algorithm").Str,
 		latticeB64:   latticeB64,
-		latticeBytes: latticeBytes,
 		digestB64:    digestB64,
 		nStateEvents: fedBody.Get("n_state_events").Uint(),
 	}
@@ -439,7 +437,6 @@ type msc4500StateCache struct {
 	srv        *federation.Server
 	deployment complement.Deployment
 	known      map[string]lthash.Entry
-	fetched    int
 }
 
 func newMSC4500StateCache(srv *federation.Server, deployment complement.Deployment) *msc4500StateCache {
@@ -521,6 +518,9 @@ func (c *msc4500StateCache) mustFetchEvent(t *testing.T, eventID string) lthash.
 	}
 	must.Equal(t, pdu.IsObject(), true, "event response carried no PDU for "+eventID)
 	must.NotEqual(t, pdu.Get("type").Str, "", "event has no type: "+eventID)
+	// /state_ids should only ever return state events, so a missing state_key
+	// means the response is malformed or the set contains something unexpected.
+	must.Equal(t, pdu.Get("state_key").Exists(), true, "event is not a state event (no state_key): "+eventID)
 
 	return lthash.Entry{
 		EventType: pdu.Get("type").Str,
@@ -579,7 +579,10 @@ func mustSendTransaction(t *testing.T, srv *federation.Server, deployment comple
 
 	body, err := io.ReadAll(res.Body)
 	must.NotError(t, "read send response", err)
-	t.Logf("send transaction response: %s", string(body))
+	t.Logf("send transaction response: %d %s", res.StatusCode, string(body))
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		t.Fatalf("send transaction failed with HTTP %d: %s", res.StatusCode, body)
+	}
 }
 
 // msc4500SortedEventIDs returns the event IDs of entries in a stable order so
