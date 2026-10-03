@@ -32,15 +32,25 @@ import (
 // outbound state_hashes extension on /send transactions.
 func TestMSC4500State(t *testing.T) {
 	t.Run("Accumulator", testMSC4500StateAccumulator)
-	t.Run("HashMatch", testMSC4500StateHashMatch)
-	t.Run("HashMismatch", testMSC4500StateHashMismatch)
+	t.Run("StateHashes", testMSC4500StateHashes)
 	t.Run("Outbound", testMSC4500StateOutbound)
 }
 
-// msc4500Algorithm is the MSC4500 wire identifier for the BLAKE3 LtHash16
-// digest profile. It names the complete cryptographic profile so a receiver can
-// never mistake it for a pre-BLAKE3 instantiation.
-const msc4500Algorithm = "lthash16-blake3-v1"
+const (
+	// msc4500PrimaryAlgorithm names the primary BLAKE3 LtHash16 accumulator as
+	// served by the state_accumulator endpoint. The "-v1" is an algorithm
+	// identifier, not a spec version.
+	msc4500PrimaryAlgorithm = "lthash16-blake3-v1"
+
+	// msc4500Algorithm is the composite profile carried in a /send
+	// transaction's state_hashes.algorithm: the primary accumulator plus the
+	// redaction overlay.
+	msc4500Algorithm = msc4500PrimaryAlgorithm + "+redactions-blake3-v1"
+
+	// msc4500EmptyDigest is the collapse digest of an all-zero lattice. It is the
+	// redaction digest of a state in which no selected event is redacted.
+	msc4500EmptyDigest = "viqN49z0bJTOhc3I4HrDCPTYqVSQ2VbDjXgP1hDbCBM"
+)
 
 // testMSC4500StateAccumulator verifies the state_accumulator endpoint against a
 // lattice rebuilt independently with gomatrixcrypto's lthash package, covering a
@@ -188,13 +198,14 @@ func testMSC4500StateAccumulator(t *testing.T) {
 	)
 }
 
-func testMSC4500StateHashMatch(t *testing.T) {
+// testMSC4500StateHashes drives the receiver contract with hand-built
+// state_hashes payloads: a match, primary and redaction-only mismatches, and the
+// cases a receiver must defer instead of reporting.
+func testMSC4500StateHashes(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-
-	// Create a remote homeserver
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
@@ -203,152 +214,138 @@ func testMSC4500StateHashMatch(t *testing.T) {
 	cancel := srv.Listen()
 	defer cancel()
 
-	// Alice creates a public room
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset": "public_chat",
-	})
-
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 	charlie := srv.UserID("charlie")
 	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
 	joinEvent := serverRoom.CurrentState("m.room.member", charlie)
 	must.NotEqual(t, joinEvent, nil, "expected charlie join event in remote room state")
 
-	event := srv.MustCreateEvent(t, serverRoom, federation.Event{
-		Sender: charlie,
-		Type:   "m.room.message",
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "Matching state hash event",
-		},
-	})
+	// A message leaves state untouched, so its before and after digests are the
+	// digest after charlie's join, which hs1 already knows.
+	stateDigest := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
+	const bogusDigest = "ABEiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8"
 
-	// The message event does not change room state, so the post-event digest is
-	// the same as the one after charlie's join event, which hs1 already knows.
-	digestHex := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
-
-	pdus := []json.RawMessage{event.JSON()}
-	txnJSON := map[string]interface{}{
-		"origin":           srv.ServerName(),
-		"origin_server_ts": time.Now().UnixNano() / 1000000,
-		"pdus":             pdus,
-		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
-			event.EventID(): map[string]interface{}{
-				"algorithm": msc4500Algorithm,
-				"after":     digestHex,
+	// send builds a fresh message, sends it with the given state_hashes entry
+	// builder under the given algorithm, and returns hs1's result for it.
+	send := func(t *testing.T, algorithm string, entry func(eventID string) map[string]interface{}) gjson.Result {
+		t.Helper()
+		event := srv.MustCreateEvent(t, serverRoom, federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "state hash case",
 			},
-		},
+		})
+		return mustSendStateHashes(t, srv, deployment, event, map[string]interface{}{
+			"algorithm": algorithm,
+			"entries":   map[string]interface{}{event.EventID(): entry(event.EventID())},
+		})
+	}
+	full := func(after, redactionsAfter string) func(string) map[string]interface{} {
+		return func(string) map[string]interface{} {
+			return map[string]interface{}{
+				"before":            stateDigest,
+				"after":             after,
+				"redactions_before": msc4500EmptyDigest,
+				"redactions_after":  redactionsAfter,
+			}
+		}
 	}
 
-	txnBody, err := json.Marshal(txnJSON)
-	must.NotError(t, "json marshal txn", err)
-
-	txnID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
-	reqURI := fmt.Sprintf("/_matrix/federation/v1/send/%s", txnID)
-
-	req := fclient.NewFederationRequest("PUT", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	err = req.SetContent(json.RawMessage(txnBody))
-	must.NotError(t, "set content", err)
-
-	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
-	must.NotError(t, "do federation request", err)
-
-	resBody, err := io.ReadAll(res.Body)
-	must.NotError(t, "read res body", err)
-	must.NotError(t, "close res body", res.Body.Close())
-
-	t.Logf("Response: %s", string(resBody))
-
-	// Verify the response does not contain state_hash_mismatch for the event
-	parsedRes := gjson.ParseBytes(resBody)
-	mismatchObj := gjson.Result{}
-	parsedRes.Get("pdus").ForEach(func(key, value gjson.Result) bool {
-		if key.Str == event.EventID() {
-			mismatchObj = value.Get("state_hash_mismatch")
-			return false
-		}
-		return true
+	t.Run("Match", func(t *testing.T) {
+		res := send(t, msc4500Algorithm, full(stateDigest, msc4500EmptyDigest))
+		must.Equal(t, res.Get("state_hash_mismatch").Exists(), false, "unexpected state_hash_mismatch")
 	})
-	must.Equal(t, mismatchObj.Exists(), false, "state_hash_mismatch should not be present in response")
+
+	t.Run("PrimaryMismatch", func(t *testing.T) {
+		res := send(t, msc4500Algorithm, full(bogusDigest, msc4500EmptyDigest))
+		mismatch := res.Get("state_hash_mismatch")
+		must.Equal(t, mismatch.Exists(), true, "state_hash_mismatch not found in response")
+		must.Equal(t, mismatch.Get("algorithm").Str, msc4500Algorithm, "mismatch algorithm wrong")
+		must.Equal(t, mismatch.Get("expected_after").Str, stateDigest, "expected_after wrong")
+		must.Equal(t, mismatch.Get("received_after").Str, bogusDigest, "received_after wrong")
+		// The redaction overlays agree, so they must not be blamed.
+		must.Equal(t, mismatch.Get("expected_redactions_after").Str, msc4500EmptyDigest, "expected_redactions_after wrong")
+		must.Equal(t, mismatch.Get("received_redactions_after").Str, msc4500EmptyDigest, "received_redactions_after wrong")
+	})
+
+	// The servers agree on every selected event ID but not on whether one is
+	// effectively redacted: the case the primary digest is blind to.
+	t.Run("RedactionOnlyMismatch", func(t *testing.T) {
+		res := send(t, msc4500Algorithm, full(stateDigest, bogusDigest))
+		mismatch := res.Get("state_hash_mismatch")
+		must.Equal(t, mismatch.Exists(), true, "redaction-only mismatch was not reported")
+		must.Equal(t, mismatch.Get("expected_after").Str, mismatch.Get("received_after").Str,
+			"primary digests should agree in a redaction-only mismatch")
+		must.Equal(t, mismatch.Get("expected_redactions_after").Str, msc4500EmptyDigest, "expected_redactions_after wrong")
+		must.Equal(t, mismatch.Get("received_redactions_after").Str, bogusDigest, "received_redactions_after wrong")
+	})
+
+	// A limited entry is an explicit deferral, never a mismatch, even when the
+	// receiver would otherwise disagree.
+	t.Run("Limited", func(t *testing.T) {
+		res := send(t, msc4500Algorithm, func(string) map[string]interface{} {
+			return map[string]interface{}{
+				"before":            nil,
+				"redactions_before": nil,
+				"limited":           true,
+			}
+		})
+		must.Equal(t, res.Get("state_hash_mismatch").Exists(), false, "limited entry must be deferred")
+	})
+
+	// Omitting a redaction digest is malformed, not an empty overlay.
+	t.Run("MalformedEntryDeferred", func(t *testing.T) {
+		res := send(t, msc4500Algorithm, func(string) map[string]interface{} {
+			return map[string]interface{}{
+				"before":            stateDigest,
+				"after":             bogusDigest,
+				"redactions_before": msc4500EmptyDigest,
+			}
+		})
+		must.Equal(t, res.Get("state_hash_mismatch").Exists(), false, "malformed entry must be deferred")
+	})
+
+	// One algorithm governs the transaction; an unknown one defers it whole.
+	t.Run("UnknownAlgorithmDeferred", func(t *testing.T) {
+		res := send(t, "lthash16-blake3-v9+future", full(bogusDigest, bogusDigest))
+		must.Equal(t, res.Get("state_hash_mismatch").Exists(), false, "unknown algorithm must be deferred")
+	})
 }
 
-func testMSC4500StateHashMismatch(t *testing.T) {
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
+// mustSendStateHashes sends one PDU with the given state_hashes object under the
+// unstable key and returns hs1's per-PDU result.
+func mustSendStateHashes(
+	t *testing.T,
+	srv *federation.Server,
+	deployment complement.Deployment,
+	event gomatrixserverlib.PDU,
+	stateHashes map[string]interface{},
+) gjson.Result {
+	t.Helper()
 
-	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-
-	// Create a remote homeserver
-	srv := federation.NewServer(t, deployment,
-		federation.HandleKeyRequests(),
-		federation.HandleMakeSendJoinRequests(),
-		federation.HandleTransactionRequests(nil, nil),
-	)
-	cancel := srv.Listen()
-	defer cancel()
-
-	// Alice creates a public room
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset": "public_chat",
+	txnBody, err := json.Marshal(map[string]interface{}{
+		"origin":                        srv.ServerName(),
+		"origin_server_ts":              time.Now().UnixNano() / 1000000,
+		"pdus":                          []json.RawMessage{event.JSON()},
+		"tk.nutra.msc4500.state_hashes": stateHashes,
 	})
-
-	charlie := srv.UserID("charlie")
-	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
-
-	badEvent := srv.MustCreateEvent(t, serverRoom, federation.Event{
-		Sender: charlie,
-		Type:   "m.room.message",
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "Bad state hash event",
-		},
-	})
-
-	pdus := []json.RawMessage{badEvent.JSON()}
-	txnJSON := map[string]interface{}{
-		"origin":           srv.ServerName(),
-		"origin_server_ts": time.Now().UnixNano() / 1000000,
-		"pdus":             pdus,
-		"tk.nutra.msc4500.state_hashes": map[string]interface{}{
-			badEvent.EventID(): map[string]interface{}{
-				"algorithm": msc4500Algorithm,
-				"after":     "ABEiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8",
-			},
-		},
-	}
-
-	txnBody, err := json.Marshal(txnJSON)
 	must.NotError(t, "json marshal txn", err)
 
 	txnID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
 	reqURI := fmt.Sprintf("/_matrix/federation/v1/send/%s", txnID)
-
 	req := fclient.NewFederationRequest("PUT", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	err = req.SetContent(json.RawMessage(txnBody))
-	must.NotError(t, "set content", err)
+	must.NotError(t, "set content", req.SetContent(json.RawMessage(txnBody)))
 
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "do federation request", err)
-
 	resBody, err := io.ReadAll(res.Body)
 	must.NotError(t, "read res body", err)
 	must.NotError(t, "close res body", res.Body.Close())
-
 	t.Logf("Response: %s", string(resBody))
 
-	// Verify the response contains state_hash_mismatch for the event
-	parsedRes := gjson.ParseBytes(resBody)
-	mismatchObj := gjson.Result{}
-	parsedRes.Get("pdus").ForEach(func(key, value gjson.Result) bool {
-		if key.Str == badEvent.EventID() {
-			mismatchObj = value.Get("state_hash_mismatch")
-			return false
-		}
-		return true
-	})
-	must.Equal(t, mismatchObj.Exists(), true, "state_hash_mismatch not found in response")
-	must.Equal(t, mismatchObj.Get("algorithm").Str, msc4500Algorithm, "mismatch algorithm wrong")
-	expectedDigest := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, badEvent.EventID())
-	must.Equal(t, mismatchObj.Get("digest").Str, expectedDigest, "mismatch digest wrong")
+	return gjson.GetBytes(resBody, "pdus").Get(gjson.Escape(event.EventID()))
 }
 
 func mustGetStateAccumulatorDigest(
@@ -405,7 +402,7 @@ func mustGetAccumulator(
 	fedBody := must.ParseJSON(t, fedRes.Body)
 
 	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("event_id", eventID))
-	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", msc4500Algorithm))
+	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", msc4500PrimaryAlgorithm))
 
 	latticeB64 := fedBody.Get("lattice").Str
 	digestB64 := fedBody.Get("digest").Str
@@ -679,7 +676,7 @@ func testMSC4500StateOutbound(t *testing.T) {
 		},
 	})
 
-	found.Waitf(t, 30*time.Second, "timed out waiting for outbound state_hashes on /send")
+	found.Waitf(t, 15*time.Second, "timed out waiting for outbound state_hashes on /send")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -712,23 +709,48 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.M
 		return
 	}
 	sh, ok := stateHashes.(map[string]interface{})
-	if !ok || len(sh) == 0 {
+	if !ok {
 		return
 	}
-	for _, v := range sh {
+	if algo, _ := sh["algorithm"].(string); algo != msc4500Algorithm {
+		return
+	}
+	entries, ok := sh["entries"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	for _, v := range entries {
 		entry, ok := v.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		algo, _ := entry["algorithm"].(string)
-		after, _ := entry["after"].(string)
-		if algo == msc4500Algorithm && len(after) == 43 {
-			mu.Lock()
-			*observedAfter = after
-			*observedDigest = true
-			mu.Unlock()
-			found.Finish()
-			return
+		if limited, _ := entry["limited"].(bool); limited {
+			continue
 		}
+		// Every non-limited entry carries all four digests, each a 43-char
+		// base64url BLAKE3-256 collapse.
+		digests := make(map[string]string, 4)
+		complete := true
+		for _, key := range []string{"before", "after", "redactions_before", "redactions_after"} {
+			d, _ := entry[key].(string)
+			if len(d) != 43 {
+				complete = false
+				break
+			}
+			digests[key] = d
+		}
+		if !complete {
+			continue
+		}
+		// A message leaves the redaction overlay empty in this room.
+		if digests["redactions_before"] != msc4500EmptyDigest || digests["redactions_after"] != msc4500EmptyDigest {
+			continue
+		}
+		mu.Lock()
+		*observedAfter = digests["after"]
+		*observedDigest = true
+		mu.Unlock()
+		found.Finish()
+		return
 	}
 }
