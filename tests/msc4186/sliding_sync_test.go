@@ -1140,6 +1140,7 @@ func testMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 	must.MatchGJSON(t, res,
 		match.JSONKeyPresent("extensions.to_device.next_batch"),
 	)
+	nextBatch := res.Get("extensions.to_device.next_batch").Str
 
 	bob.MustSendToDeviceMessages(t, "m.room_key_request", map[string]map[string]map[string]interface{}{
 		alice.UserID: {
@@ -1148,10 +1149,15 @@ func testMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 	})
 
 	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
-		ConnID:     "extensions-to-device",
-		Pos:        pos,
-		Lists:      allRoomsList(1, 0, 0),
-		Extensions: toDeviceExt,
+		ConnID: "extensions-to-device",
+		Pos:    pos,
+		Lists:  allRoomsList(1, 0, 0),
+		Extensions: map[string]interface{}{
+			"to_device": map[string]interface{}{
+				"enabled": true,
+				"since":   nextBatch,
+			},
+		},
 	})
 
 	found := false
