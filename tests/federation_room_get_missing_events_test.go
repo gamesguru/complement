@@ -1659,7 +1659,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	select {
 	case <-stateIDWaiter.Done():
 	case <-time.After(5 * time.Second):
-		if runtime.Homeserver == runtime.Synapse {
+		if runtime.Homeserver == runtime.Synapse && gmeCallCount.Load() == 1 {
 			t.Skipf(
 				"This Synapse build does not retry /get_missing_events after a malformed response: "+
 					"it 403-rejected the pulled event immediately instead of falling back to /state_ids, so "+
