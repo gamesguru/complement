@@ -739,7 +739,7 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.M
 			}
 			digests[key] = d
 		}
-		if !complete {
+			if !complete || digests["before"] != digests["after"] {
 			continue
 		}
 		// A message leaves the redaction overlay empty in this room.
