@@ -844,9 +844,11 @@ func testMSC4242STATE_PREDECESSORS00PreMSC4242RoomUsesPrevEventsAsStatePredecess
 	// Prove the fork shares a single parent: Alice's name event must sit
 	// directly on the PL grant, otherwise "concurrent" is meaningless.
 	aliceEvResp := alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", aliceNameEventID})
+	// The client-server API encodes prev_events as [event_id, hashes] pairs,
+	// so the event ID is the first element, not the element's string value.
 	var alicePrevs []string
 	for _, r := range gjson.GetBytes(client.ParseJSON(t, aliceEvResp), "prev_events").Array() {
-		alicePrevs = append(alicePrevs, r.Str)
+		alicePrevs = append(alicePrevs, r.Get("0").Str)
 	}
 	must.Equal(t, slices.Equal(alicePrevs, []string{basePLID}), true,
 		"alice's name event must have the PL grant as its only prev_event so Bob's sibling is a true fork")
