@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 
@@ -28,6 +29,7 @@ func TestMSC4521SetReconciliation(t *testing.T) {
 	t.Run("ResidualVerification", testResidualVerification)
 	t.Run("AdaptiveBuckets", testAdaptiveBuckets)
 	t.Run("MixedBucketBatch", testMixedBucketBatch)
+	t.Run("SixteenNodeHypercubePropagation", testSixteenNodeHypercubePropagation)
 	t.Run("BucketEscalation", testBucketEscalation)
 	t.Run("BucketSplit", testBucketSplit)
 	t.Run("H64Collision", testH64Collision)
@@ -394,6 +396,55 @@ func testMixedBucketBatch(t *testing.T) {
 	must.Equal(t, resolved.Type, reconcile.ActionResolveRoots, "retry success should resolve roots")
 	if !slices.Equal(resolved.Roots, []uint64{11, 22}) {
 		t.Fatalf("resolved roots = %v, want [11 22]", resolved.Roots)
+	}
+}
+
+// testSixteenNodeHypercubePropagation models passive propagation over a
+// sixteen-node, four-dimensional hypercube. It deliberately tests only the
+// deterministic topology and propagation property; federation transport and
+// passive sketch piggybacking are not implemented by this library suite.
+func testSixteenNodeHypercubePropagation(t *testing.T) {
+	const (
+		nodes    = 16
+		baseline = 1000
+	)
+
+	state := make([]map[string]struct{}, nodes)
+	for node := range state {
+		state[node] = make(map[string]struct{}, baseline+20)
+		for i := 0; i < baseline; i++ {
+			state[node][fmt.Sprintf("baseline-%d", i)] = struct{}{}
+		}
+	}
+	for i := 0; i < 10; i++ {
+		state[0][fmt.Sprintf("node-0-difference-%d", i)] = struct{}{}
+		state[15][fmt.Sprintf("node-15-difference-%d", i)] = struct{}{}
+	}
+
+	for round := 1; round <= 4; round++ {
+		next := make([]map[string]struct{}, nodes)
+		for node := range state {
+			next[node] = make(map[string]struct{}, len(state[node]))
+			for value := range state[node] {
+				next[node][value] = struct{}{}
+			}
+			for bit := 1; bit < nodes; bit <<= 1 {
+				peer := node ^ bit
+				for value := range state[peer] {
+					next[node][value] = struct{}{}
+				}
+			}
+		}
+		state = next
+	}
+
+	if len(state[0]) != baseline+20 {
+		t.Fatalf("node 0 has %d values after four rounds, want %d", len(state[0]), baseline+20)
+	}
+	for node := 1; node < nodes; node++ {
+		if !maps.Equal(state[node], state[0]) {
+			t.Fatalf("node %d did not converge with node 0", node)
+		}
 	}
 }
 
