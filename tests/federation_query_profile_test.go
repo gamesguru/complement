@@ -10,8 +10,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"

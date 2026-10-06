@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/matrix-org/util"
+
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/internal/docker"
-	"github.com/matrix-org/util"
 )
 
 type ReqCreate struct {
