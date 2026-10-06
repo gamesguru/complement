@@ -20,23 +20,41 @@ import (
 // verified without a homeserver; the federation-facing endpoint test is
 // scaffolded separately until its wire shape is settled.
 func TestMSC4521SetReconciliation(t *testing.T) {
-	t.Run("Vectors", testVectors)
-	t.Run("IdenticalSets", testIdenticalSets)
-	t.Run("OneSidedChanges", testOneSidedChanges)
-	t.Run("SymmetricDifference", testSymmetricDifference)
-	t.Run("EstimateDelta", testEstimateDelta)
-	t.Run("EstimateDeltaSpecVectors", testEstimateDeltaSpecVectors)
-	t.Run("ResidualVerification", testResidualVerification)
-	t.Run("AdaptiveBuckets", testAdaptiveBuckets)
-	t.Run("MixedBucketBatch", testMixedBucketBatch)
-	t.Run("SixteenNodeHypercubePropagation", testSixteenNodeHypercubePropagation)
-	t.Run("BucketEscalation", testBucketEscalation)
-	t.Run("BucketSplit", testBucketSplit)
-	t.Run("H64Collision", testH64Collision)
-	t.Run("MalformedInputs", testMalformedInputs)
-	t.Run("EventIDBinding", testEventIDBinding)
-	t.Run("ValidateBucketRequests", testValidateBucketRequests)
-	t.Run("FederationEndpoint", testFederationEndpoint)
+	t.Run("Plumbing", func(t *testing.T) {
+		t.Run("Vectors", testVectors)
+		t.Run("Buckets", func(t *testing.T) {
+			t.Run("AdaptiveBuckets", testAdaptiveBuckets)
+			t.Run("MixedBucketBatch", testMixedBucketBatch)
+			t.Run("BucketEscalation", testBucketEscalation)
+			t.Run("BucketSplit", testBucketSplit)
+			t.Run("ValidateBucketRequests", testValidateBucketRequests)
+		})
+		t.Run("Residual", func(t *testing.T) {
+			t.Run("ResidualVerification", testResidualVerification)
+			t.Run("H64Collision", testH64Collision)
+		})
+		t.Run("Other", func(t *testing.T) {
+			t.Run("MalformedInputs", testMalformedInputs)
+			t.Run("EventIDBinding", testEventIDBinding)
+		})
+	})
+	t.Run("Porcelain", func(t *testing.T) {
+		t.Run("IdenticalSets", testIdenticalSets)
+		t.Run("OneSidedChanges", testOneSidedChanges)
+		t.Run("SymmetricDifference", testSymmetricDifference)
+		t.Run("EstimateDelta", func(t *testing.T) {
+			t.Run("TwoSidedDifference", testEstimateDelta)
+			t.Run("SpecVectors", testEstimateDeltaSpecVectors)
+		})
+	})
+	t.Run("ObliviousRouting", func(t *testing.T) {
+		t.Run("16NodeHypercubeQuicklySelfHealsUnderPartition", func(t *testing.T) {
+			t.Run("PartitionedLogarithmicPropagation", testSixteenNodeHypercubePropagation)
+		})
+	})
+	t.Run("Federation", func(t *testing.T) {
+		t.Run("FederationEndpoint", testFederationEndpoint)
+	})
 }
 
 // element derives a deterministic element hash from a label. The label is not
