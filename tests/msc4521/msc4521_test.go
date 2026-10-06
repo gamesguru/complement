@@ -27,6 +27,7 @@ func TestMSC4521SetReconciliation(t *testing.T) {
 	t.Run("EstimateDeltaSpecVectors", testEstimateDeltaSpecVectors)
 	t.Run("ResidualVerification", testResidualVerification)
 	t.Run("AdaptiveBuckets", testAdaptiveBuckets)
+	t.Run("MixedBucketBatch", testMixedBucketBatch)
 	t.Run("BucketEscalation", testBucketEscalation)
 	t.Run("BucketSplit", testBucketSplit)
 	t.Run("H64Collision", testH64Collision)
@@ -158,7 +159,8 @@ func testVectors(t *testing.T) {
 	must.NotError(t, "NewSyndromeSketch(2)", err)
 	must.NotError(t, "Toggle(1)", sketch.Toggle(1))
 	must.NotError(t, "Toggle(2)", sketch.Toggle(2))
-	decoded, err := reconcile.DecodeSyndromeSketch(2, sketch.Encode())
+	// This is an independently pinned little-endian coordinate vector.
+	decoded, err := reconcile.DecodeSyndromeSketch(2, "AwAAAAAAAAAJAAAAAAAAAA")
 	must.NotError(t, "DecodeSyndromeSketch(2)", err)
 	roots, err := decoded.DecodeElements(2)
 	must.NotError(t, "DecodeElements(2)", err)
@@ -292,8 +294,12 @@ func testEstimateDeltaSpecVectors(t *testing.T) {
 		got, ok, err := reconcile.EstimateDelta(local.Strata(), remote.Strata())
 		must.NotError(t, "EstimateDelta", err)
 		must.Equal(t, ok, true, "estimate present")
-		if got != 6 {
+		switch got {
+		case 6:
+		case 16:
 			t.Skipf("known divergence from MSC4521/reference: {1,2,4,8,3,5} estimates %d, reference expects exact delta 6", got)
+		default:
+			t.Fatalf("EstimateDelta = %d, want 6 (reference) or 16 (known pinned divergence)", got)
 		}
 	})
 
@@ -302,8 +308,12 @@ func testEstimateDeltaSpecVectors(t *testing.T) {
 		got, ok, err := reconcile.EstimateDelta(local.Strata(), remote.Strata())
 		must.NotError(t, "EstimateDelta", err)
 		must.Equal(t, ok, true, "estimate present")
-		if got != 18 {
+		switch got {
+		case 18:
+		case 8 << 31:
 			t.Skipf("known divergence from MSC4521/reference: nine-odd stratum-0 vector estimates %d, reference expects delta 18 (low_confidence)", got)
+		default:
+			t.Fatalf("EstimateDelta = %d, want 18 (reference) or 8<<31 (known pinned divergence)", got)
 		}
 	})
 }
@@ -357,6 +367,33 @@ func testAdaptiveBuckets(t *testing.T) {
 	want := []uint64{element("e").H64, element("f").H64}
 	if !equalU64Set(transition.Roots, want) {
 		t.Fatalf("resolved roots = %#x, want %#x", transition.Roots, want)
+	}
+}
+
+func testMixedBucketBatch(t *testing.T) {
+	client, err := reconcile.NewReconciliationClient(reconcile.MaxLocalSketchDecodeCapacity)
+	must.NotError(t, "NewReconciliationClient", err)
+	requests := []reconcile.BucketRequest{
+		{Depth: 1, Prefix: 0, Capacity: 2},
+		{Depth: 1, Prefix: 1, Capacity: 2},
+	}
+	first := reconcile.BucketDecodeBatch{
+		SuccessfulBuckets: []reconcile.BucketDecodeSuccess{{Depth: 1, Prefix: 0, Roots: []uint64{11}}},
+		FailedBuckets:     []reconcile.FailedBucket{{Depth: 1, Prefix: 1}},
+	}
+	transition := client.TransitionBucketBatch(first, requests, nil, nil, 1, reconcile.MaxBucketedSketchCapacity)
+	must.Equal(t, transition.Type, reconcile.ActionBucketSketches, "failed bucket should be retried")
+	if !slices.Equal(transition.AccumulatedRoots, []uint64{11}) {
+		t.Fatalf("accumulated roots = %v, want [11]", transition.AccumulatedRoots)
+	}
+
+	second := reconcile.BucketDecodeBatch{
+		SuccessfulBuckets: []reconcile.BucketDecodeSuccess{{Depth: 1, Prefix: 1, Roots: []uint64{22}}},
+	}
+	resolved := client.TransitionBucketBatch(second, transition.Requests, transition.AccumulatedRoots, nil, 2, reconcile.MaxBucketedSketchCapacity)
+	must.Equal(t, resolved.Type, reconcile.ActionResolveRoots, "retry success should resolve roots")
+	if !slices.Equal(resolved.Roots, []uint64{11, 22}) {
+		t.Fatalf("resolved roots = %v, want [11 22]", resolved.Roots)
 	}
 }
 
@@ -507,7 +544,7 @@ func testMalformedInputs(t *testing.T) {
 func testEventIDBinding(t *testing.T) {
 	digest := make([]byte, 32)
 	for i := range digest {
-		digest[i] = 0xfb
+		digest[i] = byte(i + 1)
 	}
 	v3 := "$" + base64.RawStdEncoding.EncodeToString(digest)
 	v4 := "$" + base64.RawURLEncoding.EncodeToString(digest)
@@ -520,10 +557,10 @@ func testEventIDBinding(t *testing.T) {
 
 	var wantH128 [16]byte
 	for i := range wantH128 {
-		wantH128[i] = 0xfb
+		wantH128[i] = byte(i + 17)
 	}
 	must.Equal(t, v3Hash.H128, wantH128, "h128 is the trailing 16 digest bytes")
-	must.Equal(t, v3Hash.H64, uint64(0xfbfb_fbfb_fbfb_fbfb), "h64 is the first non-zero 8-byte chunk")
+	must.Equal(t, v3Hash.H64, uint64(0x0102_0304_0506_0708), "h64 is the first non-zero 8-byte chunk")
 
 	viaAlias, err := reconcile.DecodeDigest32(v4, reconcile.V4Plus)
 	must.NotError(t, "DecodeDigest32", err)
