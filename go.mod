@@ -3,6 +3,7 @@ module github.com/matrix-org/complement
 go 1.26.0
 
 require (
+	github.com/Wombat-Foundation/gomatrixcrypto v0.0.0-20261006043452-f951c5a84f30
 	github.com/gorilla/mux v1.8.1
 	github.com/matrix-org/gomatrix v0.0.0-20220926102614-ceba4d9f7530
 	github.com/matrix-org/gomatrixserverlib v0.0.0-20260716140101-4fe595dc7f58
@@ -12,7 +13,8 @@ require (
 	github.com/sirupsen/logrus v1.10.2
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
-	golang.org/x/crypto v0.57.0
+	github.com/zeebo/blake3 v0.2.4
+	golang.org/x/crypto v0.56.0
 	golang.org/x/exp v0.0.0-20230905200255-921286631fa9
 	gonum.org/v1/plot v0.17.0
 )
@@ -35,6 +37,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/hashicorp/go-set/v3 v3.0.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.0.12 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/oleiade/lane/v2 v2.0.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
@@ -49,7 +52,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/image v0.41.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	gonum.org/v1/gonum v0.17.0 // indirect
 )
