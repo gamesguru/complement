@@ -474,7 +474,8 @@ func (c *CSAPI) GetStateEventContent(t ct.TestLike, roomID, eventType, stateKey 
 	return c.Do(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "state", eventType, stateKey})
 }
 
-// MustGetEvent returns the event content for the given state event. Fails the test if the state event does not exist.
+// MustGetEvent returns the full event JSON for the given room and event ID.
+// Fails the test on request or response-read errors, a non-2xx response, or invalid JSON.
 func (c *CSAPI) MustGetEvent(t ct.TestLike, roomID, eventID string) (eventJson gjson.Result) {
 	t.Helper()
 	res := c.GetEvent(t, roomID, eventID)
@@ -483,7 +484,8 @@ func (c *CSAPI) MustGetEvent(t ct.TestLike, roomID, eventID string) (eventJson g
 	return gjson.ParseBytes(body)
 }
 
-// GetEvent returns the event JSON. Use this form to detect absence via 404.
+// GetEvent returns the HTTP response for an event, including non-2xx responses.
+// Use this form to detect absence via 404. Request or response-read errors fail the test.
 func (c *CSAPI) GetEvent(t ct.TestLike, roomID, eventID string) *http.Response {
 	t.Helper()
 	return c.Do(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "event", eventID})

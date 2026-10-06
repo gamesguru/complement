@@ -144,11 +144,11 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 // before will produce an error.
 //
 // It is not supported to call ServerName() before Listen() because Listen() modifies the server name.
-// Listen() will select a random OS-provided high-numbered port to listen on, which then needs to be
-// retrofitted into the server name so containers know how to route to it.
+// Listen() selects an unused port and retrofits it into the server name so containers know how to
+// route to it.
 func (s *Server) ServerName() spec.ServerName {
 	if !s.listening {
-		ct.Fatalf(s.t, "ServerName() called before Listen() - this is not supported because Listen() chooses a high-numbered port and thus changes the server name. Ensure you Listen() first!")
+		ct.Fatalf(s.t, "ServerName() called before Listen() - this is not supported because Listen() chooses a port and thus changes the server name. Ensure you Listen() first!")
 	}
 	return s.serverName
 }
@@ -156,7 +156,7 @@ func (s *Server) ServerName() spec.ServerName {
 // UserID returns the complete user ID for the given localpart
 func (s *Server) UserID(localpart string) string {
 	if !s.listening {
-		ct.Fatalf(s.t, "UserID() called before Listen() - this is not supported because Listen() chooses a high-numbered port and thus changes the server name and thus changes the user ID. Ensure you Listen() first!")
+		ct.Fatalf(s.t, "UserID() called before Listen() - this is not supported because Listen() chooses a port and thus changes the server name and user ID. Ensure you Listen() first!")
 	}
 	return fmt.Sprintf("@%s:%s", localpart, s.serverName)
 }
@@ -166,7 +166,7 @@ func (s *Server) UserID(localpart string) string {
 // handle alias requests over federation.
 func (s *Server) MakeAliasMapping(aliasLocalpart, roomID string) string {
 	if !s.listening {
-		ct.Fatalf(s.t, "MakeAliasMapping() called before Listen() - this is not supported because Listen() chooses a high-numbered port and thus changes the server name and thus changes the room alias. Ensure you Listen() first!")
+		ct.Fatalf(s.t, "MakeAliasMapping() called before Listen() - this is not supported because Listen() chooses a port and thus changes the server name and room alias. Ensure you Listen() first!")
 	}
 	alias := fmt.Sprintf("#%s:%s", aliasLocalpart, s.serverName)
 	s.aliases[alias] = roomID
@@ -557,7 +557,8 @@ var (
 )
 
 // listenOnUnusedPort listens on an unused port that no other federation `Server` has
-// used before in this process.
+// used before in this process. Bind failures are skipped; exhausting ports
+// 1024 through 65535 fails the test.
 func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	lastUsedPortMu.Lock()
 	defer lastUsedPortMu.Unlock()
@@ -610,6 +611,10 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	return nil
 }
 
+// Listen starts serving federation requests over TLS and appends the chosen port
+// to the server name. It returns a function that closes the server and waits for
+// it to stop. Subsequent calls return nil, including after the server is closed.
+// Exhausting available ports or failing to close the server fails the test.
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
 		return

@@ -25,6 +25,11 @@ type Snapshot struct {
 	RxBytes          int64
 }
 
+// snapshotStats collects one container statistics snapshot per homeserver.
+// absDuration is the elapsed time since the benchmark began; duration is the span's
+// elapsed time. Both are recorded as supplied, without converting counters to deltas.
+// Returns nil if any statistics request or JSON decoding fails, discarding any
+// snapshots already collected, or if the deployment has no homeservers.
 func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDuration, duration time.Duration) (snapshots []Snapshot) {
 	for hsName, hsInfo := range deployment.HS {
 		stats, err := deployment.Deployer.Docker.ContainerStats(context.Background(), hsInfo.ContainerID, client.ContainerStatsOptions{})
