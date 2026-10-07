@@ -101,6 +101,7 @@ func TestMain(m *testing.M, namespace string, customOpts ...opt) {
 
 func operationalSetupFailure(t ct.TestLike, format string, args ...interface{}) {
 	setupFailed.Store(true)
+	t.Errorf("Complement setup failure: "+format, args...)
 	t.Skipf("Complement setup failure: "+format, args...)
 }
 
