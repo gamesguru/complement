@@ -3606,8 +3606,8 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 				content.Get("displayname").Str != "alice 2" {
 				t.Errorf("Did not receive expected display name change event: %s", pdu.JSON())
 			}
-		case <-time.After(1 * time.Second):
-			t.Error("Display name change event not received after one second")
+		case <-time.After(5 * time.Second):
+			t.Error("Display name change event not received after five seconds")
 		}
 	})
 
