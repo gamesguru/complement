@@ -115,7 +115,11 @@ func testMSC4500StateAccumulator(t *testing.T) {
 			"name": "rejected by auth rules",
 		},
 	})
-	mustSendTransaction(t, srv, deployment, []json.RawMessage{rejected.JSON()})
+	response := mustSendTransaction(t, srv, deployment, []json.RawMessage{rejected.JSON()})
+	rejectedResult, ok := response.PDUs[rejected.EventID()]
+	if !ok || rejectedResult.Error == "" {
+		t.Fatalf("/send did not explicitly reject %s: response=%#v", rejected.EventID(), response)
+	}
 
 	msg2 := alice.SendEventSynced(t, roomID, b.Event{
 		Type: "m.room.message",
@@ -555,7 +559,13 @@ func (c *msc4500StateCache) mustRebuildAccumulator(t *testing.T, roomID string, 
 }
 
 // mustSendTransaction PUTs the given PDUs to hs1 over federation.
-func mustSendTransaction(t *testing.T, srv *federation.Server, deployment complement.Deployment, pdus []json.RawMessage) {
+type msc4500SendResponse struct {
+	PDUs map[string]struct {
+		Error string `json:"error"`
+	} `json:"pdus"`
+}
+
+func mustSendTransaction(t *testing.T, srv *federation.Server, deployment complement.Deployment, pdus []json.RawMessage) msc4500SendResponse {
 	t.Helper()
 
 	txnBody, err := json.Marshal(map[string]interface{}{
@@ -580,6 +590,9 @@ func mustSendTransaction(t *testing.T, srv *federation.Server, deployment comple
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		t.Fatalf("send transaction failed with HTTP %d: %s", res.StatusCode, body)
 	}
+	var response msc4500SendResponse
+	must.NotError(t, "decode send response", json.Unmarshal(body, &response))
+	return response
 }
 
 // msc4500SortedEventIDs returns the event IDs of entries in a stable order so

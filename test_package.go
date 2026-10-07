@@ -184,12 +184,12 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	if tp.existingDeployment == nil {
 		d, err := docker.NewDeployer("dirty", tp.complementBuilder.Config)
 		if err != nil {
-			ct.Fatalf(t, "dirtyDeploy: NewDeployer returned error %s", err)
+			operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 		}
 		// this creates a single hs1
 		tp.existingDeployment, err = d.CreateDirtyDeployment()
 		if err != nil {
-			ct.Fatalf(t, "CreateDirtyDeployment failed: %s", err)
+			operationalSetupFailure(t, "CreateDirtyDeployment failed: %s", err)
 		}
 	}
 
@@ -201,7 +201,7 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	// we need to scale up the dirty deployment to more servers
 	d, err := docker.NewDeployer("dirty", tp.complementBuilder.Config)
 	if err != nil {
-		ct.Fatalf(t, "dirtyDeploy: NewDeployer returned error %s", err)
+		operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 	}
 	for i := 1; i <= numServers; i++ {
 		hsName := fmt.Sprintf("hs%d", i)
@@ -212,7 +212,7 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 		// scale up
 		hsDep, err := d.CreateDirtyServer(hsName)
 		if err != nil {
-			ct.Fatalf(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
+			operationalSetupFailure(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
 		}
 		tp.existingDeployment.HS[hsName] = hsDep
 	}
