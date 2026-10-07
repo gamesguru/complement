@@ -298,9 +298,7 @@ func testEstimateDelta(t *testing.T) {
 }
 
 // testEstimateDeltaSpecVectors pins the MSC4521/reference strata-estimator
-// values. The pinned gomatrixcrypto revision computes a different (purely
-// conservative) value for both vectors, so this test reports the divergence as
-// a skip instead of failing, and will start passing if the library is updated.
+// values; gomatrixcrypto must match the reference exactly.
 //
 // Reference: rezzy-recon/src/triage.rs, tests
 // `empty_sparse_tail_uses_low_confidence_tail_estimate` (delta 18,
@@ -314,27 +312,15 @@ func testEstimateDeltaSpecVectors(t *testing.T) {
 		got, ok, err := reconcile.EstimateDelta(local.Strata(), remote.Strata())
 		must.NotError(t, "EstimateDelta", err)
 		must.Equal(t, ok, true, "estimate present")
-		switch got {
-		case 6:
-		case 16:
-			t.Skipf("known divergence from MSC4521/reference: {1,2,4,8,3,5} estimates %d, reference expects exact delta 6", got)
-		default:
-			t.Fatalf("EstimateDelta = %d, want 6 (reference) or 16 (known pinned divergence)", got)
-		}
+		must.Equal(t, got, uint64(6), "exact strata tail must equal the reference delta")
 	})
 
 	t.Run("LowConfidenceOverCapacity", func(t *testing.T) {
 		remote := kernelFromH64(t, 1, 3, 5, 7, 9, 11, 13, 15, 17)
-		got, ok, err := reconcile.EstimateDelta(local.Strata(), remote.Strata())
-		must.NotError(t, "EstimateDelta", err)
-		must.Equal(t, ok, true, "estimate present")
-		switch got {
-		case 18:
-		case 8 << 31:
-			t.Skipf("known divergence from MSC4521/reference: nine-odd stratum-0 vector estimates %d, reference expects delta 18 (low_confidence)", got)
-		default:
-			t.Fatalf("EstimateDelta = %d, want 18 (reference) or 8<<31 (known pinned divergence)", got)
-		}
+		got, err := reconcile.EstimateStrata(local.Strata(), remote.Strata())
+		must.NotError(t, "EstimateStrata", err)
+		must.Equal(t, got.Delta, uint64(18), "over-capacity stratum-0 tail must equal the reference delta")
+		must.Equal(t, got.LowConfidence, true, "over-capacity estimate must be flagged low confidence")
 	})
 }
 
