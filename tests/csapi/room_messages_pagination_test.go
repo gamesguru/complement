@@ -430,11 +430,8 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 				// 53 pages; at limit=1, the single event never advances and
 				// 100/100 expected messages are reported missing). Confirmed
 				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
-				matches := matchesForwardPaginationStall
-				if limit == 3 {
-					matches = func(sig paginationFailureSignature) bool {
-						return matchesForwardPaginationStall(sig) || matchesDendriteForwardStartLimit3(sig)
-					}
+				matches := func(sig paginationFailureSignature) bool {
+					return matchesForwardPaginationStall(sig) || matchesDendriteForwardStart(sig, limit)
 				}
 				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matches)
 			})
@@ -1288,15 +1285,44 @@ func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
 		(sig.missingCount > 0 && sig.missingCount >= sig.expectedMessageCount-sig.duplicateCount)
 }
 
-// matchesDendriteForwardStartLimit3 captures the narrower failure observed in
-// the forward-from-start stress case: Dendrite returns the first page of three
-// messages, then two membership events, leaving 97 of the 100 expected
-// messages absent and duplicating exactly one membership event. This is kept
-// separate from the general stall matcher so a different one-duplicate/large-
-// gap regression cannot be silently skipped.
-func matchesDendriteForwardStartLimit3(sig paginationFailureSignature) bool {
-	return sig.expectedMessageCount == 100 && sig.missingCount == 97 &&
+// matchesDendriteForwardStart captures the narrower failure observed in the
+// forward-from-start stress case at
+// https://github.com/gamesguru/complement/actions/runs/37561312718/job/112598973264:
+// Dendrite returned pages [3 1 1], then only membership events, leaving the
+// expected messages absent and duplicating one membership event. The signature
+// does not retain page sizes or per-page event types, so those parts of the
+// observed shape are documented but not independently asserted here. This is an
+// early pagination stall/termination shape, distinct from the general stall
+// matcher, so a different one-duplicate/large-gap regression cannot be
+// silently skipped. The exact signature is logged when the skip fires.
+func matchesDendriteForwardStart(sig paginationFailureSignature, limit int) bool {
+	return limit == 3 && sig.missingCount == sig.expectedMessageCount-limit &&
 		sig.duplicateCount == 1 && sig.onlyDuplicateType("m.room.member")
+}
+
+func TestMatchesDendriteForwardStart(t *testing.T) {
+	tests := []struct {
+		name  string
+		sig   paginationFailureSignature
+		limit int
+		want  bool
+	}{
+		{name: "observed", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 97, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1}}, limit: 3, want: true},
+		{name: "different missing count", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 98, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1}}, limit: 3, want: false},
+		{name: "different duplicate type", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 97, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.create": 1}}, limit: 3, want: false},
+		{name: "two duplicates", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 97, duplicateCount: 2, duplicateTypes: map[string]int{"m.room.member": 2}}, limit: 3, want: false},
+		{name: "multiple duplicate types", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 97, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1, "m.room.create": 1}}, limit: 3, want: false},
+		{name: "limit zero", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 100, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1}}, limit: 0, want: false},
+		{name: "limit one", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 99, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1}}, limit: 1, want: false},
+		{name: "limit five", sig: paginationFailureSignature{expectedMessageCount: 100, missingCount: 95, duplicateCount: 1, duplicateTypes: map[string]int{"m.room.member": 1}}, limit: 5, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := matchesDendriteForwardStart(tt.sig, tt.limit); got != tt.want {
+				t.Fatalf("matchesDendriteForwardStart() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 // matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
@@ -1532,7 +1558,7 @@ func assertPaginationIntegrityWithDirFrom( //nolint:gocyclo // assertion helper 
 		// skipped rather than failed since this failure matches the documented
 		// known issue's shape on this homeserver. A failure that doesn't match
 		// (e.g. an unrelated new regression) still fails outright below.
-		t.Skipf("known pagination issue on %s, skipping:\n%s", runtime.Homeserver, report)
+		t.Skipf("known pagination issue on %s, skipping (signature=%#v):\n%s", runtime.Homeserver, sig, report)
 	}
 	for _, failure := range failures {
 		t.Error(failure)
