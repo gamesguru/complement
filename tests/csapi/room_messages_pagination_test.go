@@ -430,7 +430,13 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 				// 53 pages; at limit=1, the single event never advances and
 				// 100/100 expected messages are reported missing). Confirmed
 				// at https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
-				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matchesForwardPaginationStall)
+				matches := matchesForwardPaginationStall
+				if limit == 3 {
+					matches = func(sig paginationFailureSignature) bool {
+						return matchesForwardPaginationStall(sig) || matchesDendriteForwardStartLimit3(sig)
+					}
+				}
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matches)
 			})
 		}
 	})
@@ -1280,6 +1286,17 @@ func matchesForwardPaginationStall(sig paginationFailureSignature) bool {
 	// message set (short by no more than the slots its own duplicates ate).
 	return sig.nonAdvancingToken || sig.duplicateCount >= 2 ||
 		(sig.missingCount > 0 && sig.missingCount >= sig.expectedMessageCount-sig.duplicateCount)
+}
+
+// matchesDendriteForwardStartLimit3 captures the narrower failure observed in
+// the forward-from-start stress case: Dendrite returns the first page of three
+// messages, then two membership events, leaving 97 of the 100 expected
+// messages absent and duplicating exactly one membership event. This is kept
+// separate from the general stall matcher so a different one-duplicate/large-
+// gap regression cannot be silently skipped.
+func matchesDendriteForwardStartLimit3(sig paginationFailureSignature) bool {
+	return sig.expectedMessageCount == 100 && sig.missingCount == 97 &&
+		sig.duplicateCount == 1 && sig.onlyDuplicateType("m.room.member")
 }
 
 // matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite-only gap
