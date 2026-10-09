@@ -14,12 +14,13 @@ import (
 	"testing"
 
 	"github.com/Wombat-Foundation/gomatrixcrypto/reconcile"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
-	"github.com/tidwall/gjson"
 )
 
 // TestMSC4521ActiveRoomReconciliation verifies the first real wire-level
