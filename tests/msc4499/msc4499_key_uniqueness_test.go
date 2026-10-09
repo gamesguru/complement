@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -691,6 +692,7 @@ func TestMSC4499Key(t *testing.T) {
 		t.Run("§8", func(t *testing.T) {
 			t.Run("ExpiredTsSanityCheck", testMSC4499KeyExpiredTSSanityCheck)
 			t.Run("HistoricalEventVerification", testMSC4499KeyHistoricalEventVerification)
+			t.Run("ActiveKeyValidUntilEnforcement", testMSC4499KeyActiveKeyValidUntilEnforcement)
 		})
 	})
 
@@ -1948,6 +1950,176 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 				skipKnownSynapseGap(t, "Server does not enforce expired_ts — hs1 accepted event %s signed by expired key (origin_server_ts after expired_ts)", eventB.EventID())
 			}
 		}
+	}
+}
+
+// testMSC4499KeyActiveKeyValidUntilEnforcement checks that an ACTIVE (non-
+// retired) signing key is refused for an event signed beyond the key's
+// valid_until_ts. This is the still-missing `valid_until_ts` enforcement: unlike
+// expired_ts (covered by HistoricalEventVerification), a key sitting in
+// verify_keys with a stale valid_until_ts is no longer verifiable for events
+// signed after that instant, even though it stays usable for federation request
+// authentication in the same moment.
+//
+// The probe event is future-dated (origin_server_ts past the key's validUntil)
+// so that the SAME key is unambiguously valid for the transaction's X-Matrix
+// header — request auth only needs the key valid NOW — while being invalid for
+// the event's own signature. A past validUntil would 401 the whole transaction
+// instead and pass vacuously. The event is at room-version granularity >= 5,
+// where the rule lives.
+//
+// References:
+//   - ../proposals/proposals/4499-key-caching.md:508-514 — "an event signed at
+//     time T is valid iff the key's valid_until_ts >= T" (restating room v5+)
+//   - ../spec/spec/rooms/fragments/v5-signing-requirements.txt:2-11 — servers
+//     MUST NOT accept an event unless the signing key's valid_until_ts >= the
+//     event's origin_server_ts.
+func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate active signing key", err)
+	keyID := gomatrixserverlib.KeyID("ed25519:valid_until_probe")
+
+	// Deliberately never mutated, unlike other tests here: the probe event's
+	// origin_server_ts is placed past this instant while the key stays active.
+	validUntil := time.Now().Add(2 * time.Hour)
+
+	mockKeyServer := &MockKeyServer{
+		serverName: srv.ServerName(),
+		keyID:      keyID,
+		privKey:    privKey,
+		pubKey:     pubKey,
+		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
+			keyID: pubKey,
+		},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    validUntil,
+	}
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	ver := alice.GetDefaultRoomVersion(t)
+	if n, parseErr := strconv.Atoi(string(ver)); parseErr != nil || n < 5 {
+		t.Skipf("room version %q predates the v5 signing rule comparing origin_server_ts to the key's valid_until_ts", ver)
+	}
+
+	charlie := srv.UserID("charlie")
+	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	roomAlias := srv.MakeAliasMapping("valid_until_test", serverRoom.RoomID)
+	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
+	_, since := alice.MustSync(t, client.SyncReq{})
+
+	fedClient := federationClientWithSigningKey(
+		deployment,
+		spec.ServerName(srv.ServerName()),
+		keyID,
+		privKey,
+	)
+
+	// === Control: origin_server_ts = now, inside validUntil → MUST ACCEPT ===
+	// Sent first so a later rejection of the probe can only be attributed to
+	// the validity rule, not to a cold key cache or a broken signing setup.
+	controlEvent := buildEventWithSigningKey(
+		t,
+		serverRoom,
+		spec.ServerName(srv.ServerName()),
+		keyID,
+		privKey,
+		time.Now(),
+		federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "Control event signed inside the key's validity window",
+			},
+		},
+	)
+	serverRoom.AddEvent(controlEvent)
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx()
+	controlResp, controlErr := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-control-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{controlEvent.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for the control event inside the validity window", controlErr)
+	for eventID, pduResp := range controlResp.PDUs {
+		if pduResp.Error != "" {
+			t.Fatalf("hs1 rejected control event %s signed inside the key's validity window: %s", eventID, pduResp.Error)
+		}
+	}
+
+	// === Probe: origin_server_ts = validUntil + 5m, key still active → REJECT ===
+	probeEvent := buildEventWithSigningKey(
+		t,
+		serverRoom,
+		spec.ServerName(srv.ServerName()),
+		keyID,
+		privKey,
+		validUntil.Add(5*time.Minute),
+		federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "Event signed past the key's valid_until_ts — should be rejected",
+			},
+		},
+	)
+	serverRoom.AddEvent(probeEvent)
+
+	ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx2()
+	probeResp, probeErr := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-probe-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{probeEvent.JSON()},
+	})
+
+	rejected := probeErr != nil
+	if !rejected {
+		for _, pduResp := range probeResp.PDUs {
+			if pduResp.Error != "" {
+				rejected = true
+				break
+			}
+		}
+	}
+
+	if !rejected {
+		// No application-level refusal — poll for delivery so a silently
+		// deferred rejection isn't mistaken for acceptance (and vice versa).
+		// Either outcome outside "rejected" is a failure here: hs1 must refuse
+		// the event outright, and no homeserver is exempt from this assertion.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
+			events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
+			for _, ev := range events {
+				if ev.Get("event_id").Str == probeEvent.EventID() {
+					t.Fatalf("hs1 delivered event %s whose origin_server_ts is past the signing key's valid_until_ts", probeEvent.EventID())
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		t.Fatalf("hs1 acknowledged transaction containing event %s (origin_server_ts past valid_until_ts) without reporting a rejection", probeEvent.EventID())
 	}
 }
 
