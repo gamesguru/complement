@@ -778,6 +778,13 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
+		if inspect.Container.State != nil && !inspect.Container.State.Running {
+			exitStatus := string(inspect.Container.State.Status)
+			if inspect.Container.State.ExitCode != 0 {
+				exitStatus = fmt.Sprintf("%s (exit code %d)", exitStatus, inspect.Container.State.ExitCode)
+			}
+			return iterCount, fmt.Errorf("homeserver container %s exited before becoming ready: %s", hsDep.ContainerID, exitStatus)
+		}
 		if inspect.Container.State.Health != nil &&
 			inspect.Container.State.Health.Status != "healthy" {
 			lastErr = fmt.Errorf("inspect container %s => health: %s", hsDep.ContainerID, inspect.Container.State.Health.Status)
