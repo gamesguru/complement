@@ -1994,14 +1994,18 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	// Deliberately never mutated, unlike other tests here: the probe event's
 	// origin_server_ts is placed past this instant while the key stays active.
 	validUntil := time.Now().Add(2 * time.Hour)
-
+	// This endpoint is also used while bootstrapping the rooms. Publish the
+	// federation server's key alongside the probe key so Synapse can verify the
+	// create and membership events signed by srv.KeyID.
+	federationPubKey := srv.Priv.Public().(ed25519.PublicKey)
 	mockKeyServer := &MockKeyServer{
 		serverName: srv.ServerName(),
 		keyID:      keyID,
 		privKey:    privKey,
 		pubKey:     pubKey,
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
-			keyID: pubKey,
+			keyID:     pubKey,
+			srv.KeyID: federationPubKey,
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    validUntil,
@@ -2020,6 +2024,11 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	roomAlias := srv.MakeAliasMapping("valid_until_test", serverRoom.RoomID)
 	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 	_, since := alice.MustSync(t, client.SyncReq{})
+
+	ver4 := gomatrixserverlib.RoomVersion("4")
+	serverRoomV4 := srv.MustMakeRoom(t, ver4, federation.InitialRoomEvents(ver4, charlie))
+	roomAliasV4 := srv.MakeAliasMapping("valid_until_v4_test", serverRoomV4.RoomID)
+	alice.MustJoinRoom(t, roomAliasV4, []spec.ServerName{srv.ServerName()})
 
 	fedClient := federationClientWithSigningKey(
 		deployment,
@@ -2127,11 +2136,6 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	// the rejection above to the room-version validity rule specifically —
 	// not to future-dating, the harness, or the key being unusable in
 	// general.
-	ver4 := gomatrixserverlib.RoomVersion("4")
-	serverRoomV4 := srv.MustMakeRoom(t, ver4, federation.InitialRoomEvents(ver4, charlie))
-	roomAliasV4 := srv.MakeAliasMapping("valid_until_v4_test", serverRoomV4.RoomID)
-	alice.MustJoinRoom(t, roomAliasV4, []spec.ServerName{srv.ServerName()})
-
 	v4Event := buildEventWithSigningKey(
 		t,
 		serverRoomV4,
