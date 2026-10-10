@@ -1965,8 +1965,11 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 // so that the SAME key is unambiguously valid for the transaction's X-Matrix
 // header — request auth only needs the key valid NOW — while being invalid for
 // the event's own signature. A past validUntil would 401 the whole transaction
-// instead and pass vacuously. The event is at room-version granularity >= 5,
-// where the rule lives.
+// instead and pass vacuously. Three controls keep the assertion specific: a
+// room-v5 event at now must be accepted, the same future-dated shape in a v4
+// room must be accepted (rooms 1-4 ignore valid_until_ts), and a later event
+// must be accepted once the origin extends its window, proving a stale cached
+// copy triggers a refresh rather than a permanent rejection.
 //
 // References:
 //   - ../proposals/proposals/4499-key-caching.md:508-514 — "an event signed at
@@ -2120,6 +2123,91 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 			time.Sleep(200 * time.Millisecond)
 		}
 		t.Fatalf("hs1 acknowledged transaction containing event %s (origin_server_ts past valid_until_ts) without reporting a rejection", probeEvent.EventID())
+	}
+
+	// === Room v4 control: same future-dated shape, same key → ACCEPT ===
+	// Rooms 1-4 predate the rule (base spec: servers MUST ignore
+	// valid_until_ts there), so hs1 must still verify this event. This pins
+	// the rejection above to the room-version validity rule specifically —
+	// not to future-dating, the harness, or the key being unusable in
+	// general.
+	ver4 := gomatrixserverlib.RoomVersion("4")
+	serverRoomV4 := srv.MustMakeRoom(t, ver4, federation.InitialRoomEvents(ver4, charlie))
+	roomAliasV4 := srv.MakeAliasMapping("valid_until_v4_test", serverRoomV4.RoomID)
+	alice.MustJoinRoom(t, roomAliasV4, []spec.ServerName{srv.ServerName()})
+
+	v4Event := buildEventWithSigningKey(
+		t,
+		serverRoomV4,
+		spec.ServerName(srv.ServerName()),
+		keyID,
+		privKey,
+		validUntil.Add(5*time.Minute),
+		federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "v4-room event signed past valid_until_ts — must still be accepted",
+			},
+		},
+	)
+	serverRoomV4.AddEvent(v4Event)
+
+	ctx3, cancelCtx3 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx3()
+	v4Resp, v4Err := fedClient.SendTransaction(ctx3, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-v4-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{v4Event.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for the v4-room control event", v4Err)
+	for eventID, pduResp := range v4Resp.PDUs {
+		if pduResp.Error != "" {
+			t.Fatalf("hs1 rejected v4-room event %s (valid_until_ts must be ignored for rooms 1-4): %s", eventID, pduResp.Error)
+		}
+	}
+
+	// === Refresh: origin extends its window, then the same shape → ACCEPT ===
+	// hs1's cache still holds the original (by now stale) validUntil, so this
+	// exercises the refetch path rather than a warm cache: a stale copy must
+	// trigger a refresh, not a blanket rejection of that origin's events.
+	mockKeyServer.mu.Lock()
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	refreshEvent := buildEventWithSigningKey(
+		t,
+		serverRoom,
+		spec.ServerName(srv.ServerName()),
+		keyID,
+		privKey,
+		validUntil.Add(10*time.Minute),
+		federation.Event{
+			Sender: charlie,
+			Type:   "m.room.message",
+			Content: map[string]interface{}{
+				"msgtype": "m.text",
+				"body":    "Event signed after the origin extended its window — must be accepted",
+			},
+		},
+	)
+	serverRoom.AddEvent(refreshEvent)
+
+	ctx4, cancelCtx4 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx4()
+	refreshResp, refreshErr := fedClient.SendTransaction(ctx4, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-refresh-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{refreshEvent.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
+	for eventID, pduResp := range refreshResp.PDUs {
+		if pduResp.Error != "" {
+			t.Fatalf("hs1 rejected event %s after the origin extended valid_until_ts past the event's origin_server_ts — a stale cached copy must be refreshed, not treated as fatal: %s", eventID, pduResp.Error)
+		}
 	}
 }
 
