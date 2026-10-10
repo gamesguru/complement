@@ -358,6 +358,12 @@ func deployImage(
 		}
 		lastDeployment = deployment
 		lastErr = err
+		// Capture diagnostics before terminal cleanup removes the failed
+		// container. Callers also print logs, but the deployment object may no
+		// longer refer to a live container by the time they receive the error.
+		if deployment != nil && deployment.ContainerID != "" {
+			printLogs(docker, deployment.ContainerID, contextStr)
+		}
 		if !isRetryableDeployBootstrapError(err) {
 			removeFailedDeployment(docker, containerName, deployment, contextStr)
 			return deployment, err

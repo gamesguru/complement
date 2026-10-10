@@ -27,7 +27,7 @@ func dockerExec(containerID string, script string) (string, error) {
 // inside the container, or "" if none is running.
 const findRedisServerPIDScript = `
 for p in /proc/[0-9]*; do
-  if [ -r "$p/cmdline" ] && tr '\0' ' ' < "$p/cmdline" | grep -q redis-server; then
+  if [ -r "$p/cmdline" ] && tr '\0' ' ' < "$p/cmdline" | grep -q '[r]edis-server'; then
     printf '%s' "${p#/proc/}"
     exit 0
   fi
