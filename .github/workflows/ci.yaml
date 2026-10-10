@@ -30,6 +30,9 @@ jobs:
       - name: "Run internal Complement tests"
         run: |
           go test ./internal/...
+      - name: "Run MSC4521 library tests" # homeserverless suite; no COMPLEMENT_BASE_IMAGE needed
+        run: |
+          go test ./tests/msc4521/
       - name: "Run Homerunner tests" # use a simple static dendrite image to sanity check homerunner works
         env:
           DOCKER_BUILDKIT: 1

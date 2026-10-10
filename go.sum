@@ -15,8 +15,8 @@ git.sr.ht/~sbinet/gg v0.7.0/go.mod h1:VYeli15tpMM4EvqlivlVbbyvWZlOU+EZn4XZmfBGUd
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
-github.com/Wombat-Foundation/gomatrixcrypto v0.0.0-20261003170314-5ef70669d635 h1:cHxmVoqhQ2CAiNxvRgxNXPYNuTvyitCP0PmaqOI4s9s=
-github.com/Wombat-Foundation/gomatrixcrypto v0.0.0-20261003170314-5ef70669d635/go.mod h1:/A9GYUzA8JDu3X++i5tUBLTiEbRwhH8Xf4jUc9Zvrx0=
+github.com/Wombat-Foundation/gomatrixcrypto v0.0.0-20261006195034-84ff54a33090 h1:nkLqXiLgUKZfbViggrANmRmeyIAMCz7qAI7xXNUzGkk=
+github.com/Wombat-Foundation/gomatrixcrypto v0.0.0-20261006195034-84ff54a33090/go.mod h1:/A9GYUzA8JDu3X++i5tUBLTiEbRwhH8Xf4jUc9Zvrx0=
 github.com/ajstarks/deck v0.0.0-20200831202436-30c9fc6549a9/go.mod h1:JynElWSGnm/4RlzPXRlREEwqTHAN3T56Bv2ITsFT3gY=
 github.com/ajstarks/deck/generate v0.0.0-20210309230005-c3f852c02e19/go.mod h1:T13YZdzov6OU0A1+RfKZiZN9ca6VeKdBdyDV+BY97Tk=
 github.com/ajstarks/svgo v0.0.0-20211024235047-1546f124cd8b h1:slYM766cy2nI3BwyRiyQj/Ud48djTMtMebDqepE95rw=
