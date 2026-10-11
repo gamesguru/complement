@@ -6,8 +6,9 @@ import (
 	"encoding/hex"
 	"io"
 
-	"github.com/matrix-org/complement/ct"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/ct"
 )
 
 const (
@@ -145,7 +146,7 @@ func (c *CSAPI) RegisterSharedSecret(t ct.TestLike, user, pass string, isAdmin b
 	resp := c.Do(t, "GET", []string{"_synapse", "admin", "v1", "register"})
 	if resp.StatusCode != 200 {
 		t.Skipf("Homeserver image does not support shared secret registration, /_synapse/admin/v1/register returned HTTP %d", resp.StatusCode)
-		return
+		return userID, accessToken, deviceID
 	}
 	body := ParseJSON(t, resp)
 	nonce := gjson.GetBytes(body, "nonce")

@@ -10,6 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/matrix-org/util"
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -20,11 +26,6 @@ import (
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/complement/should"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
-	"github.com/matrix-org/gomatrixserverlib/spec"
-	"github.com/matrix-org/util"
-	"github.com/tidwall/gjson"
 )
 
 var maxCanonicalJSONInt = math.Pow(2, 53) - 1
@@ -902,7 +903,7 @@ func assertCreateEventIsRoomID(t ct.TestLike, client *client.CSAPI, roomID strin
 		return true
 	})
 	if createEventID == "" {
-		ct.Fatalf(t, "failed to find create event ID from /state respone: %v", stateEvents.Raw)
+		ct.Fatalf(t, "failed to find create event ID from /state response: %v", stateEvents.Raw)
 	}
 	must.Equal(t,
 		roomID, fmt.Sprintf("!%s", createEventID[1:]),

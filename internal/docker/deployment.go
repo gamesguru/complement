@@ -8,12 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/config"
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // Deployment is the complete instantiation of a Blueprint, with running containers

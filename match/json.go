@@ -310,7 +310,7 @@ func JSONMapEach(wantKey string, fn func(k, v gjson.Result) error) JSON {
 }
 
 // JSONArraySome returns a matcher which will check that `wantKey` is an array then
-// loops over each item calling `fn`. If `fn` returns nil, the matcher is satisifed,
+// loops over each item calling `fn`. If `fn` returns nil, the matcher is satisfied,
 // iterating stops and we return.
 //
 // Will fail if the array is empty and the check never runs
