@@ -142,6 +142,57 @@ func TestMatchingViewsNoFalsePositive(t *testing.T) {
 	}
 }
 
+func TestDepthBoundaryAndNormalizedPositions(t *testing.T) {
+	t.Run("DepthZeroDivergence", func(t *testing.T) {
+		local := Item{EventID: "$local", Depth: 0, Parents: []string{"$p2", "$p1"}}
+		remote := Item{EventID: "$remote", Depth: 0, Parents: []string{"$p1", "$p2"}}
+		res, err := First(
+			Peer{Coverage{Kind: ViewTotal, Verified: true}, []Item{local}},
+			Peer{Coverage{Kind: ViewTotal, Verified: true}, []Item{remote}},
+		)
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First != nil, true, "depth-zero divergence found")
+		must.Equal(t, res.First.Depth, int64(0), "boundary depth")
+		must.Equal(t, res.First.Kind, Conflict, "same position with different IDs is a conflict")
+	})
+
+	t.Run("ParentOrderAndDuplicateItems", func(t *testing.T) {
+		first := Item{EventID: "$same", Depth: 4, Parents: []string{"$b", "$a"}}
+		second := Item{EventID: "$same", Depth: 4, Parents: []string{"$a", "$b"}}
+		coverage := Coverage{Kind: ViewTotal, Verified: true}
+		res, err := First(
+			Peer{coverage, []Item{first, first}},
+			Peer{coverage, []Item{second}},
+		)
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First == nil, true, "parent order is irrelevant and an identical duplicate is idempotent")
+	})
+
+	t.Run("SingleDepthPartialWindow", func(t *testing.T) {
+		coverage := cov(ViewPartial, 7, 7)
+		local := Peer{coverage, []Item{ev(7, "$local", nil)}}
+		remote := Peer{coverage, []Item{ev(7, "$remote", nil)}}
+		res, err := First(local, remote)
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First != nil, true, "inclusive one-depth window is examined")
+		must.Equal(t, res.First.Depth, int64(7), "single-depth window boundary")
+	})
+}
+
+func TestEmptyViewsAgree(t *testing.T) {
+	coverage := cov(ViewPartial, 10, 50)
+	res, err := First(Peer{Coverage: coverage}, Peer{Coverage: coverage})
+	must.NotError(t, "First", err)
+	must.Equal(t, res.First == nil, true, "empty views have no divergence")
+	must.Equal(t, res.Rounds, 0, "empty views require no digest rounds")
+}
+
+func TestLeafWithoutDifferenceReturnsNil(t *testing.T) {
+	item := Item{EventID: "$same", Depth: 3}
+	entries := []entry{{pos: positionKey(item), item: item}}
+	must.Equal(t, leaf(entries, entries, 3) == nil, true, "matching leaf entries have no divergence")
+}
+
 func TestEarliestOfMultipleDivergences(t *testing.T) {
 	base := chain()
 	remote := without(without(replaced(base, 40), 33), 18)
@@ -172,6 +223,14 @@ func TestFailsClosed(t *testing.T) {
 	t.Run("EmptyEventID", func(t *testing.T) {
 		_, err := First(Peer{total, []Item{{Depth: 1}}}, Peer{total, chain()})
 		must.Equal(t, errors.Is(err, ErrMalformed), true, "malformed item")
+	})
+	t.Run("MalformedRemoteItem", func(t *testing.T) {
+		_, err := First(Peer{total, chain()}, Peer{total, []Item{{Depth: 1}}})
+		must.Equal(t, errors.Is(err, ErrMalformed), true, "malformed remote item")
+	})
+	t.Run("NegativeDepth", func(t *testing.T) {
+		_, err := First(Peer{total, []Item{{EventID: "$negative", Depth: -1}}}, Peer{total, chain()})
+		must.Equal(t, errors.Is(err, ErrMalformed), true, "negative depth is malformed")
 	})
 	t.Run("TwoEventsAtOneStateSlot", func(t *testing.T) {
 		sk := &StateKey{Type: "m.room.topic"}
