@@ -51,15 +51,17 @@ ifeq ($(strip $(COMPLEMENT_BASE_IMAGE)),)
 endif
 	COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) $(GO) test $(TESTFLAGS) $(TESTPKGS)
 
-UNITPKGS ?= ./runtime/... ./match/... ./federation/... ./internal/...
+UNITPKGS ?= ./runtime/... ./match/... ./federation/... ./internal/... ./tests/msc4521 ./tests/msc4521/bisect
+UNITTESTPKGS = $(shell $(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(UNITPKGS))
+UNITCOVPKGS = $(shell $(GO) list -f '{{if and .GoFiles (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' $(UNITPKGS))
 
 .PHONY: unit
 unit: ## Run homeserverless unit tests (no COMPLEMENT_BASE_IMAGE needed)
-	$(GO) test $(UNITPKGS)
+	$(GO) test $(UNITTESTPKGS)
 
 .PHONY: cov
 cov: ## Report statement coverage of the homeserverless unit tests
-	$(GO) test -cover $(UNITPKGS)
+	$(GO) test -cover $(UNITCOVPKGS) && $(GO) test -coverpkg=github.com/Wombat-Foundation/gomatrixcrypto/reconcile -cover ./tests/msc4521
 
 .PHONY: tidy
 tidy: ## Tidy module dependencies
