@@ -9,5 +9,5 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	complement.TestMain(m, "msc4521/active_edu_recon")
+	complement.TestMain(m, "msc4521_active_edu_recon")
 }

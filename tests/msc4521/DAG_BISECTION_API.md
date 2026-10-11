@@ -2,8 +2,10 @@
 
 Companion to the digest/strata/`room_diff` flow under
 `/_matrix/federation/unstable/tk.nutra.msc0501/`. Reference model:
-`tests/msc4521/bisect`. Homeserver behaviour is verified by the hs1/hs2 tests
-in `tests/msc4521/active_edu_recon`; the model only pins the low-level contract.
+`tests/msc4521/bisect`. This is a test-side draft for a possible future
+endpoint; no homeserver bisection API is currently specified or tested. The
+hs1/hs2 tests in `tests/msc4521/active_edu_recon` cover the existing
+digest/strata/`room_diff` API only.
 
 ## Endpoint
 

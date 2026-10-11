@@ -16,8 +16,8 @@ import (
 // TestMSC4521SetReconciliation groups the library-level checks that back the
 // adaptive set reconciliation proposal. The suite deliberately exercises the
 // gomatrixcrypto/reconcile primitives directly so the protocol logic can be
-// verified without a homeserver; the federation-facing endpoint test is
-// scaffolded separately until its wire shape is settled.
+// verified without a homeserver. The existing federation-facing digest,
+// strata, and room_diff endpoints are covered in active_edu_recon.
 func TestMSC4521SetReconciliation(t *testing.T) {
 	t.Run("Plumbing", func(t *testing.T) {
 		t.Run("Vectors", testVectors)

@@ -2,9 +2,10 @@
 // contract: how two peers, each exposing either a total or an authenticated
 // partial view of a room, locate the earliest omitted or conflicting item.
 //
-// It pins the low-level contract only. The homeserver-level behaviour is
-// covered by the hs1/hs2 tests in tests/msc4521/active_edu_recon and the wire
-// format is described in tests/msc4521/DAG_BISECTION_API.md.
+// It pins the low-level contract only. The hs1/hs2 tests in
+// tests/msc4521/active_edu_recon cover the separate digest/strata/room_diff
+// API, not DAG bisection. A possible future wire format is described in
+// tests/msc4521/DAG_BISECTION_API.md.
 package bisect
 
 import (
