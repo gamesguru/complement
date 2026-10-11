@@ -251,10 +251,12 @@ func TestFilter(t *testing.T) {
 		}
 		t.Run(string(filterJSON), func(t *testing.T) {
 			res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
-
-			if res.StatusCode >= 500 || res.StatusCode < 400 {
-				t.Errorf("Expected 4XX status code, got %d", res.StatusCode)
-			}
+			must.MatchResponse(t, res, match.HTTPResponse{
+				StatusCode: 400,
+				JSON: []match.JSON{
+					match.JSONKeyEqual("errcode", "M_BAD_JSON"),
+				},
+			})
 		})
 	}
 }
