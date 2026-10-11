@@ -863,7 +863,7 @@ func (c *CSAPI) Do(t ct.TestLike, method string, paths []string, opts ...Request
 	}
 }
 
-// defaultClientTimeout returns the request timeout to use for the
+// DefaultClientTimeout returns the request timeout to use for the
 // per-request http.Client used against a homeserver under test. 30s is
 // fine for a request that's actually hung, but under host contention
 // (many containers/tests scheduled concurrently, a loaded CI runner or
@@ -874,9 +874,9 @@ func (c *CSAPI) Do(t ct.TestLike, method string, paths []string, opts ...Request
 // via COMPLEMENT_CLIENT_TIMEOUT_SECS so a slow/loaded environment can be
 // given more slack without touching parallelism or masking genuinely
 // hung requests elsewhere.
-func defaultClientTimeout() time.Duration {
+func DefaultClientTimeout() time.Duration {
 	if s := os.Getenv("COMPLEMENT_CLIENT_TIMEOUT_SECS"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
+		if secs, err := strconv.ParseInt(s, 10, 64); err == nil && secs > 0 && secs <= int64((time.Duration(1<<63-1))/time.Second) {
 			return time.Duration(secs) * time.Second
 		}
 	}
@@ -888,7 +888,7 @@ func NewLoggedClient(t ct.TestLike, hsName string, cli *http.Client) *http.Clien
 	t.Helper()
 	if cli == nil {
 		cli = &http.Client{
-			Timeout: defaultClientTimeout(),
+			Timeout: DefaultClientTimeout(),
 		}
 	}
 	transport := cli.Transport

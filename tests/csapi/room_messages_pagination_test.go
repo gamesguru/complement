@@ -1360,7 +1360,7 @@ func matchesBackfillGap(sig paginationFailureSignature) bool {
 // that oldest prefix.
 func matchesPartialBackfillReorder(sig paginationFailureSignature) bool {
 	return sig.missingCount > 0 && sig.missingCount < sig.expectedMessageCount &&
-		(sig.orderMismatch || sig.missingIsPrefixOfOldest)
+		sig.missingIsPrefixOfOldest
 }
 
 // assertPaginationIntegrityKnownIssue is the same as assertPaginationIntegrity, but

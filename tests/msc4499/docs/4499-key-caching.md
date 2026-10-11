@@ -376,7 +376,7 @@ mandating Content-Addressed Key IDs, which is deferred to a future MSC (see
 ### Key rotation procedure
 
 <!-- synapse-derived: complement coverage currently exercises this behavior
-against Synapse in TestMSC4499Key/Rotation -->
+against Synapse in TestMSC4499Key/KeyRotation -->
 
 When a server rotates its signing key, the administrator MUST:
 

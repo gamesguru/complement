@@ -101,8 +101,10 @@ func TestMain(m *testing.M, namespace string, customOpts ...opt) {
 
 func operationalSetupFailure(t ct.TestLike, format string, args ...interface{}) {
 	setupFailed.Store(true)
-	t.Errorf("Complement setup failure: "+format, args...)
-	t.Skipf("Complement setup failure: "+format, args...)
+	// A deployment failure is not an implementation gap and must never be
+	// represented as a skipped test. Fatalf also stops the current test before
+	// it can execute assertions against a nil/stub deployment.
+	t.Fatalf("Complement setup failure: "+format, args...)
 }
 
 // Deploy will deploy the given blueprint or terminate the test.

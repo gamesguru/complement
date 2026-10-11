@@ -1129,11 +1129,11 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	var gmeRequested atomic.Bool
 	// Serve a valid fallback response, both for unrelated /get_missing_events
 	// traffic from the padded room and for the real request under test.
-	writeFallback := func(w http.ResponseWriter) {
+	writeFallback := func(w http.ResponseWriter, events ...gomatrixserverlib.PDU) {
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
+			Events: events,
 		}
 		responseBytes, err := json.Marshal(&res)
 		if err != nil {
@@ -1162,13 +1162,13 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			// same fallback response and keep waiting for the request we
 			// actually care about instead of failing the whole test on it.
 			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
-			writeFallback(w)
+			writeFallback(w, gmeEvent)
 			return
 		}
 		if !gmeRequested.Swap(true) {
 			gmeWaiter.Finish()
 		}
-		writeFallback(w)
+		writeFallback(w, gmeEvent)
 	})
 	stateIDWaiter := helpers.NewWaiter()
 	var stateIDRequested atomic.Bool
@@ -1478,11 +1478,11 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 	// Serve a valid fallback response. Used both for unrelated /get_missing_events
 	// traffic (the padded room generates backfill we don't care about) and for the
 	// successful retry after the malformed first response.
-	writeFallback := func(w http.ResponseWriter) {
+	writeFallback := func(w http.ResponseWriter, events ...gomatrixserverlib.PDU) {
 		res := struct {
 			Events []gomatrixserverlib.PDU `json:"events"`
 		}{
-			Events: []gomatrixserverlib.PDU{gmeEvent},
+			Events: events,
 		}
 		responseBytes, err := json.Marshal(&res)
 		if err != nil {
@@ -1520,19 +1520,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			if id, ok := sentinelEventID.Load().(string); ok {
 				for _, ev := range latestEvents {
 					if ev.String() == id {
-						res := struct {
-							Events []gomatrixserverlib.PDU `json:"events"`
-						}{
-							Events: []gomatrixserverlib.PDU{eventE},
-						}
-						responseBytes, err := json.Marshal(&res)
-						if err != nil {
-							w.WriteHeader(http.StatusInternalServerError)
-							w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
-							return
-						}
-						w.WriteHeader(http.StatusOK)
-						w.Write(responseBytes)
+						writeFallback(w, eventE)
 						return
 					}
 				}
@@ -1543,7 +1531,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			// consume the malformed-JSON slot meant for the first sendTxnEvent
 			// request -- serve it the same fallback response instead.
 			t.Logf("/get_missing_events received unrelated event(s) %v; serving the same fallback response", latestEvents)
-			writeFallback(w)
+			writeFallback(w, gmeEvent)
 			return
 		}
 		if !gmeRequested.Swap(true) {
@@ -1557,8 +1545,10 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			w.Write([]byte(`{"events":[`))
 			return
 		}
-		writeFallback(w)
+		writeFallback(w, gmeEvent)
 		if callNum == 2 {
+			// The waiter is the synchronization point for the test; signal it only
+			// after the fallback body has been fully written.
 			gmeRetryWaiter.Finish()
 		}
 	})

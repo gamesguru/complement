@@ -10,16 +10,14 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/internal"
 )
 
@@ -191,23 +189,10 @@ func (r *Runner) Run(hs b.Homeserver, hsURL string) (resErr error) {
 	return resErr
 }
 
-// defaultClientTimeout mirrors client.defaultClientTimeout -- see its
-// comment for why a fixed 30s here produces spurious failures under host
-// contention rather than actually-hung requests, and why it's worth
-// making overridable instead of just tolerating the flakiness.
-func defaultClientTimeout() time.Duration {
-	if s := os.Getenv("COMPLEMENT_CLIENT_TIMEOUT_SECS"); s != "" {
-		if secs, err := strconv.Atoi(s); err == nil && secs > 0 {
-			return time.Duration(secs) * time.Second
-		}
-	}
-	return 30 * time.Second
-}
-
 func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []instruction) error {
 	i := 0
 	cli := http.Client{
-		Timeout: defaultClientTimeout(),
+		Timeout: client.DefaultClientTimeout(),
 	}
 	isFatalErr := func(err error) error {
 		if r.bestEffort {

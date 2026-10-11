@@ -358,6 +358,12 @@ func deployImage(
 		}
 		lastDeployment = deployment
 		lastErr = err
+		// Capture diagnostics before terminal cleanup removes the failed
+		// container. Callers also print logs, but the deployment object may no
+		// longer refer to a live container by the time they receive the error.
+		if deployment != nil && deployment.ContainerID != "" {
+			printLogs(docker, deployment.ContainerID, contextStr)
+		}
 		if !isRetryableDeployBootstrapError(err) {
 			removeFailedDeployment(docker, containerName, deployment, contextStr)
 			return deployment, err
@@ -777,6 +783,13 @@ func waitForContainer(ctx context.Context, docker *client.Client, hsDep *Homeser
 			lastErr = fmt.Errorf("inspect container %s => error: %s", hsDep.ContainerID, err)
 			time.Sleep(50 * time.Millisecond)
 			continue
+		}
+		if inspect.Container.State != nil && !inspect.Container.State.Running {
+			exitStatus := string(inspect.Container.State.Status)
+			if inspect.Container.State.ExitCode != 0 {
+				exitStatus = fmt.Sprintf("%s (exit code %d)", exitStatus, inspect.Container.State.ExitCode)
+			}
+			return iterCount, fmt.Errorf("homeserver container %s exited before becoming ready: %s", hsDep.ContainerID, exitStatus)
 		}
 		if inspect.Container.State.Health != nil &&
 			inspect.Container.State.Health.Status != "healthy" {
