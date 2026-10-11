@@ -89,7 +89,7 @@ func TestMSC4521ActiveRoomReconciliation(t *testing.T) {
 		})
 		serverRoom.AddEvent(extra)
 
-		var local reconcile.ResidentKernel
+		local := reconcile.NewResidentKernel()
 		for _, event := range serverRoom.Timeline {
 			hash, err := reconcile.FromMatrixEventID(event.EventID(), reconcile.V4Plus)
 			must.NotError(t, "hash remote event ID", err)
