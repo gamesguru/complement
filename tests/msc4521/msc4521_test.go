@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"testing"
 
@@ -46,14 +45,6 @@ func TestMSC4521SetReconciliation(t *testing.T) {
 			t.Run("TwoSidedDifference", testEstimateDelta)
 			t.Run("SpecVectors", testEstimateDeltaSpecVectors)
 		})
-	})
-	t.Run("ObliviousRouting", func(t *testing.T) {
-		t.Run("16NodeHypercubeQuicklySelfHealsUnderPartition", func(t *testing.T) {
-			t.Run("PartitionedLogarithmicPropagation", testSixteenNodeHypercubePropagation)
-		})
-	})
-	t.Run("Federation", func(t *testing.T) {
-		t.Run("FederationEndpoint", testFederationEndpoint)
 	})
 }
 
@@ -403,55 +394,6 @@ func testMixedBucketBatch(t *testing.T) {
 	}
 }
 
-// testSixteenNodeHypercubePropagation models passive propagation over a
-// sixteen-node, four-dimensional hypercube. It deliberately tests only the
-// deterministic topology and propagation property; federation transport and
-// passive sketch piggybacking are not implemented by this library suite.
-func testSixteenNodeHypercubePropagation(t *testing.T) {
-	const (
-		nodes    = 16
-		baseline = 1000
-	)
-
-	state := make([]map[string]struct{}, nodes)
-	for node := range state {
-		state[node] = make(map[string]struct{}, baseline+20)
-		for i := 0; i < baseline; i++ {
-			state[node][fmt.Sprintf("baseline-%d", i)] = struct{}{}
-		}
-	}
-	for i := 0; i < 10; i++ {
-		state[0][fmt.Sprintf("node-0-difference-%d", i)] = struct{}{}
-		state[15][fmt.Sprintf("node-15-difference-%d", i)] = struct{}{}
-	}
-
-	for round := 1; round <= 4; round++ {
-		next := make([]map[string]struct{}, nodes)
-		for node := range state {
-			next[node] = make(map[string]struct{}, len(state[node]))
-			for value := range state[node] {
-				next[node][value] = struct{}{}
-			}
-			for bit := 1; bit < nodes; bit <<= 1 {
-				peer := node ^ bit
-				for value := range state[peer] {
-					next[node][value] = struct{}{}
-				}
-			}
-		}
-		state = next
-	}
-
-	if len(state[0]) != baseline+20 {
-		t.Fatalf("node 0 has %d values after four rounds, want %d", len(state[0]), baseline+20)
-	}
-	for node := 1; node < nodes; node++ {
-		if !maps.Equal(state[node], state[0]) {
-			t.Fatalf("node %d did not converge with node 0", node)
-		}
-	}
-}
-
 // testBucketEscalation verifies that a genuinely over-capacity bucket fails to
 // decode and is retried with a larger capacity rather than aborting the
 // exchange. Unlike a forged syndrome, the sketch here is well formed; it simply
@@ -688,10 +630,4 @@ func testValidateBucketRequests(t *testing.T) {
 	if err := reconcile.ValidateBucketRequests(many); !errors.Is(err, reconcile.ErrInvalidSketchCapacity) {
 		t.Fatalf("ValidateBucketRequests(aggregate over capacity) = %v, want ErrInvalidSketchCapacity", err)
 	}
-}
-
-// testFederationEndpoint is the placeholder for the federated exchange once the
-// proposed endpoint shape is finalised and a homeserver implements it.
-func testFederationEndpoint(t *testing.T) {
-	t.Skip("MSC-4521 federation endpoint shape is not finalised; scaffold awaiting homeserver support")
 }

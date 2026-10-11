@@ -4,61 +4,20 @@
 
 package activeedurecon
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/matrix-org/gomatrixserverlib/spec"
-
-	"github.com/matrix-org/complement"
-	"github.com/matrix-org/complement/helpers"
-)
-
-// TestMSC4521DAGBisectionIntegration is the homeserver-level companion to
-// TestMSC4521DAGBisectionMatrix. It deliberately deploys two real homeservers
-// and creates a federated room before entering the case matrix. Once the
-// MSC4521 bisection API and authenticated partial-view boundary are defined,
-// each case should mutate the hs1/hs2 views through the supported federation
-// test hooks and assert the reported earliest omission or divergence.
+// TestMSC4521DAGBisectionIntegration is the hs1/hs2 test for the room_bisect
+// federation endpoint described in ../DAG_BISECTION_API.md.
 //
-// The current protocol only exposes digest/strata/sketch reconciliation; it
-// has no bisection operation or supported way for Complement to manufacture a
-// peer-local partial DAG. Keeping this as an explicit integration scaffold
-// prevents the library matrix from becoming the only coverage layer.
+// Blocked: no homeserver implements room_bisect, and Complement has no
+// supported hook to give one peer a partial DAG. The digest/strata/diff flow is
+// already covered against real homeservers by TestMSC4521ActiveRoomReconciliation.
+//
+// Revisit when a target homeserver serves room_bisect. The test should then
+// deploy two homeservers, join hs2 to a room on hs1, make the views diverge
+// (event/state omission and conflict, total and partial views), POST to
+// room_bisect, and compare the reported earliest divergence against
+// ../bisect.First, which is the oracle.
 func TestMSC4521DAGBisectionIntegration(t *testing.T) {
-	t.Skip("MSC4521 DAG-bisection API and authenticated partial-view test hooks are not defined")
-
-	deployment := complement.Deploy(t, 2)
-	defer deployment.Destroy(t)
-
-	hs1 := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-	hs2 := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
-	roomID := hs1.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
-	hs2.MustJoinRoom(t, roomID, []spec.ServerName{
-		deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
-	})
-
-	viewPairs := []string{
-		"TotalTotal",
-		"TotalPartial",
-		"PartialTotal",
-		"PartialPartial",
-	}
-	differences := []string{
-		"EventOmission",
-		"StateOmission",
-		"EventConflict",
-		"StateConflict",
-	}
-
-	for _, viewPair := range viewPairs {
-		viewPair := viewPair
-		t.Run(viewPair, func(t *testing.T) {
-			for _, difference := range differences {
-				difference := difference
-				t.Run(difference, func(t *testing.T) {
-					t.Skip("MSC4521 DAG-bisection API and authenticated partial-view test hooks are not defined")
-				})
-			}
-		})
-	}
+	t.Skip("blocked: no homeserver implements room_bisect and there is no partial-DAG test hook; see ../DAG_BISECTION_API.md")
 }
