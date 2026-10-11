@@ -209,6 +209,10 @@ func skipOnNotaryTimeout(t *testing.T, clientObj *http.Client, err error) {
 // not to implement the behaviour under test. Any other (i.e. unlisted)
 // homeserver is held to the assertion and fails outright, so a real
 // regression there isn't masked as a green skip.
+//
+// Each skip is therefore advisory for the listed homeservers: it records an
+// upstream conformance gap, not coverage. Remove a homeserver from the list as
+// soon as it implements the behaviour so the assertion becomes enforcing.
 func skipKnownGap(t *testing.T, knownFailureHomeservers []string, format string, args ...interface{}) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
@@ -709,10 +713,6 @@ func TestMSC4499Key(t *testing.T) {
 		t.Run("§6", func(t *testing.T) {
 			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 		})
-		t.Run("§7", func(t *testing.T) {
-			t.Run("LocalRecoveryFromKeyLoss", testMSC4499KeyLocalRecoveryFromKeyLoss)
-		})
-
 		t.Run("§4", func(t *testing.T) {
 			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
 		})
@@ -3611,14 +3611,4 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 	t.Run("FullyLostKeyRemainsUnverifiableToColdPeers", func(t *testing.T) {
 		runCase(t, false)
 	})
-}
-
-// testMSC4499KeyLocalRecoveryFromKeyLoss is a named placeholder for the still
-// missing homeserver-local key-loss injection and operator-recovery coverage.
-func testMSC4499KeyLocalRecoveryFromKeyLoss(t *testing.T) {
-	// TODO: Add a homeserver-local fault-injection hook plus an operator-facing
-	// recovery path so this can become a real conformance test.
-	// Tracking reference: this needs a homeserver-local fault-injection hook for
-	// signing-key loss plus an operator-facing recovery mechanism under test.
-	t.Skip("requires a homeserver-local key-loss injection path plus operator recovery hook; current MSC4499 suite only covers the remote historical-verification consequences of publishing or losing the old key")
 }
