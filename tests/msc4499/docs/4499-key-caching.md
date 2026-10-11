@@ -1102,3 +1102,11 @@ versions:
   provides a generic mechanism for attaching non-Matrix signature material,
   which could carry external attestations but does not by itself solve
   federation-domain binding.
+
+## Known test gaps
+
+- **Local recovery from signing-key loss (§7)** has no conformance test. It needs
+  a homeserver-local fault-injection hook that destroys a signing key plus an
+  operator-facing recovery path. Revisit when a target homeserver exposes one
+  (e.g. an admin API or test-only config). The suite covers only the remote,
+  wire-level consequences of publishing or losing an old key.
