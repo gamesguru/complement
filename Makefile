@@ -51,6 +51,16 @@ ifeq ($(strip $(COMPLEMENT_BASE_IMAGE)),)
 endif
 	COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) $(GO) test $(TESTFLAGS) $(TESTPKGS)
 
+UNITPKGS ?= ./runtime/... ./match/... ./federation/... ./internal/...
+
+.PHONY: unit
+unit: ## Run homeserverless unit tests (no COMPLEMENT_BASE_IMAGE needed)
+	$(GO) test $(UNITPKGS)
+
+.PHONY: cov
+cov: ## Report statement coverage of the homeserverless unit tests
+	$(GO) test -cover $(UNITPKGS)
+
 .PHONY: tidy
 tidy: ## Tidy module dependencies
 	$(GO) mod tidy

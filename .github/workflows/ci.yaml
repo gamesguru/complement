@@ -32,7 +32,7 @@ jobs:
           go test ./internal/...
       - name: "Run unit tests" # homeserverless; no COMPLEMENT_BASE_IMAGE needed
         run: |
-          go test ./runtime/... ./match/... ./federation/...
+          make unit
       - name: "Run MSC4521 library tests" # homeserverless suite; no COMPLEMENT_BASE_IMAGE needed
         run: |
           # Not ./tests/msc4521/...: active_edu_recon deploys homeservers.
