@@ -1,6 +1,7 @@
 package csapi_tests
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -69,9 +70,9 @@ func TestJson(t *testing.T) {
 	})
 }
 
-// small helper function to not bloat the main one
-// todo: this should be more exhaustive and up-to-date
-// todo: this should be easier to construct
+// getFilters returns filters that violate the type rules of the Filter,
+// RoomFilter, EventFilter and RoomEventFilter definitions in the client-server
+// spec. Every case must be rejected with a 4xx.
 func getFilters() []map[string]interface{} {
 	const NAO = "not_an_object"
 	const NAL = "not_a_list"
@@ -166,6 +167,70 @@ func getFilters() []map[string]interface{} {
 				},
 			},
 		},
+
+		// Top-level Filter fields.
+		{"event_format": 1},
+		{"event_format": "not_a_format"},
+		{"event_fields": NAL},
+		{"event_fields": []int{1}},
+		{"account_data": NAO},
+		{
+			"presence": map[string]interface{}{
+				"types": NAL,
+			},
+		},
+		{
+			"account_data": map[string]interface{}{
+				"limit": "not_an_int",
+			},
+		},
+
+		// RoomFilter fields.
+		{
+			"room": map[string]interface{}{
+				"rooms": NAL,
+			},
+		},
+		{
+			"room": map[string]interface{}{
+				"not_rooms": NAL,
+			},
+		},
+		{
+			"room": map[string]interface{}{
+				"include_leave": "not_a_bool",
+			},
+		},
+
+		// RoomEventFilter fields.
+		{
+			"room": map[string]interface{}{
+				"timeline": map[string]interface{}{
+					"limit": "not_an_int",
+				},
+			},
+		},
+		{
+			"room": map[string]interface{}{
+				"timeline": map[string]interface{}{
+					"contains_url": "not_a_bool",
+				},
+			},
+		},
+		{
+			"room": map[string]interface{}{
+				"state": map[string]interface{}{
+					"lazy_load_members": "not_a_bool",
+				},
+			},
+		},
+		{
+			"room": map[string]interface{}{
+				"state": map[string]interface{}{
+					"include_redundant_members": "not_a_bool",
+				},
+			},
+		},
 	}
 }
 
@@ -180,11 +245,17 @@ func TestFilter(t *testing.T) {
 	filters := getFilters()
 
 	for _, filter := range filters {
-		res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
-
-		if res.StatusCode >= 500 || res.StatusCode < 400 {
-			t.Errorf("Expected 4XX status code, got %d for testing filter %s", res.StatusCode, filter)
+		filterJSON, err := json.Marshal(filter)
+		if err != nil {
+			t.Fatalf("failed to marshal filter: %s", err)
 		}
+		t.Run(string(filterJSON), func(t *testing.T) {
+			res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
+
+			if res.StatusCode >= 500 || res.StatusCode < 400 {
+				t.Errorf("Expected 4XX status code, got %d", res.StatusCode)
+			}
+		})
 	}
 }
 
