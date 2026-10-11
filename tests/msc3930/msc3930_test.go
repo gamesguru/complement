@@ -40,6 +40,8 @@ const pollEndRuleID = ".org.matrix.msc3930.rule.poll_end"
 
 func TestPollsLocalPushRules(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Venator does not yet implement pushers.
+	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -193,6 +195,8 @@ func TestPollsLocalPushRules(t *testing.T) {
 // notify, poll responses are silenced.
 func TestPollsPushGatewayNotifications(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Venator does not yet implement pushers.
+	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
