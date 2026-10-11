@@ -710,11 +710,11 @@ func TestMSC4499Key(t *testing.T) {
 			t.Run("NegativeCachingAndBackoff", testMSC4499KeyNegativeCachingAndBackoff)
 		})
 
-		t.Run("§6", func(t *testing.T) {
-			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
-		})
 		t.Run("§4", func(t *testing.T) {
 			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
+		})
+		t.Run("§6", func(t *testing.T) {
+			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
 		})
 
 		// CorroborationTierRetention and StorageQuotaResilience each get their
