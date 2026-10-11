@@ -212,6 +212,54 @@ func TestMissingLocalDirection(t *testing.T) {
 	must.Equal(t, res.First.Kind, MissingLocal, "remote-only item")
 }
 
+func TestDAGBisectionUnitSpecResultPayloadsAndPositions(t *testing.T) {
+	total := Coverage{Kind: ViewTotal, Verified: true}
+	t.Run("MissingRemoteEvent", func(t *testing.T) {
+		local := Item{EventID: "$local", Depth: 12, Parents: []string{"$parent"}}
+		res, err := First(Peer{total, []Item{local}}, Peer{total, nil})
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First.Kind, MissingRemote, "local-only item kind")
+		must.Equal(t, res.First.Depth, int64(12), "local-only item depth")
+		must.Equal(t, res.First.LocalEventID, "$local", "local-only event ID")
+		must.Equal(t, res.First.RemoteEventID, "", "missing remote event ID")
+		must.Equal(t, res.First.State == nil, true, "ordinary event has no state key")
+	})
+
+	t.Run("MissingLocalEvent", func(t *testing.T) {
+		remote := Item{EventID: "$remote", Depth: 12, Parents: []string{"$parent"}}
+		res, err := First(Peer{total, nil}, Peer{total, []Item{remote}})
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First.Kind, MissingLocal, "remote-only item kind")
+		must.Equal(t, res.First.Depth, int64(12), "remote-only item depth")
+		must.Equal(t, res.First.LocalEventID, "", "missing local event ID")
+		must.Equal(t, res.First.RemoteEventID, "$remote", "remote-only event ID")
+		must.Equal(t, res.First.State == nil, true, "ordinary event has no state key")
+	})
+
+	t.Run("StateConflict", func(t *testing.T) {
+		state := &StateKey{Type: "m.room.topic", Key: ""}
+		local := Item{EventID: "$old", Depth: 12, State: state}
+		remote := Item{EventID: "$new", Depth: 12, State: state}
+		res, err := First(Peer{total, []Item{local}}, Peer{total, []Item{remote}})
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First.Kind, Conflict, "state slot conflict kind")
+		must.Equal(t, res.First.LocalEventID, "$old", "state conflict local ID")
+		must.Equal(t, res.First.RemoteEventID, "$new", "state conflict remote ID")
+		if res.First.State == nil || *res.First.State != *state {
+			t.Fatalf("state conflict key = %#v, want %#v", res.First.State, state)
+		}
+	})
+
+	t.Run("EventParentSetDefinesPosition", func(t *testing.T) {
+		local := Item{EventID: "$local", Depth: 12, Parents: []string{"$p2", "$p1"}}
+		remote := Item{EventID: "$remote", Depth: 12, Parents: []string{"$p3"}}
+		res, err := First(Peer{total, []Item{local}}, Peer{total, []Item{remote}})
+		must.NotError(t, "First", err)
+		must.Equal(t, res.First.Kind, MissingRemote, "different parent sets are different positions")
+		must.Equal(t, res.First.LocalEventID, "$local", "first sorted position belongs to local")
+	})
+}
+
 func TestFailsClosed(t *testing.T) {
 	total := Coverage{Kind: ViewTotal, Verified: true}
 	t.Run("UnverifiedCoverage", func(t *testing.T) {
