@@ -2046,7 +2046,7 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 			stateEventIDs = append(stateEventIDs, ev.EventID())
 		}
 		authEventIDs := make([]string, 0, len(roomState))
-		for _, ev := range room.AuthChainForEvents(roomState) {
+		for _, ev := range serverRoom.AuthChainForEvents(roomState) {
 			authEventIDs = append(authEventIDs, ev.EventID())
 		}
 		responseBytes, err := json.Marshal(fclient.RespStateIDs{
