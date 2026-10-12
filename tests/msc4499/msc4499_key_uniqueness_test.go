@@ -2033,8 +2033,9 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	// state is also the state before each event. Serving it lets hs1 resolve the
 	// refreshed event even though its predecessor is the intentionally rejected probe.
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
-		if roomID := mux.Vars(req)["roomID"]; roomID != serverRoom.RoomID {
-			t.Errorf("unexpected /state_ids request for room %s", mux.Vars(req)["roomID"])
+		roomID := mux.Vars(req)["roomID"]
+		if roomID != serverRoom.RoomID {
+			t.Errorf("unexpected /state_ids request for room %s", roomID)
 			http.Error(w, "unknown room", http.StatusNotFound)
 			return
 		}
