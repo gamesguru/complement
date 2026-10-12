@@ -860,19 +860,10 @@ func TestCorruptedAuthChain(t *testing.T) {
 	// The homeserver won't be able to link up the events returned via /get_missing_events to what it previously knew, so it will
 	// ask for a state snapshot via /state_ids.
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		defer stateIDWaiter.Finish()
 		t.Logf("/state_ids req for room %s => %s", mux.Vars(req)["roomID"], req.URL.Query().Encode())
 		reqEventID := req.URL.Query().Get("event_id")
-		// The homeserver may ask for the state after the intermediate event
-		// (gmeEvent) as well as after the event we expect (stateIDsEvent). Both
-		// are non-state events directly after E, so the same snapshot is correct
-		// for either. Any other event is unexpected.
-		if reqEventID != stateIDsEvent.EventID() && reqEventID != gmeEvent.EventID() {
-			must.Equal(t, reqEventID, stateIDsEvent.EventID(), "unexpected event provided to /state_ids")
-		}
-		// Only the intended request satisfies the waiter.
-		if reqEventID == stateIDsEvent.EventID() {
-			defer stateIDWaiter.Finish()
-		}
+		must.Equal(t, reqEventID, stateIDsEvent.EventID(), "unexpected event provided to /state_ids")
 		w.WriteHeader(200)
 
 		var authChainIDs []string
