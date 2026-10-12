@@ -17,7 +17,11 @@ import (
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
@@ -141,6 +145,41 @@ func TestMSC4521ActiveRoomReconciliation(t *testing.T) {
 	})
 }
 
+// TestMSC4521TwoHomeserverConvergence puts hs1 and hs2 in one room and checks
+// that, once both have the same events, they advertise the same reconciliation
+// digest and known event count. A diverging digest means the homeservers
+// disagree on which events they store, which is what set reconciliation exists
+// to detect.
+func TestMSC4521TwoHomeserverConvergence(t *testing.T) {
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+	srv := federation.NewServer(t, deployment, federation.HandleKeyRequests())
+	cancel := srv.Listen()
+	defer cancel()
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, []spec.ServerName{deployment.GetFullyQualifiedHomeserverName(t, "hs1")})
+
+	aliceEvent := alice.SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "from hs1"}})
+	bob.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, aliceEvent))
+	bobEvent := bob.SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "from hs2"}})
+	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, bobEvent))
+
+	digestOf := func(hs string) gjson.Result {
+		body, status := getRoomDigestFrom(t, srv, deployment, hs, roomID, "")
+		must.Equal(t, status, 200, hs+" room digest status")
+		return gjson.ParseBytes(body)
+	}
+	d1, d2 := digestOf("hs1"), digestOf("hs2")
+	must.Equal(t, d1.Get("digest_type").Str, "algebraic_v1", "hs1 digest type")
+	must.Equal(t, d2.Get("digest_type").Str, "algebraic_v1", "hs2 digest type")
+	must.Equal(t, d1.Get("known_event_count").Int(), d2.Get("known_event_count").Int(), "known event count converges")
+	must.Equal(t, d1.Get("digest").Str, d2.Get("digest").Str, "digest converges")
+}
+
 func reconcileHash(t *testing.T, eventID string) uint64 {
 	t.Helper()
 	hash, err := reconcile.FromMatrixEventID(eventID, reconcile.V4Plus)
@@ -150,11 +189,16 @@ func reconcileHash(t *testing.T, eventID string) uint64 {
 
 func getRoomDigest(t *testing.T, srv *federation.Server, deployment complement.Deployment, roomID, suffix string) ([]byte, int) {
 	t.Helper()
+	return getRoomDigestFrom(t, srv, deployment, "hs1", roomID, suffix)
+}
+
+func getRoomDigestFrom(t *testing.T, srv *federation.Server, deployment complement.Deployment, hs, roomID, suffix string) ([]byte, int) {
+	t.Helper()
 	path := "/_matrix/federation/unstable/tk.nutra.msc0501/room_digest/" + url.PathEscape(roomID) + suffix
 	req := fclient.NewFederationRequest(
 		"GET",
 		srv.ServerName(),
-		deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
+		deployment.GetFullyQualifiedHomeserverName(t, hs),
 		path,
 	)
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
