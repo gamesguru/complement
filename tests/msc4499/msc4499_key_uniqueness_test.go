@@ -2029,22 +2029,16 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	serverRoomV4 := srv.MustMakeRoom(t, ver4, federation.InitialRoomEvents(ver4, charlie))
 	roomAliasV4 := srv.MakeAliasMapping("valid_until_v4_test", serverRoomV4.RoomID)
 	alice.MustJoinRoom(t, roomAliasV4, []spec.ServerName{srv.ServerName()})
-	// Every event added to either room after setup is a message, so the current
+	// Every event added to this room after setup is a message, so the current
 	// state is also the state before each event. Serving it lets hs1 resolve the
 	// refreshed event even though its predecessor is the intentionally rejected probe.
 	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
-		var room *federation.ServerRoom
-		switch mux.Vars(req)["roomID"] {
-		case serverRoom.RoomID:
-			room = serverRoom
-		case serverRoomV4.RoomID:
-			room = serverRoomV4
-		default:
+		if roomID := mux.Vars(req)["roomID"]; roomID != serverRoom.RoomID {
 			t.Errorf("unexpected /state_ids request for room %s", mux.Vars(req)["roomID"])
 			http.Error(w, "unknown room", http.StatusNotFound)
 			return
 		}
-		roomState := room.AllCurrentState()
+		roomState := serverRoom.AllCurrentState()
 
 		stateEventIDs := make([]string, 0, len(roomState))
 		for _, ev := range roomState {
@@ -2058,7 +2052,11 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 			AuthEventIDs:  authEventIDs,
 			StateEventIDs: stateEventIDs,
 		})
-		must.NotError(t, "failed to marshal /state_ids response", err)
+		if err != nil {
+			t.Errorf("failed to marshal /state_ids response: %v", err)
+			http.Error(w, "failed to marshal state IDs", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(responseBytes)
@@ -3534,7 +3532,11 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 				StateEventIDs: stateEventIDs,
 			}
 			responseBytes, err := json.Marshal(&res)
-			must.NotError(t, "failed to marshal /state_ids response", err)
+			if err != nil {
+				t.Errorf("failed to marshal /state_ids response: %v", err)
+				http.Error(w, "failed to marshal state IDs", http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(200)
 			_, _ = w.Write(responseBytes)
 		}).Methods("GET")
