@@ -113,6 +113,12 @@ func SkipUnless(t ct.TestLike, hses ...string) {
 	if slices.Contains(hses, Homeserver) {
 		return
 	}
+	// A derived homeserver (e.g. Continuwuity) runs tests meant for its parents.
+	for _, hs := range hses {
+		if isParent(Homeserver, hs) {
+			return
+		}
+	}
 	if Homeserver == "" {
 		t.Logf(
 			"WARNING: %s called runtime.SkipUnless(%v) but Complement doesn't know which HS is running as it was run without a *_blacklist tag: not executing test.",
