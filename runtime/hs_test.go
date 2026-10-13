@@ -58,7 +58,7 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 		// Exemptions
 		{Tuwunel, "TestPartialStateJoin", []string{Conduit}, false},           // Tuwunel exempt on TestPartialStateJoin
 		{Tuwunel, "TestPartialStateJoin/Subtest", []string{Conduwuit}, false}, // Tuwunel exempt on subtest
-		{Continuwuity, "TestPartialStateJoin", []string{Conduwuit}, true},     // Continuwuity NOT exempt on TestPartialStateJoin
+		{Continuwuity, "TestPartialStateJoin", []string{Conduwuit}, false},    // Continuwuity exempt on TestPartialStateJoin
 		{Conduwuit, "TestTxnIdempotency", []string{Conduit}, false},
 		{Continuwuity, "TestTxnIdWithRefreshToken", []string{Conduit}, false},
 	}
