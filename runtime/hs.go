@@ -138,7 +138,8 @@ func SkipUnless(t ct.TestLike, hses ...string) {
 	if slices.Contains(hses, Homeserver) {
 		return
 	}
-	// A derived homeserver (e.g. Continuwuity) runs tests meant for its parents.
+	// A homeserver also runs the tests gated on the servers it lists in runsTestsOf
+	// (independent of the inherited SkipIf skips in parents).
 	for _, hs := range hses {
 		if runsTestsOfServer(Homeserver, hs) {
 			return
