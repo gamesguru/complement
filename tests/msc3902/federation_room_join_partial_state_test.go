@@ -3784,6 +3784,10 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Bob joins too")
+			// Bob's join is federated to the test server, which is in the room.
+			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				return e.Type() == spec.MRoomMember && e.StateKeyEquals(bob.UserID)
+			})
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
 			t.Log("Bob waits to see his join")
