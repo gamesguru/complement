@@ -3164,12 +3164,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// test that device lists stop being tracked when leaving a partial state room due to
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
-			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			// Skipped until a server abandons a partial state join whose resync keeps
-			// failing (https://github.com/matrix-org/synapse/issues/13000). Servers
-			// retry with backoff instead, so the assertions below cannot hold yet.
-			t.Skip("Cannot yet abort a partial state join")
-
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
 
@@ -3215,8 +3209,11 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			})
 			defer removeLeaveHandler()
 
-			// Fail the partial state join: the resync can never complete.
+			// Fail the partial state join: the resync can never complete. The server
+			// retries with backoff for its configured budget before giving up, which
+			// is longer than the default sync wait.
 			psjResult.FailStateRequest()
+			alice.SyncUntilTimeout = 30 * time.Second
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
 			// key requests from alice require a federation request.
