@@ -3100,7 +3100,8 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// partial state join completes.
 		t.Run("Device list no longer tracked when leaving partial state room", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/12802 has been addressed.
-			// t.Skip("Cannot yet leave a room during resync")
+			// Enabled: the leave is federated to the resident server, so the test
+			// registers a PDU handler for it (see below).
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t34alice")
 			defer cleanup()
@@ -3128,6 +3129,24 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
+			// alice's leave is federated to the resident server; expect it.
+			removeLeaveHandler := server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				if e.Type() != "m.room.member" ||
+					e.RoomID().String() != room.RoomID ||
+					string(e.SenderID()) != alice.UserID ||
+					e.StateKey() == nil || *e.StateKey() != alice.UserID {
+					return false
+				}
+				var content struct {
+					Membership string `json:"membership"`
+				}
+				if err := json.Unmarshal(e.Content(), &content); err != nil {
+					return false
+				}
+				return content.Membership == "leave"
+			})
+			defer removeLeaveHandler()
+
 			// alice aborts her join before the resync completes
 			alice.MustLeaveRoom(t, room.RoomID)
 
@@ -3141,7 +3160,9 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			// t.Skip("Cannot yet abort a partial state join")
+			// The test has no way to make the join fail (see the TODO below), and no
+			// server aborts a partial-state join (Synapse issue 13000).
+			t.Skip("Cannot yet abort a partial state join")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
