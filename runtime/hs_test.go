@@ -79,7 +79,7 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 	}
 }
 
-func TestSkipUnlessRunsTestsOfRelatedServers(t *testing.T) {
+func TestSkipUnless(t *testing.T) {
 	origHomeserver := Homeserver
 	defer func() { Homeserver = origHomeserver }()
 
