@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,10 @@ type server struct {
 
 	nextPDUHandlerKey int
 	nextEDUHandlerKey int
+
+	// failStateRequests makes the /state and /state_ids handlers reply with a
+	// server error, so that the partial state resync cannot complete.
+	failStateRequests atomic.Bool
 }
 
 // createTestServer spins up a federation server suitable for the tests in this file
@@ -3160,9 +3165,8 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			// The test has no way to make the join fail (see the TODO below), and no
-			// server aborts a partial-state join (Synapse issue 13000).
-			t.Skip("Cannot yet abort a partial state join")
+			// Enabled: the test fails the resync with FailStateRequest, and expects
+			// the server to give up on the join (Synapse issue 13000 does not).
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
@@ -3190,9 +3194,27 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
-			t.Fatalf("TODO: fail the partial state join")
-			psjResult.FinishStateRequest()
-			awaitPartialStateJoinCompletion(t, room, alice)
+			// hs1 gives up on the join once the resync keeps failing, at which point
+			// alice leaves the room; her leave is federated to the resident server.
+			removeLeaveHandler := server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				if e.Type() != "m.room.member" ||
+					e.RoomID().String() != room.RoomID ||
+					string(e.SenderID()) != alice.UserID ||
+					e.StateKey() == nil || *e.StateKey() != alice.UserID {
+					return false
+				}
+				var content struct {
+					Membership string `json:"membership"`
+				}
+				if err := json.Unmarshal(e.Content(), &content); err != nil {
+					return false
+				}
+				return content.Membership == "leave"
+			})
+			defer removeLeaveHandler()
+
+			// Fail the partial state join: the resync can never complete.
+			psjResult.FailStateRequest()
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
 			// key requests from alice require a federation request.
@@ -4426,6 +4448,13 @@ func (psj *partialStateJoinResult) AwaitStateIdsRequest(t *testing.T) {
 	psj.fedStateIdsRequestReceivedWaiter.Waitf(t, 5*time.Second, "Waiting for /state_ids request")
 }
 
+// make the state re-sync fail: /state_ids and /state requests are answered with
+// a server error from now on, including the one that is currently held back.
+func (psj *partialStateJoinResult) FailStateRequest() {
+	psj.Server.failStateRequests.Store(true)
+	psj.fedStateIdsSendResponseWaiter.Finish()
+}
+
 // allow the /state_ids request to complete, thus allowing the state re-sync to complete
 func (psj *partialStateJoinResult) FinishStateRequest() {
 	psj.fedStateIdsSendResponseWaiter.Finish()
@@ -4472,6 +4501,12 @@ func handleStateIdsRequests(
 							"to serve /state_ids response for event %s", queryParams["event_id"],
 					)
 				}
+			}
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state_ids request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state unavailable"}`))
+				return
 			}
 			t.Logf("Replying to /state_ids request for event %s", queryParams["event_id"])
 
@@ -4534,6 +4569,12 @@ func handleStateRequests(
 				}
 			}
 
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state unavailable"}`))
+				return
+			}
 			t.Logf("Replying to /state request for event %s", queryParams["event_id"])
 
 			res := fclient.RespState{
