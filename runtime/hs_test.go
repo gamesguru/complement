@@ -55,6 +55,12 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 		{Continuwuity, "TestSomeFunc", []string{Conduwuit}, true}, // Continuwuity inherits Conduwuit
 		{Tuwunel, "TestSomeFunc", []string{Conduit}, false},       // nor of Tuwunel
 
+		// Congruent inherits nothing
+		{Congruent, "TestSomeFunc", []string{Conduit}, false},
+		{Congruent, "TestSomeFunc", []string{Conduwuit}, false},
+		{Congruent, "TestSomeFunc", []string{Continuwuity}, false},
+		{Congruent, "TestSomeFunc", []string{Congruent}, true},
+
 		// Exemptions
 		{Tuwunel, "TestPartialStateJoin", []string{Conduit}, false},           // Tuwunel exempt on TestPartialStateJoin
 		{Tuwunel, "TestPartialStateJoin/Subtest", []string{Conduwuit}, false}, // Tuwunel exempt on subtest

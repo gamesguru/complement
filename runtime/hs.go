@@ -16,6 +16,7 @@ const (
 	Conduwuit    = "conduwuit"
 	Tuwunel      = "tuwunel"
 	Continuwuity = "continuwuity"
+	Congruent    = "congruent"
 	Venator      = "venator"
 )
 
@@ -46,7 +47,8 @@ var parents = map[string][]string{
 	// Conduit is deliberately not an ancestor of the derived servers: a skip
 	// meant for Conduit must not silently hide Continuwuity/Tuwunel tests.
 	Continuwuity: {Conduwuit},
-	Tuwunel:      {Conduwuit},
+	// Congruent inherits no skips: it runs every test not naming it explicitly.
+	Tuwunel: {Conduwuit},
 }
 
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
