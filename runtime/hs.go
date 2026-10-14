@@ -42,9 +42,11 @@ var ContainerKillFunc = func(cli *client.Client, containerID string) error {
 // file pairs together the tag name with a string constant declared in this package
 // e.g. dendrite_blacklist == runtime.Dendrite
 var parents = map[string][]string{
-	Conduwuit:    {Conduit},
-	Continuwuity: {Conduwuit, Conduit},
-	Tuwunel:      {Conduwuit, Conduit},
+	Conduwuit: {Conduit},
+	// Conduit is deliberately not an ancestor of the derived servers: a skip
+	// meant for Conduit must not silently hide Continuwuity/Tuwunel tests.
+	Continuwuity: {Conduwuit},
+	Tuwunel:      {Conduwuit},
 }
 
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
