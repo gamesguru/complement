@@ -75,7 +75,7 @@ func TestWithoutOwnedState(t *testing.T) {
 
 func TestMSC3757OwnedState(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
-	runtime.SkipIf(t, runtime.Conduit)
+	runtime.SkipIf(t, runtime.Conduit, runtime.Congruent) // room version for MSC3757 is unsupported
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
