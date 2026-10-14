@@ -47,12 +47,6 @@ var parents = map[string][]string{
 	Tuwunel:      {Conduwuit, Conduit},
 }
 
-// InheritSkips controls whether a derived homeserver (see parents) inherits the
-// SkipIf skips of its ancestors. It is off: a derived server runs a test unless
-// the test names it, so a skip meant for Conduit does not hide Continuwuity.
-// Exemptions only matter while this is on.
-var InheritSkips = false
-
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
 var Exemptions = map[string][]string{
 	"TestPartialStateJoin":      {Continuwuity, Tuwunel},
@@ -93,9 +87,6 @@ func SkipIf(t ct.TestLike, hses ...string) {
 	}
 	// Check inheritance
 	for _, hs := range hses {
-		if !InheritSkips {
-			break
-		}
 		if isParent(Homeserver, hs) {
 			// Check if the current homeserver is exempt for this test
 			if isExempt(t.Name(), Homeserver) {

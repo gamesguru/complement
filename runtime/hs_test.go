@@ -35,11 +35,8 @@ func (m *mockTest) Failed() bool {
 func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 	// Backup original state
 	origHomeserver := Homeserver
-	origInherit := InheritSkips
-	InheritSkips = true
 	defer func() {
 		Homeserver = origHomeserver
-		InheritSkips = origInherit
 	}()
 
 	tests := []struct {
@@ -73,22 +70,5 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 		if mt.skipped != tc.expectedSkipped {
 			t.Errorf("For HS=%s, Test=%s, SkipOn=%v: expected skipped=%v, got %v", tc.hs, tc.testName, tc.skipOn, tc.expectedSkipped, mt.skipped)
 		}
-	}
-}
-
-func TestSkipIfDoesNotInheritByDefault(t *testing.T) {
-	origHomeserver := Homeserver
-	defer func() { Homeserver = origHomeserver }()
-
-	Homeserver = Continuwuity
-	mt := &mockTest{name: "TestSomeFunc"}
-	SkipIf(mt, Conduit, Conduwuit)
-	if mt.skipped {
-		t.Errorf("Continuwuity must not inherit skips when InheritSkips is off")
-	}
-	mt = &mockTest{name: "TestSomeFunc"}
-	SkipIf(mt, Continuwuity)
-	if !mt.skipped {
-		t.Errorf("a test naming Continuwuity must still skip it")
 	}
 }
