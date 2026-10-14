@@ -300,7 +300,7 @@ func TestRegistration(t *testing.T) {
 		// challenge fail if the session is not provided.
 		t.Run("Registration without a session fails", func(t *testing.T) {
 			// Many implementations historically did not enforce this requirement strictly
-			runtime.SkipIf(t, runtime.Synapse, runtime.Dendrite, runtime.Conduit, runtime.Congruent) // a UIA auth dict without a session starts a new session (allowed by the spec)
+			runtime.SkipIf(t, runtime.Synapse, runtime.Dendrite, runtime.Conduit)
 			t.Parallel()
 			reqBody, session := startUIASession(t, unauthedClient, "auth-requires-session", "sUp3rs3kr1t", nil)
 			if session == "" {
