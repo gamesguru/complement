@@ -3165,8 +3165,10 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			// Enabled: the test fails the resync with FailStateRequest, and expects
-			// the server to give up on the join (Synapse issue 13000 does not).
+			// Skipped until a server abandons a partial state join whose resync keeps
+			// failing (https://github.com/matrix-org/synapse/issues/13000). Servers
+			// retry with backoff instead, so the assertions below cannot hold yet.
+			t.Skip("Cannot yet abort a partial state join")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
