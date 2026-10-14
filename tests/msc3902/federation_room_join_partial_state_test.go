@@ -3192,6 +3192,7 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 			// hs1 gives up on the join once the resync keeps failing, at which point
 			// alice leaves the room; her leave is federated to the resident server.
+			leaveReceived := make(chan struct{}, 1)
 			removeLeaveHandler := server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
 				if e.Type() != "m.room.member" ||
 					e.RoomID().String() != room.RoomID ||
@@ -3205,13 +3206,20 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 				if err := json.Unmarshal(e.Content(), &content); err != nil {
 					return false
 				}
-				return content.Membership == "leave"
+				if content.Membership != "leave" {
+					return false
+				}
+				select {
+				case leaveReceived <- struct{}{}:
+				default:
+				}
+				return true
 			})
 			defer removeLeaveHandler()
 
 			// Fail the partial state join: the resync can never complete. The server
-			// retries with backoff for its configured budget before giving up, which
-			// is longer than the default sync wait.
+			// retries with backoff for its configured budget (a few seconds in the
+			// test config) before giving up, so allow the sync a generous wait.
 			psjResult.FailStateRequest()
 			alice.SyncUntilTimeout = 30 * time.Second
 
@@ -3219,6 +3227,13 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			// key requests from alice require a federation request.
 			mustSyncUntilDeviceListsHas(t, alice, syncToken, "left", server.UserID("elsie"))
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
+
+			// The abandoned join must have been federated as a real leave.
+			select {
+			case <-leaveReceived:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("timed out waiting for hs1 to send alice's leave to the resident server")
+			}
 		})
 
 		// setupUserIncorrectlyInRoom tricks the homeserver under test into thinking that @elsie is
