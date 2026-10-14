@@ -47,8 +47,20 @@ var parents = map[string][]string{
 	// Conduit is deliberately not an ancestor of the derived servers: a skip
 	// meant for Conduit must not silently hide Continuwuity/Tuwunel tests.
 	Continuwuity: {Conduwuit},
-	// Congruent inherits no skips: it runs every test not naming it explicitly.
+	// Congruent inherits no skips: SkipIf only skips it when it is named. It still
+	// runs the SkipUnless-gated tests of Conduwuit (see runsTestsOf).
 	Tuwunel: {Conduwuit},
+}
+
+// runsTestsOf lists the homeservers whose SkipUnless-gated tests a server also
+// runs (the positive direction). It is separate from parents, which decides
+// which SkipIf skips are inherited, so Congruent can run Conduwuit's tests
+// without inheriting its skips.
+var runsTestsOf = map[string][]string{
+	Conduwuit:    {Conduit},
+	Continuwuity: {Conduwuit},
+	Tuwunel:      {Conduwuit},
+	Congruent:    {Conduwuit, Continuwuity},
 }
 
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
@@ -60,6 +72,15 @@ var Exemptions = map[string][]string{
 
 func isParent(child, parent string) bool {
 	for _, p := range parents[child] {
+		if p == parent {
+			return true
+		}
+	}
+	return false
+}
+
+func runsTestsOfServer(child, parent string) bool {
+	for _, p := range runsTestsOf[child] {
 		if p == parent {
 			return true
 		}
@@ -119,7 +140,7 @@ func SkipUnless(t ct.TestLike, hses ...string) {
 	}
 	// A derived homeserver (e.g. Continuwuity) runs tests meant for its parents.
 	for _, hs := range hses {
-		if isParent(Homeserver, hs) {
+		if runsTestsOfServer(Homeserver, hs) {
 			return
 		}
 	}

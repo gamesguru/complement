@@ -78,3 +78,28 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipUnlessInheritance(t *testing.T) {
+	origHomeserver := Homeserver
+	defer func() { Homeserver = origHomeserver }()
+
+	cases := []struct {
+		hs       string
+		allowed  []string
+		wantSkip bool
+	}{
+		{Congruent, []string{Conduwuit}, false},
+		{Congruent, []string{Synapse, Conduwuit}, false},
+		{Congruent, []string{Synapse}, true},
+		{Continuwuity, []string{Conduwuit}, false},
+		{Tuwunel, []string{Conduwuit}, false},
+	}
+	for _, tc := range cases {
+		Homeserver = tc.hs
+		mt := &mockTest{name: "TestSomeFunc"}
+		SkipUnless(mt, tc.allowed...)
+		if mt.skipped != tc.wantSkip {
+			t.Errorf("HS=%s allowed=%v: expected skipped=%v, got %v", tc.hs, tc.allowed, tc.wantSkip, mt.skipped)
+		}
+	}
+}
