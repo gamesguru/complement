@@ -3785,8 +3785,13 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 			t.Log("Bob joins too")
 			// Bob's join is federated to the test server, which is in the room.
-			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
-				return e.Type() == spec.MRoomMember && e.StateKeyEquals(bob.UserID)
+			removeBobJoinHandler := server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				if e.RoomID().String() != serverRoom.RoomID || e.Type() != spec.MRoomMember ||
+					e.SenderID() != spec.SenderID(bob.UserID) || !e.StateKeyEquals(bob.UserID) {
+					return false
+				}
+				membership, err := e.Membership()
+				return err == nil && membership == spec.Join
 			})
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
@@ -3796,6 +3801,7 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 				client.SyncReq{Filter: buildLazyLoadingSyncFilter(nil)},
 				client.SyncJoinedTo(bob.UserID, serverRoom.RoomID),
 			)
+			removeBobJoinHandler()
 
 			t.Log("Alice leaves the room")
 			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
