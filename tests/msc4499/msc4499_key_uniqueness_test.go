@@ -1831,6 +1831,8 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		},
 		ExpiredTS: spec.AsTimestamp(expiredTS), // expired 1 hour ago
 	}
+	// Also publish the identical body as active: expired_ts must still govern event verification.
+	mockKeyServer.verifyKeys[keyIDExpired] = pubKeyExpired
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
 	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
