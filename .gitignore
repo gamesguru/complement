@@ -10,7 +10,15 @@ complement
 /*.test
 # For direnv users
 /.envrc
+.env
 .direnv/
 
 # devenv users
 .devenv/
+
+# other top-level / misc crap
+/*.json
+/*.jsonl
+*.diff
+*.patch
+*.log
