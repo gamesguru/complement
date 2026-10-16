@@ -36,7 +36,13 @@ func newCluster(t *testing.T, n int) *cluster {
 	t.Helper()
 	deployment := complement.Deploy(t, n)
 	t.Cleanup(func() { deployment.Destroy(t) })
-	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
+	// The prober asks for digests as a room member: a homeserver rightly refuses
+	// them to a server that is not in the room.
+	prober := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
 	t.Cleanup(prober.Listen())
 	names := make([]string, n)
 	for i := range names {
@@ -54,6 +60,7 @@ func newCluster(t *testing.T, n int) *cluster {
 	for i := 1; i < n; i++ {
 		c.users[i].MustJoinRoom(t, c.roomID, []spec.ServerName{hs1})
 	}
+	prober.MustJoinRoom(t, deployment, hs1, c.roomID, prober.UserID("prober"))
 	return c
 }
 

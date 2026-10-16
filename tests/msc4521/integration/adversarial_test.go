@@ -28,9 +28,11 @@ import (
 // of the implementation under test, not protocol constants; adjust them to the
 // configured limits of the build being tested.
 const (
-	maxFetchesPerRound = 100 // upper bound on /event fetches in one exchange with one peer
-	sampleFetchBound   = 40  // upper bound on fetches before a partly fake claim is abandoned
-	settle             = 20 * time.Second
+	maxFetchesPerRound = 100              // upper bound on /event fetches in one exchange with one peer
+	sampleFetchBound   = 40               // upper bound on fetches before a partly fake claim is abandoned
+	settle             = 20 * time.Second // upper bound on any wait for the homeserver
+	noActivityGrace    = 5 * time.Second  // give up early if the homeserver sends nothing at all
+	quietPeriod        = 2 * time.Second  // activity counts as finished after this much silence
 )
 
 const msc4521Prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
@@ -157,6 +159,28 @@ func requireSupported(t *testing.T, digestStatus int) {
 	}
 }
 
+// settleOn waits for the homeserver's activity, measured by count, to start
+// and then go quiet. It returns after quietPeriod without change once there has
+// been activity, after noActivityGrace if there never is, or after settle at
+// the latest, so a homeserver that does nothing fails in seconds instead of
+// sleeping out the whole bound.
+func settleOn(count func() int) {
+	start := time.Now()
+	last, changed := count(), time.Now()
+	for time.Since(start) < settle {
+		time.Sleep(250 * time.Millisecond)
+		if n := count(); n != last {
+			last, changed = n, time.Now()
+		}
+		if last == 0 && time.Since(start) >= noActivityGrace {
+			return
+		}
+		if last > 0 && time.Since(changed) >= quietPeriod {
+			return
+		}
+	}
+}
+
 func fakeEventID(n int) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("fabricated-%d", n)))
 	return "$" + base64.RawURLEncoding.EncodeToString(sum[:])
@@ -216,7 +240,7 @@ func TestMSC4521FabricatedIDs(t *testing.T) {
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), fakes)
 	digest, count := e.hs1Digest(t)
 
-	time.Sleep(settle)
+	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
 
 	fetches := e.peer.count("/federation/v1/event/")
 	t.Logf("peer saw %d /event fetches for %d fabricated IDs", fetches, len(fakes))
@@ -245,7 +269,7 @@ func TestMSC4521PartlyFakeClaimIsSampled(t *testing.T) {
 	offered := append(append([]string{}, real...), fakes...)
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), offered)
 
-	time.Sleep(settle)
+	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
 
 	fetches := e.peer.count("/federation/v1/event/")
 	t.Logf("peer saw %d fetches for %d claimed IDs (50%% fake)", fetches, len(offered))
@@ -313,7 +337,7 @@ func TestMSC4521RejectedEventNotRefetched(t *testing.T) {
 	e.peer.room.AddEvent(bad)
 	e.peer.claim(timelineIDs(e.peer), []string{bad.EventID()})
 
-	time.Sleep(settle)
+	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
 
 	n := e.peer.count("/federation/v1/event/" + bad.EventID())
 	t.Logf("rejected event fetched %d time(s) over %s", n, settle)
@@ -342,7 +366,10 @@ func TestMSC4521NonMembersAndACLBlocked(t *testing.T) {
 	})
 	before := blocked.count("room_digest") + blocked.count("room_diff")
 
-	time.Sleep(settle)
+	settleOn(func() int {
+		return blocked.count("room_digest") + blocked.count("room_diff") +
+			stranger.count("room_digest") + stranger.count("room_diff")
+	})
 
 	for name, p := range map[string]*scriptedPeer{"stranger": stranger} {
 		if n := p.count("room_digest") + p.count("room_diff"); n != 0 {
@@ -386,7 +413,9 @@ func TestMSC4521NonAdvertisingPeerFallsBack(t *testing.T) {
 	e.peer.srv.MustSendTransaction(t, e.deployment, e.deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 		[]json.RawMessage{second.JSON()}, nil)
 
-	time.Sleep(settle)
+	settleOn(func() int {
+		return e.peer.count("/get_missing_events/") + e.peer.count("/state_ids/") + e.peer.count("/federation/v1/event/")
+	})
 
 	ordinary := e.peer.count("/get_missing_events/") + e.peer.count("/state_ids/") + e.peer.count("/federation/v1/event/")
 	if ordinary == 0 {
