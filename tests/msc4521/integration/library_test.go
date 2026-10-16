@@ -1,4 +1,4 @@
-package msc4521
+package integration
 
 import (
 	"crypto/sha256"
@@ -13,12 +13,16 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// TestMSC4521SetReconciliation groups the library-level checks that back the
-// adaptive set reconciliation proposal. The suite deliberately exercises the
-// gomatrixcrypto/reconcile primitives directly so the protocol logic can be
-// verified without a homeserver. The existing federation-facing digest,
-// strata, and room_diff endpoints are covered in tests/msc4521/integration.
+// TestMSC4521SetReconciliation checks the adaptive set reconciliation proposal
+// at two levels superimposed in one test. Every scenario first runs against the
+// gomatrixcrypto/reconcile primitives, which needs no homeserver, and, when a
+// Complement runner is configured, then against a real homeserver over the
+// /room_digest and /room_diff federation endpoints. Scenarios with no
+// homeserver counterpart (the bucket, residual and strata arithmetic) are
+// library-only and say so by having no homeserver call.
 func TestMSC4521SetReconciliation(t *testing.T) {
+	hs := newHomeserverSide(t)
+
 	t.Run("Plumbing", func(t *testing.T) {
 		t.Run("Vectors", testVectors)
 		t.Run("Buckets", func(t *testing.T) {
@@ -33,14 +37,26 @@ func TestMSC4521SetReconciliation(t *testing.T) {
 			t.Run("H64Collision", testH64Collision)
 		})
 		t.Run("Other", func(t *testing.T) {
-			t.Run("MalformedInputs", testMalformedInputs)
+			t.Run("MalformedInputs", func(t *testing.T) {
+				testMalformedInputs(t)
+				hs.malformedInputs(t)
+			})
 			t.Run("EventIDBinding", testEventIDBinding)
 		})
 	})
 	t.Run("Porcelain", func(t *testing.T) {
-		t.Run("IdenticalSets", testIdenticalSets)
-		t.Run("OneSidedChanges", testOneSidedChanges)
-		t.Run("SymmetricDifference", testSymmetricDifference)
+		t.Run("IdenticalSets", func(t *testing.T) {
+			testIdenticalSets(t)
+			hs.identicalSets(t)
+		})
+		t.Run("OneSidedChanges", func(t *testing.T) {
+			testOneSidedChanges(t)
+			hs.homeserverOnly(t)
+		})
+		t.Run("SymmetricDifference", func(t *testing.T) {
+			testSymmetricDifference(t)
+			hs.symmetricDifference(t)
+		})
 		t.Run("EstimateDelta", func(t *testing.T) {
 			t.Run("TwoSidedDifference", testEstimateDelta)
 			t.Run("SpecVectors", testEstimateDeltaSpecVectors)

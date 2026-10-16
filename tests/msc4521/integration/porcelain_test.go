@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/url"
+	"os"
 	"slices"
 	"testing"
 
@@ -20,18 +21,34 @@ import (
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
 )
 
-// TestMSC4521HomeserverPorcelain runs the scenarios of the library-level
-// Porcelain vectors (tests/msc4521) against a real homeserver: a remote
-// federation server holds one side of the set, hs1 holds the other, and the
-// difference is recovered over /room_digest and /room_diff.
-func TestMSC4521HomeserverPorcelain(t *testing.T) {
+// homeserverSide is the real-homeserver half of TestMSC4521SetReconciliation:
+// a remote federation server holds one side of the set, hs1 holds the other,
+// and the difference is recovered over /room_digest and /room_diff. A nil
+// *homeserverSide means no Complement runner is configured, and every method is
+// then a no-op so the test degrades to the plain library checks.
+type homeserverSide struct {
+	deployment complement.Deployment
+	alice      *client.CSAPI
+	srv        *federation.Server
+	roomID     string
+	charlie    string
+	serverRoom *federation.ServerRoom
+}
+
+func newHomeserverSide(t *testing.T) *homeserverSide {
+	t.Helper()
+	if os.Getenv("COMPLEMENT_BASE_IMAGE") == "" {
+		t.Log("no Complement runner: running the library checks only")
+		return nil
+	}
 	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
+	t.Cleanup(func() { deployment.Destroy(t) })
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 	srv := federation.NewServer(t, deployment,
@@ -39,86 +56,120 @@ func TestMSC4521HomeserverPorcelain(t *testing.T) {
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
-	cancel := srv.Listen()
-	defer cancel()
+	t.Cleanup(srv.Listen())
 
 	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 	charlie := srv.UserID("charlie")
 	serverRoom := srv.MustJoinRoom(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), roomID, charlie)
+	return &homeserverSide{deployment, alice, srv, roomID, charlie, serverRoom}
+}
 
-	t.Run("IdenticalSets", func(t *testing.T) {
-		body, status := getRoomDigest(t, srv, deployment, roomID, "")
-		must.Equal(t, status, 200, "room digest status")
-		digest := gjson.ParseBytes(body)
+// identicalSets: with nothing to reconcile both sides agree on count and
+// digest, and the homeserver reports no difference.
+func (h *homeserverSide) identicalSets(t *testing.T) {
+	if h == nil {
+		return
+	}
+	t.Helper()
+	body, status := getRoomDigest(t, h.srv, h.deployment, h.roomID, "")
+	must.Equal(t, status, 200, "room digest status")
+	digest := gjson.ParseBytes(body)
 
-		local := kernelOf(t, serverRoom)
-		must.Equal(t, local.Accumulator().Count, uint64(digest.Get("known_event_count").Uint()),
-			"identical sets must agree on count")
-		must.Equal(t, local.Accumulator().EncodeDigest(), digest.Get("digest").Str,
-			"identical sets must agree on digest")
+	local := kernelOf(t, h.serverRoom)
+	must.Equal(t, local.Accumulator().Count, digest.Get("known_event_count").Uint(),
+		"identical sets must agree on count")
+	must.Equal(t, local.Accumulator().EncodeDigest(), digest.Get("digest").Str,
+		"identical sets must agree on digest")
 
-		// With nothing to reconcile the homeserver reports no difference.
-		response := requestRoomDiff(t, srv, deployment, roomID, local, serverRoom, 2)
-		must.Equal(t, len(response.Get("missing_event_ids").Array()), 0, "no events missing from requester")
-		must.Equal(t, len(response.Get("requester_only_short_ids").Array()), 0, "no requester-only events")
+	response := h.diff(t, local, 2)
+	must.Equal(t, len(response.Get("missing_event_ids").Array()), 0, "no events missing from requester")
+	must.Equal(t, len(response.Get("requester_only_short_ids").Array()), 0, "no requester-only events")
+}
+
+// homeserverOnly: an event only hs1 has is reported as missing from the
+// requester (the remote server ignores transactions, so it never sees it).
+func (h *homeserverSide) homeserverOnly(t *testing.T) {
+	if h == nil {
+		return
+	}
+	t.Helper()
+	eventID := h.alice.SendEventSynced(t, h.roomID, b.Event{
+		Type:    "m.room.message",
+		Content: map[string]interface{}{"msgtype": "m.text", "body": "homeserver-only MSC4521 event"},
 	})
+	response := h.diff(t, kernelOf(t, h.serverRoom), 2)
+	missing := stringsOf(response.Get("missing_event_ids"))
+	must.Equal(t, slices.Contains(missing, eventID), true, "homeserver event is reported missing from the requester")
+	must.Equal(t, len(response.Get("requester_only_short_ids").Array()), 0, "no requester-only events")
+}
 
-	t.Run("HomeserverOnly", func(t *testing.T) {
-		// The remote server ignores transactions, so this event stays unknown to it.
-		eventID := alice.SendEventSynced(t, roomID, b.Event{
-			Type:    "m.room.message",
-			Content: map[string]interface{}{"msgtype": "m.text", "body": "homeserver-only MSC4521 event"},
+// symmetricDifference: each side has an event the other lacks, and both are
+// recovered.
+func (h *homeserverSide) symmetricDifference(t *testing.T) {
+	if h == nil {
+		return
+	}
+	t.Helper()
+	extra := h.srv.MustCreateEvent(t, h.serverRoom, federation.Event{
+		Sender:  h.charlie,
+		Type:    "m.room.message",
+		Content: map[string]interface{}{"body": "remote-only MSC4521 event"},
+	})
+	h.serverRoom.AddEvent(extra)
+
+	response := h.diff(t, kernelOf(t, h.serverRoom), 8)
+	must.Equal(t, len(response.Get("missing_event_ids").Array()) > 0, true, "homeserver-only events are reported")
+	wantShort := shortID(reconcileHash(t, extra.EventID()))
+	must.Equal(t, slices.Contains(stringsOf(response.Get("requester_only_short_ids")), wantShort), true,
+		"requester-only event is reported by short ID")
+}
+
+// malformedInputs: a malformed room_diff is the requester's fault, so it must
+// be a 4xx other than "route not found".
+func (h *homeserverSide) malformedInputs(t *testing.T) {
+	if h == nil {
+		return
+	}
+	t.Helper()
+	valid := roomDiffBody(t, h.loadFrame(t), kernelOf(t, h.serverRoom), h.serverRoom, 2)
+	// Sanity: the unmodified request must be accepted, otherwise every 4xx
+	// below could just be the route being missing.
+	_, status := doRoomDiff(t, h.srv, h.deployment, h.roomID, valid)
+	must.Equal(t, status, 200, "unmodified room_diff request")
+
+	cases := map[string]func(map[string]interface{}){
+		"UnknownDigestType": func(b map[string]interface{}) { b["digest_type"] = "nope" },
+		"UndecodableSketch": func(b map[string]interface{}) { b["local_sketches"] = []string{"!!not-base64!!"} },
+		"ZeroCapacity": func(b map[string]interface{}) {
+			b["requests"] = []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 0}}
+		},
+		"UnknownFrame":         func(b map[string]interface{}) { b["frame_id"] = "not-a-frame" },
+		"MalformedFrameAnchor": func(b map[string]interface{}) { b["frame_event_ids"] = []string{"not-an-event-id"} },
+	}
+	for name, mutate := range cases {
+		t.Run("Homeserver/"+name, func(t *testing.T) {
+			body := map[string]interface{}{}
+			for k, v := range valid {
+				body[k] = v
+			}
+			mutate(body)
+			_, status := doRoomDiff(t, h.srv, h.deployment, h.roomID, body)
+			must.Equal(t, status >= 400 && status < 500 && status != 404, true,
+				"malformed room_diff must be a client error, not success, 404 or 5xx")
 		})
+	}
+}
 
-		local := kernelOf(t, serverRoom)
-		response := requestRoomDiff(t, srv, deployment, roomID, local, serverRoom, 2)
-		missing := stringsOf(response.Get("missing_event_ids"))
-		must.Equal(t, slices.Contains(missing, eventID), true, "homeserver event is reported missing from the requester")
-		must.Equal(t, len(response.Get("requester_only_short_ids").Array()), 0, "no requester-only events")
-	})
+func (h *homeserverSide) loadFrame(t *testing.T) frame {
+	t.Helper()
+	return loadFrame(t, h.srv, h.deployment, h.roomID)
+}
 
-	t.Run("SymmetricDifference", func(t *testing.T) {
-		extra := srv.MustCreateEvent(t, serverRoom, federation.Event{
-			Sender:  charlie,
-			Type:    "m.room.message",
-			Content: map[string]interface{}{"body": "remote-only MSC4521 event"},
-		})
-		serverRoom.AddEvent(extra)
-
-		local := kernelOf(t, serverRoom)
-		response := requestRoomDiff(t, srv, deployment, roomID, local, serverRoom, 8)
-		must.Equal(t, len(response.Get("missing_event_ids").Array()) > 0, true, "homeserver-only events are reported")
-		wantShort := shortID(reconcileHash(t, extra.EventID()))
-		must.Equal(t, slices.Contains(stringsOf(response.Get("requester_only_short_ids")), wantShort), true,
-			"requester-only event is reported by short ID")
-	})
-
-	t.Run("MalformedInputs", func(t *testing.T) {
-		local := kernelOf(t, serverRoom)
-		valid := roomDiffBody(t, loadFrame(t, srv, deployment, roomID), local, serverRoom, 2)
-
-		for name, mutate := range map[string]func(map[string]interface{}){
-			"UnknownDigestType": func(b map[string]interface{}) { b["digest_type"] = "nope" },
-			"UndecodableSketch": func(b map[string]interface{}) { b["local_sketches"] = []string{"!!not-base64!!"} },
-			"ZeroCapacity": func(b map[string]interface{}) {
-				b["requests"] = []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 0}}
-			},
-			"UnknownFrame":         func(b map[string]interface{}) { b["frame_id"] = "not-a-frame" },
-			"MalformedFrameAnchor": func(b map[string]interface{}) { b["frame_event_ids"] = []string{"not-an-event-id"} },
-		} {
-			t.Run(name, func(t *testing.T) {
-				body := map[string]interface{}{}
-				for k, v := range valid {
-					body[k] = v
-				}
-				mutate(body)
-				_, status := doRoomDiff(t, srv, deployment, roomID, body)
-				// A malformed request is the requester's fault: a client error,
-				// never a success and never a server error.
-				must.Equal(t, status >= 400 && status < 500, true, "malformed room_diff must be a 4xx")
-			})
-		}
-	})
+func (h *homeserverSide) diff(t *testing.T, local reconcile.ResidentKernel, capacity int) gjson.Result {
+	t.Helper()
+	body, status := doRoomDiff(t, h.srv, h.deployment, h.roomID, roomDiffBody(t, h.loadFrame(t), local, h.serverRoom, capacity))
+	must.Equal(t, status, 200, "room diff status")
+	return gjson.ParseBytes(body)
 }
 
 // kernelOf builds the requester's view of the set from its own timeline.
@@ -153,14 +204,6 @@ func roomDiffBody(t *testing.T, f frame, local reconcile.ResidentKernel, room *f
 		"local_sketches":          []string{sketch.Encode()},
 		"limit":                   100,
 	}
-}
-
-func requestRoomDiff(t *testing.T, srv *federation.Server, deployment complement.Deployment, roomID string, local reconcile.ResidentKernel, room *federation.ServerRoom, capacity int) gjson.Result {
-	t.Helper()
-	f := loadFrame(t, srv, deployment, roomID)
-	body, status := doRoomDiff(t, srv, deployment, roomID, roomDiffBody(t, f, local, room, capacity))
-	must.Equal(t, status, 200, "room diff status")
-	return gjson.ParseBytes(body)
 }
 
 func doRoomDiff(t *testing.T, srv *federation.Server, deployment complement.Deployment, roomID string, body map[string]interface{}) ([]byte, int) {
