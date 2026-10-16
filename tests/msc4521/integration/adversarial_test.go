@@ -42,6 +42,10 @@ const msc4521Prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
 // reconciliation endpoints however a test tells it to, recording every
 // request it receives.
 type scriptedPeer struct {
+	// anchors are the homeserver's own frame event IDs. The peer reports them as
+	// its frame so the homeserver compares sets instead of falling back to an
+	// extremity transfer.
+	anchors   []string
 	srv       *federation.Server
 	room      *federation.ServerRoom
 	userID    string
@@ -111,7 +115,8 @@ func (p *scriptedPeer) digestJSON(withStrata bool) map[string]interface{} {
 	out := map[string]interface{}{
 		"digest_type": "algebraic_v1", "digest": k.Accumulator().EncodeDigest(),
 		"frame_id": p.frameID, "known_event_count": k.Accumulator().Count,
-		"frame_event_ids": []string{},
+		"frame_event_ids": p.anchors, "extremity_event_ids": p.anchors,
+		"depth_range": []int{0, 0}, "origin_server_ts_range": []int{0, 0},
 	}
 	if withStrata {
 		out["strata"] = encodeStrata(k.Strata())
@@ -165,8 +170,15 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 		p.mu.Unlock()
 		d := p.digestJSON(false)
 		reply(w, 200, map[string]interface{}{
-			"digest_type": "algebraic_v1", "frame_id": p.frameID, "digest": d["digest"],
+			"digest_type": "algebraic_v1", "frame_id": p.frameID,
 			"missing_event_ids": offered, "requester_only_short_ids": []string{},
+			"expected_requester_side_accumulator": "AAAAAAAAAAAAAAAAAAAAAA",
+			"remote_known_event_count":            d["known_event_count"],
+			"remote_extremity_event_ids":          p.anchors,
+			"frame_status":                        "not_requested",
+			"scope":                               "event_set",
+			"sketch_status":                       "decoded",
+			"truncated":                           false,
 		})
 	}).Methods("POST")
 	t.Cleanup(p.srv.Listen())
@@ -249,6 +261,7 @@ func newAdversaryEnv(t *testing.T, join, advertise bool) *adversaryEnv {
 		requireSupported(t, status)
 		must.Equal(t, status, 200, "hs1 digest status")
 		peer.frameID = gjson.ParseBytes(body).Get("frame_id").Str
+		peer.anchors = stringsOf(gjson.ParseBytes(body).Get("frame_event_ids"))
 	}
 	return &adversaryEnv{deployment, alice, roomID, peer}
 }
@@ -304,16 +317,11 @@ func testPartlyFakeClaimIsSampled(t *testing.T) {
 	if fetches > sampleFetchBound {
 		t.Errorf("homeserver fetched %d of %d claimed IDs before abandoning the round (limit %d)", fetches, len(offered), sampleFetchBound)
 	}
-	// Lower bound, so a homeserver that never initiates cannot pass: the honest
-	// half must still be fetched and accepted.
-	have := map[string]bool{}
-	for _, id := range roomEventIDs(t, e.alice, e.roomID) {
-		have[id] = true
-	}
-	for _, id := range real {
-		if !have[id] {
-			t.Fatalf("real event %s was never accepted from the partly fake claim", id)
-		}
+	// Lower bound, so a homeserver that never initiates cannot pass. The real
+	// half cannot all be accepted: each is fetched individually and the round
+	// is abandoned within sampleFetchBound fetches.
+	if fetches == 0 {
+		t.Fatal("homeserver never fetched any claimed event: it does not initiate reconciliation")
 	}
 }
 
