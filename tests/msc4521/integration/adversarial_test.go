@@ -33,7 +33,7 @@ const (
 	settle             = 20 * time.Second
 )
 
-const msc4521Prefix = "/_matrix/federation/unstable/tk.nutra.msc4521/"
+const msc4521Prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
 
 // scriptedPeer is a federation server that joins a room and answers the
 // reconciliation endpoints however a test tells it to, recording every
