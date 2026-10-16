@@ -90,16 +90,16 @@ func testActiveRoomReconciliation(t *testing.T) {
 		serverRoom.AddEvent(extra)
 
 		local := reconcile.NewResidentKernel()
-		for _, event := range serverRoom.Timeline {
-			hash, err := reconcile.FromMatrixEventID(event.EventID(), reconcile.V4Plus)
+		for _, id := range eventIDs(serverRoom) {
+			hash, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
 			must.NotError(t, "hash remote event ID", err)
 			must.NotError(t, "insert remote event ID", local.Insert(hash))
 		}
 
 		sketch, err := reconcile.NewSyndromeSketch(2)
 		must.NotError(t, "new root sketch", err)
-		for _, event := range serverRoom.Timeline {
-			hash, err := reconcile.FromMatrixEventID(event.EventID(), reconcile.V4Plus)
+		for _, id := range eventIDs(serverRoom) {
+			hash, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
 			must.NotError(t, "hash remote event ID for sketch", err)
 			must.NotError(t, "toggle remote event ID", sketch.Toggle(hash.H64))
 		}
