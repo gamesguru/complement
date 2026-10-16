@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/url"
-	"os"
 	"slices"
 	"testing"
 
@@ -30,9 +29,7 @@ import (
 // homeserverSide is the real-homeserver half of testSetReconciliation.
 // A remote federation server holds the requester's side of a room's event set,
 // hs1 holds the other, and the library's own reconciliation client recovers the
-// difference over /room_digest and /room_diff. A nil *homeserverSide means no
-// Complement runner is configured; every scenario method is then a no-op and
-// the test reduces to its library checks.
+// difference over /room_digest and /room_diff.
 type homeserverSide struct {
 	deployment complement.Deployment
 	alice      *client.CSAPI
@@ -52,10 +49,6 @@ type scenarioRoom struct {
 
 func newHomeserverSide(t *testing.T) *homeserverSide {
 	t.Helper()
-	if os.Getenv("COMPLEMENT_BASE_IMAGE") == "" {
-		t.Log("no Complement runner: running the library checks only")
-		return nil
-	}
 	deployment := complement.Deploy(t, 1)
 	t.Cleanup(func() { deployment.Destroy(t) })
 
@@ -318,9 +311,6 @@ var rootBucket = []reconcile.BucketRequest{{Depth: 0, Prefix: 0, Capacity: 2}}
 // wireFormat: hs1's digest, count and strata for a room both sides agree on
 // decode with the library to exactly what the library computes locally.
 func (h *homeserverSide) wireFormat(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	local := r.kernel(t)
@@ -333,9 +323,6 @@ func (h *homeserverSide) wireFormat(t *testing.T) {
 // identicalSets: with nothing to reconcile both sides agree and hs1 reports no
 // difference.
 func (h *homeserverSide) identicalSets(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	response := h.diff(t, r, r.kernel(t), r.h64s(t), rootBucket)
@@ -346,9 +333,6 @@ func (h *homeserverSide) identicalSets(t *testing.T) {
 // oneSidedChanges: an event only hs1 has is reported by ID, and nothing is
 // reported as requester-only.
 func (h *homeserverSide) oneSidedChanges(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -361,9 +345,6 @@ func (h *homeserverSide) oneSidedChanges(t *testing.T) {
 // symmetricDifference: each side has an event the other lacks, and both are
 // recovered.
 func (h *homeserverSide) symmetricDifference(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -375,9 +356,6 @@ func (h *homeserverSide) symmetricDifference(t *testing.T) {
 // adaptiveBuckets: the library client selects its own requests for a small
 // difference and resolves it against hs1 in one decoded round.
 func (h *homeserverSide) adaptiveBuckets(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -390,9 +368,6 @@ func (h *homeserverSide) adaptiveBuckets(t *testing.T) {
 // mixedBucketBatch: several buckets in one request are decoded independently
 // and their roots, grouped by prefix, add up to the whole difference.
 func (h *homeserverSide) mixedBucketBatch(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -411,9 +386,6 @@ func (h *homeserverSide) mixedBucketBatch(t *testing.T) {
 // bucketEscalation: a bucket smaller than the difference is reported as
 // capacity_exceeded and the client retries it with a larger capacity.
 func (h *homeserverSide) bucketEscalation(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addRequesterEvents(t, r, 3)
@@ -427,9 +399,6 @@ func (h *homeserverSide) bucketEscalation(t *testing.T) {
 // bucketSplit: a difference beyond the per-bucket maximum splits the bucket
 // into deeper children until each decodes.
 func (h *homeserverSide) bucketSplit(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addRequesterEvents(t, r, reconcile.MaxBucketSketchCapacity+8)
@@ -448,9 +417,6 @@ func (h *homeserverSide) bucketSplit(t *testing.T) {
 // validateBucketRequests: hs1 accepts a well-formed antichain and rejects
 // malformed bucket sets as a client error.
 func (h *homeserverSide) validateBucketRequests(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	local, h64s, f := r.kernel(t), r.h64s(t), h.loadFrame(t, r)
@@ -478,9 +444,6 @@ func (h *homeserverSide) validateBucketRequests(t *testing.T) {
 // of exactly what the requester holds alone, so it is zero when the requester
 // has nothing extra and equals the requester-only elements otherwise.
 func (h *homeserverSide) residualVerification(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -503,9 +466,6 @@ func (h *homeserverSide) residualVerification(t *testing.T) {
 // malformedInputs: a malformed room_diff is the requester's fault, so it must
 // be a client error other than "route not found".
 func (h *homeserverSide) malformedInputs(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	valid := diffBody(t, h.loadFrame(t, r), r.kernel(t), r.h64s(t), rootBucket)
@@ -541,9 +501,6 @@ func (h *homeserverSide) malformedInputs(t *testing.T) {
 // is reported by its ID, and a short identifier that belongs to no event is
 // reported as requester-only rather than being turned into an event ID.
 func (h *homeserverSide) eventIDBinding(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)
@@ -564,9 +521,6 @@ func (h *homeserverSide) eventIDBinding(t *testing.T) {
 // estimateDelta: the library's strata estimate computed from hs1's own strata
 // covers a known two-element symmetric difference.
 func (h *homeserverSide) estimateDelta(t *testing.T) {
-	if h == nil {
-		return
-	}
 	t.Helper()
 	r := h.newRoom(t)
 	h.addHomeserverEvents(t, r, 1)

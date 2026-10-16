@@ -15,11 +15,10 @@ import (
 
 // testSetReconciliation checks the adaptive set reconciliation proposal
 // at two levels superimposed in one test. Every scenario first runs against the
-// gomatrixcrypto/reconcile primitives, which needs no homeserver, and, when a
-// Complement runner is configured, then against a real homeserver: the same
-// scenario, driven through the library's requester client over the
-// /room_digest and /room_diff federation endpoints. Without a runner this is a
-// plain go test of the library half.
+// gomatrixcrypto/reconcile primitives and then against a real homeserver: the
+// same scenario, driven through the library's requester client over the
+// /room_digest and /room_diff federation endpoints. It needs the Complement
+// runner; there is no library-only mode.
 func testSetReconciliation(t *testing.T) {
 	hs := newHomeserverSide(t)
 

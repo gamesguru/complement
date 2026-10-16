@@ -30,6 +30,9 @@ type cluster struct {
 	proxy      *linkproxy.Proxy
 	users      []*client.CSAPI
 	roomID     string
+	// known is every event ID the test itself created or saw at setup, so the
+	// expected digest never depends on how far federation has got.
+	known []string
 }
 
 func newCluster(t *testing.T, n int) *cluster {
@@ -61,30 +64,47 @@ func newCluster(t *testing.T, n int) *cluster {
 		c.users[i].MustJoinRoom(t, c.roomID, []spec.ServerName{hs1})
 	}
 	prober.MustJoinRoom(t, deployment, hs1, c.roomID, prober.UserID("prober"))
+	// Every join went through hs1, so its timeline is the complete baseline.
+	// Wait until all homeservers (and the prober's access) agree on it.
+	c.known = roomEventIDs(t, c.users[0], c.roomID)
+	want, count := c.expectedDigest(t)
+	c.waitDigest(t, c.all(), want, count, "the cluster to agree on its starting state")
 	return c
 }
 
 func (c *cluster) say(t *testing.T, i int, body string) string {
 	t.Helper()
-	return c.users[i].SendEventSynced(t, c.roomID, b.Event{
+	id := c.users[i].SendEventSynced(t, c.roomID, b.Event{
 		Type: "m.room.message", Content: map[string]interface{}{"msgtype": "m.text", "body": body},
 	})
+	c.known = append(c.known, id)
+	return id
 }
 
-func (c *cluster) digestOf(t *testing.T, i int) (string, int64) {
+// tryDigest reads a homeserver's digest without failing on a non-200, which is
+// normal while a join or a partition is still propagating.
+func (c *cluster) tryDigest(t *testing.T, i int) (string, int64, int) {
 	t.Helper()
 	body, status := getRoomDigestFrom(t, c.prober, c.deployment, hsName(i), c.roomID, "")
 	requireSupported(t, status)
-	must.Equal(t, status, 200, hsName(i)+" digest status")
+	if status != 200 {
+		return "", 0, status
+	}
 	d := gjson.ParseBytes(body)
-	return d.Get("digest").Str, d.Get("known_event_count").Int()
+	return d.Get("digest").Str, d.Get("known_event_count").Int(), status
 }
 
-// expectedDigest is the digest and count of every event in the room as seen by user 0.
+// expectedDigest is the digest and count of every event the test knows is in
+// the room.
 func (c *cluster) expectedDigest(t *testing.T) (string, int64) {
 	t.Helper()
 	k := reconcile.NewResidentKernel()
-	for _, id := range roomEventIDs(t, c.users[0], c.roomID) {
+	seen := map[string]bool{}
+	for _, id := range c.known {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		h, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
 		must.NotError(t, "hash event", err)
 		must.NotError(t, "insert event", k.Insert(h))
@@ -92,24 +112,27 @@ func (c *cluster) expectedDigest(t *testing.T) (string, int64) {
 	return k.Accumulator().EncodeDigest(), int64(k.Accumulator().Count)
 }
 
-// waitDigest waits until every listed homeserver reports the given digest and count.
+// waitDigest waits until every listed homeserver reports the given digest and
+// count. Local federation settles in seconds, so a long wait only hides a bug.
 func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count int64, what string) {
 	t.Helper()
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
-		ok := true
+		ok, last := true, ""
 		for _, i := range servers {
-			if d, n := c.digestOf(t, i); d != digest || n != count {
+			d, n, status := c.tryDigest(t, i)
+			if status != 200 || d != digest || n != count {
 				ok = false
+				last = fmt.Sprintf("%s: status %d, count %d (want %d), digest match %t", hsName(i), status, n, count, d == digest)
 			}
 		}
 		if ok {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
+			t.Fatalf("timed out waiting for %s; last mismatch: %s", what, last)
 		}
-		time.Sleep(time.Second)
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
