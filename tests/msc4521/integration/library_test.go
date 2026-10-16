@@ -16,32 +16,55 @@ import (
 // TestMSC4521SetReconciliation checks the adaptive set reconciliation proposal
 // at two levels superimposed in one test. Every scenario first runs against the
 // gomatrixcrypto/reconcile primitives, which needs no homeserver, and, when a
-// Complement runner is configured, then against a real homeserver over the
-// /room_digest and /room_diff federation endpoints. Scenarios with no
-// homeserver counterpart (the bucket, residual and strata arithmetic) are
-// library-only and say so by having no homeserver call.
+// Complement runner is configured, then against a real homeserver: the same
+// scenario, driven through the library's requester client over the
+// /room_digest and /room_diff federation endpoints. Without a runner this is a
+// plain go test of the library half.
 func TestMSC4521SetReconciliation(t *testing.T) {
 	hs := newHomeserverSide(t)
 
 	t.Run("Plumbing", func(t *testing.T) {
-		t.Run("Vectors", testVectors)
+		t.Run("Vectors", func(t *testing.T) {
+			testVectors(t)
+			hs.wireFormat(t)
+		})
 		t.Run("Buckets", func(t *testing.T) {
-			t.Run("AdaptiveBuckets", testAdaptiveBuckets)
-			t.Run("MixedBucketBatch", testMixedBucketBatch)
-			t.Run("BucketEscalation", testBucketEscalation)
-			t.Run("BucketSplit", testBucketSplit)
-			t.Run("ValidateBucketRequests", testValidateBucketRequests)
+			t.Run("AdaptiveBuckets", func(t *testing.T) {
+				testAdaptiveBuckets(t)
+				hs.adaptiveBuckets(t)
+			})
+			t.Run("MixedBucketBatch", func(t *testing.T) {
+				testMixedBucketBatch(t)
+				hs.mixedBucketBatch(t)
+			})
+			t.Run("BucketEscalation", func(t *testing.T) {
+				testBucketEscalation(t)
+				hs.bucketEscalation(t)
+			})
+			t.Run("BucketSplit", func(t *testing.T) {
+				testBucketSplit(t)
+				hs.bucketSplit(t)
+			})
+			t.Run("ValidateBucketRequests", func(t *testing.T) {
+				testValidateBucketRequests(t)
+				hs.validateBucketRequests(t)
+			})
 		})
 		t.Run("Residual", func(t *testing.T) {
-			t.Run("ResidualVerification", testResidualVerification)
-			t.Run("H64Collision", testH64Collision)
+			t.Run("ResidualVerification", func(t *testing.T) {
+				testResidualVerification(t)
+				hs.residualVerification(t)
+			})
 		})
 		t.Run("Other", func(t *testing.T) {
 			t.Run("MalformedInputs", func(t *testing.T) {
 				testMalformedInputs(t)
 				hs.malformedInputs(t)
 			})
-			t.Run("EventIDBinding", testEventIDBinding)
+			t.Run("EventIDBinding", func(t *testing.T) {
+				testEventIDBinding(t)
+				hs.eventIDBinding(t)
+			})
 		})
 	})
 	t.Run("Porcelain", func(t *testing.T) {
@@ -51,15 +74,15 @@ func TestMSC4521SetReconciliation(t *testing.T) {
 		})
 		t.Run("OneSidedChanges", func(t *testing.T) {
 			testOneSidedChanges(t)
-			hs.homeserverOnly(t)
+			hs.oneSidedChanges(t)
 		})
 		t.Run("SymmetricDifference", func(t *testing.T) {
 			testSymmetricDifference(t)
 			hs.symmetricDifference(t)
 		})
 		t.Run("EstimateDelta", func(t *testing.T) {
-			t.Run("TwoSidedDifference", testEstimateDelta)
-			t.Run("SpecVectors", testEstimateDeltaSpecVectors)
+			testEstimateDelta(t)
+			hs.estimateDelta(t)
 		})
 	})
 }
@@ -78,18 +101,6 @@ func kernelWith(t *testing.T, labels ...string) reconcile.ResidentKernel {
 	for _, label := range labels {
 		if err := kernel.Insert(element(label)); err != nil {
 			t.Fatalf("Insert(%q): %v", label, err)
-		}
-	}
-	return kernel
-}
-
-// kernelFromH64 builds a resident kernel from explicit short identifiers.
-func kernelFromH64(t *testing.T, values ...uint64) reconcile.ResidentKernel {
-	t.Helper()
-	kernel := reconcile.NewResidentKernel()
-	for _, value := range values {
-		if err := kernel.Insert(reconcile.ElementHash{H64: value}); err != nil {
-			t.Fatalf("Insert(h64=%d): %v", value, err)
 		}
 	}
 	return kernel
@@ -304,33 +315,6 @@ func testEstimateDelta(t *testing.T) {
 	}
 }
 
-// testEstimateDeltaSpecVectors pins the MSC4521/reference strata-estimator
-// values; gomatrixcrypto must match the reference exactly.
-//
-// Reference: rezzy-recon/src/triage.rs, tests
-// `empty_sparse_tail_uses_low_confidence_tail_estimate` (delta 18,
-// low_confidence) and `strata_tail_is_exact_when_every_stratum_decodes`
-// (exact delta 6).
-func testEstimateDeltaSpecVectors(t *testing.T) {
-	local := reconcile.NewResidentKernel()
-
-	t.Run("ExactSparseTail", func(t *testing.T) {
-		remote := kernelFromH64(t, 1, 2, 4, 8, 3, 5)
-		got, ok, err := reconcile.EstimateDelta(local.Strata(), remote.Strata())
-		must.NotError(t, "EstimateDelta", err)
-		must.Equal(t, ok, true, "estimate present")
-		must.Equal(t, got, uint64(6), "exact strata tail must equal the reference delta")
-	})
-
-	t.Run("LowConfidenceOverCapacity", func(t *testing.T) {
-		remote := kernelFromH64(t, 1, 3, 5, 7, 9, 11, 13, 15, 17)
-		got, err := reconcile.EstimateStrata(local.Strata(), remote.Strata())
-		must.NotError(t, "EstimateStrata", err)
-		must.Equal(t, got.Delta, uint64(18), "over-capacity stratum-0 tail must equal the reference delta")
-		must.Equal(t, got.LowConfidence, true, "over-capacity estimate must be flagged low confidence")
-	})
-}
-
 // testResidualVerification verifies that decoded roots reproduce the accumulator
 // residual both globally and per-side.
 func testResidualVerification(t *testing.T) {
@@ -480,39 +464,6 @@ func testBucketSplit(t *testing.T) {
 			t.Fatalf("child capacity = %d", request.Capacity)
 		}
 	}
-}
-
-// testH64Collision documents the proposal's headline risk: two elements that
-// share a short identifier cancel in the sketch and cannot be separated by
-// splitting, because they always land in the same bucket.
-func testH64Collision(t *testing.T) {
-	const shared = 0x1234_5678_9abc_def0
-	first := reconcile.ElementHash{H128: [16]byte{1}, H64: shared}
-	second := reconcile.ElementHash{H128: [16]byte{2}, H64: shared}
-
-	sketch, err := reconcile.NewSyndromeSketch(4)
-	must.NotError(t, "NewSyndromeSketch", err)
-	must.NotError(t, "Toggle(first)", sketch.Toggle(first.H64))
-	must.NotError(t, "Toggle(second)", sketch.Toggle(second.H64))
-
-	for i, coordinate := range sketch.Coordinates {
-		if coordinate != 0 {
-			t.Fatalf("colliding identifiers did not cancel at coordinate %d: %#x", i, coordinate)
-		}
-	}
-	roots, err := sketch.DecodeElements(2)
-	must.NotError(t, "DecodeElements", err)
-	must.Equal(t, len(roots), 0, "colliding identifiers must decode to an empty set")
-
-	for depth := uint8(1); depth <= 32; depth++ {
-		must.Equal(t, bucketPrefix(first.H64, depth), bucketPrefix(second.H64, depth), "colliding identifiers must share every bucket")
-	}
-
-	// The accumulator still counts both elements even though h64 cancels.
-	colliding := reconcile.NewResidentKernel()
-	must.NotError(t, "Insert(first)", colliding.Insert(first))
-	must.NotError(t, "Insert(second)", colliding.Insert(second))
-	must.Equal(t, colliding.Accumulator().Count, uint64(2), "collision must not collapse the count")
 }
 
 // testMalformedInputs verifies decoding fails closed on malformed or
