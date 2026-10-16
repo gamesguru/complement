@@ -96,12 +96,36 @@ func (h *homeserverSide) addRequesterEvents(t *testing.T, r *scenarioRoom, n int
 	}
 }
 
-// h64s is the requester's set, from its own timeline.
+// eventIDs is the requester's set: every event in the mock room's current
+// state and its timeline, once each.
+func eventIDs(room *federation.ServerRoom) []string {
+	var ids []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	room.StateMutex.RLock()
+	for _, event := range room.State {
+		add(event.EventID())
+	}
+	room.StateMutex.RUnlock()
+	room.TimelineMutex.RLock()
+	for _, event := range room.Timeline {
+		add(event.EventID())
+	}
+	room.TimelineMutex.RUnlock()
+	return ids
+}
+
+// h64s is the requester's set as short identifiers.
 func (r *scenarioRoom) h64s(t *testing.T) []uint64 {
 	t.Helper()
 	var out []uint64
-	for _, event := range r.room.Timeline {
-		out = append(out, reconcileHash(t, event.EventID()))
+	for _, id := range eventIDs(r.room) {
+		out = append(out, reconcileHash(t, id))
 	}
 	return out
 }
@@ -256,7 +280,10 @@ func diffBody(t *testing.T, f frame, local reconcile.ResidentKernel, h64s []uint
 	var wire []map[string]interface{}
 	var sketches []string
 	for _, request := range requests {
-		sketch, err := reconcile.NewSyndromeSketch(request.Capacity)
+		// The library cannot build a sketch above the per-bucket maximum, so an
+		// over-capacity request carries a maximum-size sketch and is rejected on
+		// the request itself.
+		sketch, err := reconcile.NewSyndromeSketch(min(request.Capacity, reconcile.MaxBucketSketchCapacity))
 		must.NotError(t, "new bucket sketch", err)
 		for _, h64 := range h64s {
 			if bucketPrefix(h64, request.Depth) == request.Prefix {
@@ -533,12 +560,12 @@ func (h *homeserverSide) estimateDelta(t *testing.T) {
 	must.Equal(t, estimate >= 2, true, "estimate covers the 2-element symmetric difference")
 }
 
-// kernelOf builds the requester's view of the set from its own timeline.
+// kernelOf builds the requester's view of the set from its own room.
 func kernelOf(t *testing.T, room *federation.ServerRoom) reconcile.ResidentKernel {
 	t.Helper()
 	kernel := reconcile.NewResidentKernel()
-	for _, event := range room.Timeline {
-		hash, err := reconcile.FromMatrixEventID(event.EventID(), reconcile.V4Plus)
+	for _, id := range eventIDs(room) {
+		hash, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
 		must.NotError(t, "hash event ID", err)
 		must.NotError(t, "insert event ID", kernel.Insert(hash))
 	}
