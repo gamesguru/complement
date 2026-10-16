@@ -1,6 +1,6 @@
 //go:build !dendrite_blacklist && !venator_blacklist
 
-package activeedurecon
+package integration
 
 import (
 	"context"

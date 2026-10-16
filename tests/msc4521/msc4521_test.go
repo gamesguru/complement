@@ -17,7 +17,7 @@ import (
 // adaptive set reconciliation proposal. The suite deliberately exercises the
 // gomatrixcrypto/reconcile primitives directly so the protocol logic can be
 // verified without a homeserver. The existing federation-facing digest,
-// strata, and room_diff endpoints are covered in active_edu_recon.
+// strata, and room_diff endpoints are covered in tests/msc4521/integration.
 func TestMSC4521SetReconciliation(t *testing.T) {
 	t.Run("Plumbing", func(t *testing.T) {
 		t.Run("Vectors", testVectors)

@@ -2,7 +2,7 @@
 
 // Venator does not yet implement federation.
 
-package activeedurecon
+package integration
 
 import (
 	"context"

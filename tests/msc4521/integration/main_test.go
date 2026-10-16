@@ -1,6 +1,6 @@
 //go:build !dendrite_blacklist && !venator_blacklist
 
-package activeedurecon
+package integration
 
 import (
 	"testing"
@@ -9,5 +9,5 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	complement.TestMain(m, "msc4521_active_edu_recon")
+	complement.TestMain(m, "msc4521_integration")
 }
