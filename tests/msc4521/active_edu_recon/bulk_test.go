@@ -63,126 +63,169 @@ func TestMSC4521BulkReconciliation(t *testing.T) {
 	if os.Getenv("COMPLEMENT_MSC4521_BULK") == "" {
 		t.Skip("set COMPLEMENT_MSC4521_BULK=1 with an MSC4521-capable image that initiates reconciliation")
 	}
+	e := newBulkEnv(t)
+	e.joinHomeservers(t)
+	e.joinOrigins(t)
+	e.waitForBaseSet(t)
+
+	t.Run("DigestAndStrata", e.testDigestAndStrata)
+	e.seed(t)
+	t.Run("SparseStart", e.testSparseStart)
+	t.Run("Converges", e.testConverges)
+	t.Run("ExactEventSet", e.testExactEventSet)
+	t.Run("NoFallbackToOrigins", e.testNoFallbackToOrigins)
+}
+
+type bulkOrigin struct {
+	srv  *federation.Server
+	room *federation.ServerRoom
+	user string
+}
+
+// bulkEnv holds the state shared by the bulk test's phases.
+type bulkEnv struct {
+	deployment complement.Deployment
+	prober     *federation.Server
+	hs1        spec.ServerName
+	users      []*client.CSAPI
+	roomID     string
+	origins    []bulkOrigin
+
+	mu             sync.Mutex
+	originRequests []string
+
+	baseIDs     []string
+	baseDigest  string
+	expected    reconcile.ResidentKernel
+	expectedIDs []string
+	shortToID   map[uint64]string
+	wantDigest  string
+	wantCount   int64
+}
+
+func hsName(i int) string { return fmt.Sprintf("hs%d", i+1) }
+
+func newBulkEnv(t *testing.T) *bulkEnv {
+	t.Helper()
 	deployment := complement.Deploy(t, numGossipers)
-	defer deployment.Destroy(t)
-
-	hsName := func(i int) string { return fmt.Sprintf("hs%d", i+1) }
-	hs1 := deployment.GetFullyQualifiedHomeserverName(t, "hs1")
-
+	t.Cleanup(func() { deployment.Destroy(t) })
 	// Prober: a scripted server that only queries digests/room_diff.
 	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
-	cancelProber := prober.Listen()
-	defer cancelProber()
-
-	// 16 real homeservers join one room and each originates a real event.
-	users := make([]*client.CSAPI, numGossipers)
-	for i := range users {
-		users[i] = deployment.Register(t, hsName(i), helpers.RegistrationOpts{})
+	t.Cleanup(prober.Listen())
+	return &bulkEnv{
+		deployment: deployment,
+		prober:     prober,
+		hs1:        deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 	}
-	roomID := users[0].MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+}
+
+// joinHomeservers has all homeservers join one room and each originate a real event.
+func (e *bulkEnv) joinHomeservers(t *testing.T) {
+	t.Helper()
+	e.users = make([]*client.CSAPI, numGossipers)
+	for i := range e.users {
+		e.users[i] = e.deployment.Register(t, hsName(i), helpers.RegistrationOpts{})
+	}
+	e.roomID = e.users[0].MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
 	for i := 1; i < numGossipers; i++ {
-		users[i].MustJoinRoom(t, roomID, []spec.ServerName{hs1})
+		e.users[i].MustJoinRoom(t, e.roomID, []spec.ServerName{e.hs1})
 	}
-	for i := range users {
-		users[i].SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "base from " + hsName(i)}})
+	for i := range e.users {
+		e.users[i].SendEventSynced(t, e.roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "base from " + hsName(i)}})
 	}
+}
 
-	// 16 scripted origins, each a distinct server name and signing identity.
-	var mu sync.Mutex
-	var originRequests []string
-	type origin struct {
-		srv  *federation.Server
-		room *federation.ServerRoom
-		user string
-	}
-	origins := make([]origin, numGossipers)
-	for i := range origins {
+// joinOrigins creates the scripted origins, each a distinct server name and
+// signing identity, that answer 404 to everything and record it.
+func (e *bulkEnv) joinOrigins(t *testing.T) {
+	t.Helper()
+	e.origins = make([]bulkOrigin, numGossipers)
+	for i := range e.origins {
 		i := i
-		srv := federation.NewServer(t, deployment,
+		srv := federation.NewServer(t, e.deployment,
 			federation.HandleKeyRequests(),
 			federation.HandleTransactionRequests(nil, nil),
 		)
 		srv.Mux().NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			mu.Lock()
-			originRequests = append(originRequests, fmt.Sprintf("origin%d %s %s", i, r.Method, r.URL.Path))
-			mu.Unlock()
+			e.mu.Lock()
+			e.originRequests = append(e.originRequests, fmt.Sprintf("origin%d %s %s", i, r.Method, r.URL.Path))
+			e.mu.Unlock()
 			w.WriteHeader(http.StatusNotFound)
 		})
-		defer srv.Listen()()
-		origins[i].srv = srv
-		origins[i].user = srv.UserID("origin")
-		origins[i].room = srv.MustJoinRoom(t, deployment, hs1, roomID, origins[i].user)
+		t.Cleanup(srv.Listen())
+		user := srv.UserID("origin")
+		e.origins[i] = bulkOrigin{srv: srv, user: user, room: srv.MustJoinRoom(t, e.deployment, e.hs1, e.roomID, user)}
 	}
+}
 
-	// Let every homeserver agree on the base set (all joins, base messages) and
-	// capture it exactly.
-	digestOf := func(hs string) gjson.Result {
-		body, status := getRoomDigestFrom(t, prober, deployment, hs, roomID, "")
-		must.Equal(t, status, 200, hs+" room digest status")
-		return gjson.ParseBytes(body)
-	}
-	waitAll := func(want func(gjson.Result) bool, what string, onFirst func(int)) {
-		t.Helper()
-		start := time.Now()
-		done := make([]bool, numGossipers)
-		for {
-			n := 0
-			for i := 0; i < numGossipers; i++ {
-				if !done[i] && want(digestOf(hsName(i))) {
-					done[i] = true
-					if onFirst != nil {
-						onFirst(i)
-					}
-				}
-				if done[i] {
-					n++
+func (e *bulkEnv) digestOf(t *testing.T, hs string) gjson.Result {
+	t.Helper()
+	body, status := getRoomDigestFrom(t, e.prober, e.deployment, hs, e.roomID, "")
+	must.Equal(t, status, 200, hs+" room digest status")
+	return gjson.ParseBytes(body)
+}
+
+// waitAll polls every homeserver until want holds for all of them.
+func (e *bulkEnv) waitAll(t *testing.T, want func(gjson.Result) bool, what string, onFirst func(int)) {
+	t.Helper()
+	start := time.Now()
+	done := make([]bool, numGossipers)
+	for {
+		n := 0
+		for i := 0; i < numGossipers; i++ {
+			if !done[i] && want(e.digestOf(t, hsName(i))) {
+				done[i] = true
+				if onFirst != nil {
+					onFirst(i)
 				}
 			}
-			if n == numGossipers {
-				return
+			if done[i] {
+				n++
 			}
-			if time.Since(start) > 120*time.Second {
-				t.Fatalf("timed out waiting for %s: %d/%d homeservers ready", what, n, numGossipers)
-			}
-			time.Sleep(time.Second)
 		}
+		if n == numGossipers {
+			return
+		}
+		if time.Since(start) > 120*time.Second {
+			t.Fatalf("timed out waiting for %s: %d/%d homeservers ready", what, n, numGossipers)
+		}
+		time.Sleep(time.Second)
 	}
-	baseIDs := roomEventIDs(t, users[0], roomID)
-	baseKernel := reconcile.NewResidentKernel()
-	for _, id := range baseIDs {
+}
+
+// waitForBaseSet lets every homeserver agree on the base set (all joins, base
+// messages) and captures it exactly.
+func (e *bulkEnv) waitForBaseSet(t *testing.T) {
+	t.Helper()
+	e.baseIDs = roomEventIDs(t, e.users[0], e.roomID)
+	base := reconcile.NewResidentKernel()
+	for _, id := range e.baseIDs {
 		h, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
 		must.NotError(t, "hash base event", err)
-		must.NotError(t, "insert base event", baseKernel.Insert(h))
+		must.NotError(t, "insert base event", base.Insert(h))
 	}
-	baseDigest := baseKernel.Accumulator().EncodeDigest()
-	waitAll(func(d gjson.Result) bool {
-		return d.Get("digest").Str == baseDigest && d.Get("known_event_count").Int() == int64(len(baseIDs))
+	e.baseDigest = base.Accumulator().EncodeDigest()
+	e.waitAll(t, func(d gjson.Result) bool {
+		return d.Get("digest").Str == e.baseDigest && d.Get("known_event_count").Int() == int64(len(e.baseIDs))
 	}, "base set", nil)
+}
 
-	t.Run("DigestAndStrata", func(t *testing.T) {
-		d := digestOf("hs1")
-		must.Equal(t, d.Get("digest_type").Str, "algebraic_v1", "digest type")
-		body, status := getRoomDigestFrom(t, prober, deployment, "hs1", roomID, "/strata")
-		must.Equal(t, status, 200, "strata status")
-		must.Equal(t, len(gjson.ParseBytes(body).Get("strata").Array()), 32, "strata count")
-	})
-
-	// Seed: origin i -> homeserver i only. Every event hangs off the common tip.
-	tip := baseIDs[0]
-	if latest := roomLatestEventID(t, users[0], roomID); latest != "" {
+// seed sends origin i's events to homeserver i only. Every event hangs off the
+// common tip, so no homeserver is missing an ancestor.
+func (e *bulkEnv) seed(t *testing.T) {
+	t.Helper()
+	tip := e.baseIDs[0]
+	if latest := roomLatestEventID(t, e.users[0], e.roomID); latest != "" {
 		tip = latest
 	}
-	expected := reconcile.NewResidentKernel()
-	for _, id := range baseIDs {
-		h, _ := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
-		must.NotError(t, "insert", expected.Insert(h))
+	e.expected = reconcile.NewResidentKernel()
+	e.expectedIDs = nil
+	e.shortToID = map[uint64]string{}
+	for _, id := range e.baseIDs {
+		e.record(t, id)
 	}
-	expectedIDs := append([]string{}, baseIDs...)
-	shortToID := map[uint64]string{}
-	for _, id := range baseIDs {
-		shortToID[reconcileHash(t, id)] = id
-	}
-	for i, o := range origins {
+	for i, o := range e.origins {
+		dest := e.deployment.GetFullyQualifiedHomeserverName(t, hsName(i))
 		for j := 0; j < seededPerOrigin; j++ {
 			ev := o.srv.MustCreateEvent(t, o.room, federation.Event{
 				Type:       "m.room.message",
@@ -191,88 +234,101 @@ func TestMSC4521BulkReconciliation(t *testing.T) {
 				PrevEvents: []string{tip},
 			})
 			o.room.AddEvent(ev)
-			h, err := reconcile.FromMatrixEventID(ev.EventID(), reconcile.V4Plus)
-			must.NotError(t, "hash seeded event", err)
-			must.NotError(t, "insert seeded event", expected.Insert(h))
-			if prev, dup := shortToID[h.H64]; dup {
-				t.Fatalf("u64 collision in test data: %s vs %s", prev, ev.EventID())
-			}
-			shortToID[h.H64] = ev.EventID()
-			expectedIDs = append(expectedIDs, ev.EventID())
-			o.srv.MustSendTransaction(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, hsName(i)),
-				[]json.RawMessage{ev.JSON()}, nil)
+			e.record(t, ev.EventID())
+			o.srv.MustSendTransaction(t, e.deployment, dest, []json.RawMessage{ev.JSON()}, nil)
 		}
 	}
-	wantDigest := expected.Accumulator().EncodeDigest()
-	wantCount := int64(len(expectedIDs))
-	t.Logf("seeded %d events across %d origins; expecting %d total events (%d u64 short IDs)", numGossipers*seededPerOrigin, numGossipers, wantCount, len(shortToID))
+	e.wantDigest = e.expected.Accumulator().EncodeDigest()
+	e.wantCount = int64(len(e.expectedIDs))
+	t.Logf("seeded %d events across %d origins; expecting %d total events (%d u64 short IDs)", numGossipers*seededPerOrigin, numGossipers, e.wantCount, len(e.shortToID))
+}
 
-	// Sparse start: each homeserver must hold more than the base but fewer than all.
-	t.Run("SparseStart", func(t *testing.T) {
-		for i := 0; i < numGossipers; i++ {
-			d := digestOf(hsName(i))
-			// Allow an already-converged homeserver only if the system is fast; the
-			// real check is that the starting point was sparse for at least most.
-			if d.Get("known_event_count").Int() > wantCount {
-				t.Errorf("%s holds more events (%d) than the expected set (%d)", hsName(i), d.Get("known_event_count").Int(), wantCount)
-			}
+// record adds an event ID to the expected set, failing on a u64 collision.
+func (e *bulkEnv) record(t *testing.T, eventID string) {
+	t.Helper()
+	h, err := reconcile.FromMatrixEventID(eventID, reconcile.V4Plus)
+	must.NotError(t, "hash event", err)
+	must.NotError(t, "insert event", e.expected.Insert(h))
+	if prev, dup := e.shortToID[h.H64]; dup {
+		t.Fatalf("u64 collision in test data: %s vs %s", prev, eventID)
+	}
+	e.shortToID[h.H64] = eventID
+	e.expectedIDs = append(e.expectedIDs, eventID)
+}
+
+func (e *bulkEnv) testDigestAndStrata(t *testing.T) {
+	d := e.digestOf(t, "hs1")
+	must.Equal(t, d.Get("digest_type").Str, "algebraic_v1", "digest type")
+	body, status := getRoomDigestFrom(t, e.prober, e.deployment, "hs1", e.roomID, "/strata")
+	must.Equal(t, status, 200, "strata status")
+	must.Equal(t, len(gjson.ParseBytes(body).Get("strata").Array()), 32, "strata count")
+}
+
+// testSparseStart checks no homeserver already holds more than the expected set.
+// It is a weak check: it cannot prove the start was sparse once reconciliation
+// may already be running.
+func (e *bulkEnv) testSparseStart(t *testing.T) {
+	for i := 0; i < numGossipers; i++ {
+		got := e.digestOf(t, hsName(i)).Get("known_event_count").Int()
+		if got > e.wantCount {
+			t.Errorf("%s holds more events (%d) than the expected set (%d)", hsName(i), got, e.wantCount)
 		}
-	})
+	}
+}
 
-	t.Run("Converges", func(t *testing.T) {
-		start := time.Now()
-		waitAll(func(d gjson.Result) bool {
-			return d.Get("digest").Str == wantDigest && d.Get("known_event_count").Int() == wantCount
-		}, "exact expected set", func(i int) {
-			t.Logf("%s reached the exact expected set after %s", hsName(i), time.Since(start).Round(time.Millisecond))
+func (e *bulkEnv) testConverges(t *testing.T) {
+	start := time.Now()
+	e.waitAll(t, func(d gjson.Result) bool {
+		return d.Get("digest").Str == e.wantDigest && d.Get("known_event_count").Int() == e.wantCount
+	}, "exact expected set", func(i int) {
+		t.Logf("%s reached the exact expected set after %s", hsName(i), time.Since(start).Round(time.Millisecond))
+	})
+}
+
+// testExactEventSet goes beyond equal digests: a zero-difference room_diff
+// against each homeserver must find nothing missing in either direction.
+func (e *bulkEnv) testExactEventSet(t *testing.T) {
+	sketch, err := reconcile.NewSyndromeSketch(2)
+	must.NotError(t, "new sketch", err)
+	for h64 := range e.shortToID {
+		must.NotError(t, "toggle", sketch.Toggle(h64))
+	}
+	for i := 0; i < numGossipers; i++ {
+		d := e.digestOf(t, hsName(i))
+		req, err := json.Marshal(map[string]interface{}{
+			"mode": "sketch", "frame_id": d.Get("frame_id").Str,
+			"local_digest": e.wantDigest, "digest_type": "algebraic_v1",
+			"local_known_event_count": e.expected.Accumulator().Count,
+			"frame_event_ids":         d.Get("frame_event_ids").Value(), "estimated_delta": 0,
+			"requests":       []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 2}},
+			"local_sketches": []string{sketch.Encode()}, "limit": 100,
 		})
-	})
+		must.NotError(t, "encode room_diff", err)
+		resp := postRoomDiff(t, e.prober, e.deployment, hsName(i), e.roomID, req)
+		must.Equal(t, len(resp.Get("missing_event_ids").Array()), 0, hsName(i)+" is missing no expected event")
+		must.Equal(t, len(resp.Get("requester_only_short_ids").Array()), 0, hsName(i)+" holds no unexpected event")
+	}
+	// Independent of the MSC4521 endpoints: the client-visible timeline.
+	got := map[string]bool{}
+	for _, id := range roomEventIDs(t, e.users[numGossipers-1], e.roomID) {
+		got[id] = true
+	}
+	for _, id := range e.expectedIDs {
+		if !got[id] {
+			t.Errorf("%s: event %s not visible in the room timeline", hsName(numGossipers-1), id)
+		}
+	}
+}
 
-	// Exact set: not just equal digests. A zero-difference room_diff against
-	// each homeserver must find nothing missing in either direction.
-	t.Run("ExactEventSet", func(t *testing.T) {
-		sketch, err := reconcile.NewSyndromeSketch(2)
-		must.NotError(t, "new sketch", err)
-		for h64 := range shortToID {
-			must.NotError(t, "toggle", sketch.Toggle(h64))
+func (e *bulkEnv) testNoFallbackToOrigins(t *testing.T) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, r := range e.originRequests {
+		t.Logf("origin received: %s", r)
+		if strings.Contains(r, "/state_ids/") || strings.Contains(r, "/get_missing_events/") || strings.Contains(r, "/event/") {
+			t.Errorf("a homeserver fetched history from a scripted origin instead of a peer: %s", r)
 		}
-		for i := 0; i < numGossipers; i++ {
-			d := digestOf(hsName(i))
-			req, err := json.Marshal(map[string]interface{}{
-				"mode": "sketch", "frame_id": d.Get("frame_id").Str,
-				"local_digest": wantDigest, "digest_type": "algebraic_v1",
-				"local_known_event_count": expected.Accumulator().Count,
-				"frame_event_ids":         d.Get("frame_event_ids").Value(), "estimated_delta": 0,
-				"requests":       []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 2}},
-				"local_sketches": []string{sketch.Encode()}, "limit": 100,
-			})
-			must.NotError(t, "encode room_diff", err)
-			resp := postRoomDiff(t, prober, deployment, hsName(i), roomID, req)
-			must.Equal(t, len(resp.Get("missing_event_ids").Array()), 0, hsName(i)+" is missing no expected event")
-			must.Equal(t, len(resp.Get("requester_only_short_ids").Array()), 0, hsName(i)+" holds no unexpected event")
-		}
-		// Independent of the MSC4521 endpoints: the client-visible timeline.
-		got := map[string]bool{}
-		for _, id := range roomEventIDs(t, users[numGossipers-1], roomID) {
-			got[id] = true
-		}
-		for _, id := range expectedIDs {
-			if !got[id] {
-				t.Errorf("%s: event %s not visible in the room timeline", hsName(numGossipers-1), id)
-			}
-		}
-	})
-
-	t.Run("NoFallbackToOrigins", func(t *testing.T) {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, r := range originRequests {
-			t.Logf("origin received: %s", r)
-			if strings.Contains(r, "/state_ids/") || strings.Contains(r, "/get_missing_events/") || strings.Contains(r, "/event/") {
-				t.Errorf("a homeserver fetched history from a scripted origin instead of a peer: %s", r)
-			}
-		}
-	})
+	}
 }
 
 // roomEventIDs returns every event ID in the room timeline as seen by c.
