@@ -46,6 +46,7 @@ func newCluster(t *testing.T, n int) *cluster {
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
+	declineReconciliation(prober)
 	t.Cleanup(prober.Listen())
 	names := make([]string, n)
 	for i := range names {

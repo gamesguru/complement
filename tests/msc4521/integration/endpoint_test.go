@@ -41,6 +41,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
+	declineReconciliation(srv)
 	cancel := srv.Listen()
 	defer cancel()
 

@@ -5,6 +5,7 @@ package integration
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -71,6 +72,33 @@ func (p *scriptedPeer) claim(claimed, offered []string) {
 	p.mu.Unlock()
 }
 
+// encodeStrata is the wire form of a kernel's strata: one unpadded base64url
+// string per stratum, each the stratum's coordinates as little-endian u64s.
+func encodeStrata(strata *[reconcile.StrataCount][reconcile.StratumCapacity]uint64) []string {
+	out := make([]string, 0, len(strata))
+	for _, stratum := range strata {
+		raw := make([]byte, 0, len(stratum)*8)
+		for _, coordinate := range stratum {
+			raw = binary.LittleEndian.AppendUint64(raw, coordinate)
+		}
+		out = append(out, base64.RawURLEncoding.EncodeToString(raw))
+	}
+	return out
+}
+
+// declineReconciliation makes a mock federation server answer room_digest the
+// way a homeserver without MSC4521 does. The homeserver under test now starts
+// reconciliations itself, so a mock that says nothing about the endpoint would
+// have every such request counted as an unexpected one and fail its test.
+func declineReconciliation(srv *federation.Server) {
+	decline := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+	}
+	srv.Mux().HandleFunc(msc4521Prefix+"room_digest/{roomID}", decline).Methods("GET")
+	srv.Mux().HandleFunc(msc4521Prefix+"room_digest/{roomID}/strata", decline).Methods("GET")
+}
+
 func (p *scriptedPeer) digestJSON(withStrata bool) map[string]interface{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -86,7 +114,7 @@ func (p *scriptedPeer) digestJSON(withStrata bool) map[string]interface{} {
 		"frame_event_ids": []string{},
 	}
 	if withStrata {
-		out["strata"] = make([]string, 32)
+		out["strata"] = encodeStrata(k.Strata())
 	}
 	return out
 }

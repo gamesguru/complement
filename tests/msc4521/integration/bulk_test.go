@@ -164,6 +164,7 @@ func newBulkEnv(t *testing.T) *bulkEnv {
 	t.Cleanup(func() { deployment.Destroy(t) })
 	// Prober: a scripted server that only queries digests/room_diff.
 	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
+	declineReconciliation(prober)
 	t.Cleanup(prober.Listen())
 	names := make([]string, numGossipers)
 	for i := range names {

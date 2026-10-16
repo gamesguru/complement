@@ -67,6 +67,7 @@ func newHomeserverSide(t *testing.T) *homeserverSide {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"pdus":{}}`))
 	}).Methods("PUT")
+	declineReconciliation(srv)
 	t.Cleanup(srv.Listen())
 	return &homeserverSide{deployment, alice, srv, srv.UserID("charlie")}
 }
