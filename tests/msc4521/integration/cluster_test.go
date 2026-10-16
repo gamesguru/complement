@@ -112,11 +112,11 @@ func (c *cluster) expectedDigest(t *testing.T) (string, int64) {
 	return k.Accumulator().EncodeDigest(), int64(k.Accumulator().Count)
 }
 
-// waitDigest waits until every listed homeserver reports the given digest and
-// count. Local federation settles in seconds, so a long wait only hides a bug.
+// waitDigest waits briefly for the joins and sends that set up a cluster.
+// A longer wait hides a missing federation update or stale digest.
 func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count int64, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		ok, last := true, ""
 		for _, i := range servers {
@@ -156,24 +156,41 @@ func (c *cluster) countSince(from int, pathSubstr string) int {
 	return n
 }
 
-// Partition: one homeserver is frozen while others originate events, then
-// resumed. It must reach the exact expected set.
+// Pause one homeserver while its peer originates events. After resuming, it
+// must reconcile the gap and reach the expected set promptly.
 func testPausedHomeserverCatchesUp(t *testing.T) {
-	c := newCluster(t, 4)
+	c := newCluster(t, 2)
 	c.say(t, 0, "before partition")
 	d0, n0 := c.expectedDigest(t)
 	c.waitDigest(t, c.all(), d0, n0, "pre-partition agreement")
 
-	c.deployment.PauseServer(t, hsName(3))
-	for i := 0; i < 3; i++ {
-		c.say(t, i, fmt.Sprintf("during partition %d", i))
+	c.deployment.PauseServer(t, hsName(1))
+	for i := 0; i < 2; i++ {
+		c.say(t, 0, fmt.Sprintf("during partition %d", i))
 	}
 	want, wantCount := c.expectedDigest(t)
-	must.Equal(t, wantCount, n0+3, "the partition produced exactly 3 new events")
-	c.waitDigest(t, []int{0, 1, 2}, want, wantCount, "the unpaused homeservers to agree")
+	must.Equal(t, wantCount, n0+2, "the partition produced exactly 2 new events")
 
-	c.deployment.UnpauseServer(t, hsName(3))
-	c.waitDigest(t, []int{3}, want, wantCount, "the resumed homeserver to catch up")
+	resumedAt := len(c.proxy.Log())
+	c.deployment.UnpauseServer(t, hsName(1))
+	start := time.Now()
+	for {
+		recon := c.countSince(resumedAt, "room_diff") + c.countSince(resumedAt, "room_digest")
+		d, n, status := c.tryDigest(t, 1)
+		if status == 200 && d == want && n == wantCount {
+			if recon == 0 {
+				t.Fatal("the resumed homeserver caught up without reconciliation")
+			}
+			return
+		}
+		if recon == 0 && time.Since(start) >= noActivityGrace {
+			t.Fatalf("the resumed homeserver made no reconciliation request within %s", noActivityGrace)
+		}
+		if time.Since(start) >= 5*time.Second {
+			t.Fatalf("the resumed homeserver did not catch up within 5s of reconciliation: status %d, count %d (want %d), digest match %t", status, n, wantCount, d == want)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // testPartitionHealUsesReconciliation cuts every link into and out of
