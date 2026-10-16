@@ -307,6 +307,9 @@ func doRoomDiff(t *testing.T, srv *federation.Server, deployment complement.Depl
 	defer res.Body.Close()
 	out, err := io.ReadAll(res.Body)
 	must.NotError(t, "read room_diff response", err)
+	if res.StatusCode != 200 {
+		t.Logf("room_diff -> %d\nrequest:  %s\nresponse: %s", res.StatusCode, requestBody, out)
+	}
 	return out, res.StatusCode
 }
 
