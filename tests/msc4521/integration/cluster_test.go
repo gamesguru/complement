@@ -116,7 +116,7 @@ func (c *cluster) expectedDigest(t *testing.T) (string, int64) {
 // count. Local federation settles in seconds, so a long wait only hides a bug.
 func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count int64, what string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		ok, last := true, ""
 		for _, i := range servers {
@@ -197,14 +197,30 @@ func testPartitionHealUsesReconciliation(t *testing.T) {
 	healedAt := len(c.proxy.Log())
 	c.proxy.SetInto(hsName(3), linkproxy.Allow)
 	c.proxy.SetAll(hsName(3), linkproxy.Allow)
-	c.waitDigest(t, []int{3}, want, wantCount, "the healed homeserver to catch up")
-
-	if n := c.countSince(healedAt, "room_diff") + c.countSince(healedAt, "room_digest"); n == 0 {
-		t.Error("no reconciliation request crossed a link after healing: catch-up used another mechanism")
-	}
-	for _, fallback := range []string{"/state_ids/", "/get_missing_events/", "/backfill/"} {
-		if n := c.countSince(healedAt, fallback); n != 0 {
-			t.Errorf("%d successful %s request(s) after healing: the gap was not closed by reconciliation alone", n, fallback)
+	// Fail at the first sign the gap is not being closed by reconciliation,
+	// instead of waiting out a timer: an ordinary history fetch is a failure the
+	// moment it succeeds, and silence for noActivityGrace after the heal means
+	// nothing is reconciling.
+	start := time.Now()
+	for {
+		for _, fallback := range []string{"/state_ids/", "/get_missing_events/", "/backfill/"} {
+			if n := c.countSince(healedAt, fallback); n != 0 {
+				t.Fatalf("%d successful %s request(s) after healing: the gap was not closed by reconciliation alone", n, fallback)
+			}
 		}
+		recon := c.countSince(healedAt, "room_diff") + c.countSince(healedAt, "room_digest")
+		if d, n, status := c.tryDigest(t, 3); status == 200 && d == want && n == wantCount {
+			if recon == 0 {
+				t.Fatal("the healed homeserver caught up without any reconciliation request crossing a link")
+			}
+			return
+		}
+		if recon == 0 && time.Since(start) >= noActivityGrace {
+			t.Fatalf("no reconciliation request crossed a link within %s of healing: the homeserver does not reconcile", noActivityGrace)
+		}
+		if time.Since(start) >= 10*time.Second {
+			t.Fatalf("the healed homeserver did not catch up within 10s of reconciling (%d requests seen)", recon)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
