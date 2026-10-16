@@ -7,7 +7,6 @@ STYLE_RESET := $(shell tput sgr0 2>/dev/null || printf '\033[0m')
 GO ?= go
 STATICCHECK ?= staticcheck
 GOLANGCI_LINT ?= golangci-lint
-VETFLAGS ?=
 STATICCHECKFLAGS ?=
 GOLANGCI_LINTFLAGS ?=
 PKGS := ./...
@@ -35,11 +34,11 @@ build: ## Compile all packages (does not require a homeserver image)
 
 .PHONY: vet
 vet: ## Run go vet
-	$(GO) vet $(VETFLAGS) $(PKGS)
+	$(GO) vet $(PKGS)
 
 .PHONY: lint
 lint: ## Run lint checks (vet, staticcheck, golangci-lint)
-	$(GO) vet $(VETFLAGS) $(PKGS)
+	$(GO) vet $(PKGS)
 	$(STATICCHECK) -checks='all,-S1008,-S1039,-SA1019,-SA4006,-ST1000,-ST1003,-ST1005,-ST1016,-ST1020,-ST1021,-ST1023,-U1000' $(STATICCHECKFLAGS) $(PKGS)
 	# install with, i.e., `curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.12.2`
 	$(GOLANGCI_LINT) run $(GOLANGCI_LINTFLAGS) $(PKGS)

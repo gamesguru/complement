@@ -118,7 +118,7 @@ func TestMSC4521ActiveRoomReconciliation(t *testing.T) {
 		})
 		must.NotError(t, "encode room_diff request", err)
 
-		path := "/_matrix/federation/unstable/tk.nutra.msc0501/room_diff/" + url.PathEscape(roomID)
+		path := msc4521Prefix + "room_diff/" + url.PathEscape(roomID)
 		req := fclient.NewFederationRequest("POST", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), path)
 		must.NotError(t, "set room_diff request", req.SetContent(requestBody))
 		res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
@@ -155,7 +155,7 @@ func getRoomDigest(t *testing.T, srv *federation.Server, deployment complement.D
 
 func getRoomDigestFrom(t *testing.T, srv *federation.Server, deployment complement.Deployment, hs, roomID, suffix string) ([]byte, int) {
 	t.Helper()
-	path := "/_matrix/federation/unstable/tk.nutra.msc0501/room_digest/" + url.PathEscape(roomID) + suffix
+	path := msc4521Prefix + "room_digest/" + url.PathEscape(roomID) + suffix
 	req := fclient.NewFederationRequest(
 		"GET",
 		srv.ServerName(),

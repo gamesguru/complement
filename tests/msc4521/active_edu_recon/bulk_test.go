@@ -313,7 +313,7 @@ func roomLatestEventID(t *testing.T, c *client.CSAPI, roomID string) string {
 
 func postRoomDiff(t *testing.T, srv *federation.Server, deployment complement.Deployment, hs, roomID string, body []byte) gjson.Result {
 	t.Helper()
-	path := "/_matrix/federation/unstable/tk.nutra.msc0501/room_diff/" + url.PathEscape(roomID)
+	path := msc4521Prefix + "room_diff/" + url.PathEscape(roomID)
 	req := fclient.NewFederationRequest("POST", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, hs), path)
 	must.NotError(t, "set room_diff body", req.SetContent(body))
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
