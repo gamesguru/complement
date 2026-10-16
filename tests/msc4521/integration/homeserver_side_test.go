@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -54,13 +55,18 @@ func newHomeserverSide(t *testing.T) *homeserverSide {
 	t.Cleanup(func() { deployment.Destroy(t) })
 
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-	// The remote server ignores transactions, so events sent by hs1 after it
-	// joined stay unknown to it: that is how the two sides come to differ.
+	// The remote server acknowledges transactions without storing them, so
+	// events sent by hs1 after it joined stay unknown to it: that is how the two
+	// sides come to differ. federation.HandleTransactionRequests cannot be used:
+	// it adds every PDU to the mock room even with nil callbacks.
 	srv := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
 		federation.HandleMakeSendJoinRequests(),
-		federation.HandleTransactionRequests(nil, nil),
 	)
+	srv.Mux().HandleFunc("/_matrix/federation/v1/send/{transactionID}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"pdus":{}}`))
+	}).Methods("PUT")
 	t.Cleanup(srv.Listen())
 	return &homeserverSide{deployment, alice, srv, srv.UserID("charlie")}
 }
