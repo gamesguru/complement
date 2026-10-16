@@ -31,7 +31,7 @@ const (
 	maxFetchesPerRound = 100              // upper bound on /event fetches in one exchange with one peer
 	sampleFetchBound   = 40               // upper bound on fetches before a partly fake claim is abandoned
 	settle             = 20 * time.Second // upper bound on any wait for the homeserver
-	noActivityGrace    = 5 * time.Second  // give up early if the homeserver sends nothing at all
+	noActivityGrace    = 3 * time.Second  // give up early if the homeserver sends nothing at all
 	quietPeriod        = 2 * time.Second  // activity counts as finished after this much silence
 )
 
@@ -303,7 +303,8 @@ func TestMSC4521ValidChainingIsAccepted(t *testing.T) {
 	}
 	e.peer.claim(timelineIDs(e.peer), ids)
 
-	deadline := time.Now().Add(60 * time.Second)
+	start := time.Now()
+	deadline := start.Add(60 * time.Second)
 	for {
 		have := map[string]bool{}
 		for _, id := range roomEventIDs(t, e.alice, e.roomID) {
@@ -318,10 +319,13 @@ func TestMSC4521ValidChainingIsAccepted(t *testing.T) {
 		if missing == 0 {
 			return
 		}
+		if time.Since(start) >= noActivityGrace && e.peer.count("/federation/v1/event/") == 0 {
+			t.Fatalf("homeserver never fetched any of the %d claimed events (%d missing): it does not initiate reconciliation", len(ids), missing)
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("%d of %d valid chained events never reached the homeserver", missing, len(ids))
 		}
-		time.Sleep(time.Second)
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
