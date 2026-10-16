@@ -67,7 +67,7 @@ func (c *cluster) say(t *testing.T, i int, body string) string {
 func (c *cluster) digestOf(t *testing.T, i int) (string, int64) {
 	t.Helper()
 	body, status := getRoomDigestFrom(t, c.prober, c.deployment, hsName(i), c.roomID, "")
-	skipIfUnsupported(t, status)
+	requireSupported(t, status)
 	must.Equal(t, status, 200, hsName(i)+" digest status")
 	d := gjson.ParseBytes(body)
 	return d.Get("digest").Str, d.Get("known_event_count").Int()

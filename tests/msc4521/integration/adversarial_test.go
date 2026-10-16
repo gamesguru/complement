@@ -147,13 +147,13 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 	return p
 }
 
-// skipIfUnsupported skips the test when the homeserver under test does not
-// serve room_digest (feature off or not implemented). Feature detection, not a
-// flag: the tests start running as soon as the endpoint exists.
-func skipIfUnsupported(t *testing.T, digestStatus int) {
+// requireSupported fails the test when the homeserver under test does not serve
+// room_digest. Congruent serves it and Complement enables it, so a missing
+// endpoint is a regression, not a reason to skip.
+func requireSupported(t *testing.T, digestStatus int) {
 	t.Helper()
 	if digestStatus == http.StatusNotFound || digestStatus == http.StatusNotImplemented {
-		t.Skip("homeserver under test does not serve MSC4521 room_digest")
+		t.Fatalf("homeserver under test does not serve MSC4521 room_digest (status %d)", digestStatus)
 	}
 }
 
@@ -194,7 +194,7 @@ func newAdversaryEnv(t *testing.T, join, advertise bool) *adversaryEnv {
 	peer := newPeer(t, deployment, roomID, join, advertise)
 	if join {
 		body, status := getRoomDigest(t, peer.srv, deployment, roomID, "")
-		skipIfUnsupported(t, status)
+		requireSupported(t, status)
 		must.Equal(t, status, 200, "hs1 digest status")
 		peer.frameID = gjson.ParseBytes(body).Get("frame_id").Str
 	}
