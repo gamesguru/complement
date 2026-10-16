@@ -6,7 +6,6 @@ import "testing"
 // selected with a slash path (`TestMSC4521/SetReconciliation/Porcelain`)
 // instead of a name prefix. Every test here needs the Complement runner.
 func TestMSC4521(t *testing.T) {
-	t.Run("WireBisect", testWireBisect) // TEMPORARY
 	t.Run("SetReconciliation", testSetReconciliation)
 	t.Run("ActiveRoomReconciliation", testActiveRoomReconciliation)
 	t.Run("FabricatedIDs", testFabricatedIDs)
