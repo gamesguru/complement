@@ -416,11 +416,17 @@ func (h *homeserverSide) mixedBucketBatch(t *testing.T) {
 func (h *homeserverSide) bucketEscalation(t *testing.T) {
 	t.Helper()
 	r := h.newRoom(t)
-	h.addRequesterEvents(t, r, 3)
-	ex := h.reconcile(t, r, rootBucket)
+	// A sketch holding more differences than its capacity c still decodes to a
+	// wrong set with probability about 1/c!, so the undersized bucket is large
+	// enough (8) and the difference big enough (12) that a false decode is
+	// negligible.
+	h.addRequesterEvents(t, r, 12)
+	undersized := []reconcile.BucketRequest{{Depth: 0, Prefix: 0, Capacity: 8}}
+	ex := h.reconcile(t, r, undersized)
 	must.Equal(t, ex.statuses[0], "capacity_exceeded", "an undersized bucket is not decoded")
+	must.Equal(t, len(ex.requests) >= 2, true, "the undersized bucket is retried")
 	must.Equal(t, ex.statuses[len(ex.statuses)-1], "decoded", "the retry decodes")
-	must.Equal(t, ex.requests[1][0].Capacity > rootBucket[0].Capacity, true, "the retry asks for a larger capacity")
+	must.Equal(t, ex.requests[1][0].Capacity > undersized[0].Capacity, true, "the retry asks for a larger capacity")
 	must.Equal(t, equalU64Set(ex.roots, r.wantRoots(t)), true, "resolved roots")
 }
 
