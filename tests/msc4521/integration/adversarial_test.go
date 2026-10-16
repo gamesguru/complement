@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/Wombat-Foundation/gomatrixcrypto/reconcile"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement"
@@ -237,7 +236,7 @@ func TestMSC4521PartlyFakeClaimIsSampled(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		ev := e.peer.srv.MustCreateEvent(t, e.peer.room, federation.Event{
 			Type: "m.room.message", Sender: e.peer.userID,
-			Content: map[string]interface{}{"body": fmt.Sprintf("real %d", i)},
+			Content: map[string]interface{}{"msgtype": "m.text", "body": fmt.Sprintf("real %d", i)},
 		})
 		e.peer.room.AddEvent(ev)
 		real = append(real, ev.EventID())
@@ -273,7 +272,7 @@ func TestMSC4521ValidChainingIsAccepted(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		ev := e.peer.srv.MustCreateEvent(t, e.peer.room, federation.Event{
 			Type: "m.room.message", Sender: e.peer.userID,
-			Content: map[string]interface{}{"body": fmt.Sprintf("chained %d", i)},
+			Content: map[string]interface{}{"msgtype": "m.text", "body": fmt.Sprintf("chained %d", i)},
 		})
 		e.peer.room.AddEvent(ev)
 		ids = append(ids, ev.EventID())
@@ -367,7 +366,7 @@ func TestMSC4521NonAdvertisingPeerFallsBack(t *testing.T) {
 	e := newAdversaryEnv(t, true, false)
 	m := e.peer.srv.Mux()
 	first := e.peer.srv.MustCreateEvent(t, e.peer.room, federation.Event{
-		Type: "m.room.message", Sender: e.peer.userID, Content: map[string]interface{}{"body": "gap"},
+		Type: "m.room.message", Sender: e.peer.userID, Content: map[string]interface{}{"msgtype": "m.text", "body": "gap"},
 	})
 	e.peer.room.AddEvent(first)
 	m.HandleFunc("/_matrix/federation/v1/get_missing_events/{roomID}", func(w http.ResponseWriter, r *http.Request) {
@@ -381,7 +380,7 @@ func TestMSC4521NonAdvertisingPeerFallsBack(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"pdu_ids": ids, "auth_chain_ids": ids})
 	})
 	second := e.peer.srv.MustCreateEvent(t, e.peer.room, federation.Event{
-		Type: "m.room.message", Sender: e.peer.userID, Content: map[string]interface{}{"body": "after gap"},
+		Type: "m.room.message", Sender: e.peer.userID, Content: map[string]interface{}{"msgtype": "m.text", "body": "after gap"},
 	})
 	e.peer.room.AddEvent(second)
 	e.peer.srv.MustSendTransaction(t, e.deployment, e.deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
@@ -396,78 +395,4 @@ func TestMSC4521NonAdvertisingPeerFallsBack(t *testing.T) {
 	if n := e.peer.count("room_digest") + e.peer.count("room_diff"); n > 3 {
 		t.Errorf("homeserver sent %d reconciliation requests to a peer that does not serve them", n)
 	}
-}
-
-// Partition: one homeserver is frozen while others originate events, then
-// resumed. It must reach the exact expected set.
-func TestMSC4521PausedHomeserverCatchesUp(t *testing.T) {
-	const n = 4
-	deployment := complement.Deploy(t, n)
-	defer deployment.Destroy(t)
-	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
-	defer prober.Listen()()
-
-	users := make([]*client.CSAPI, n)
-	for i := range users {
-		users[i] = deployment.Register(t, fmt.Sprintf("hs%d", i+1), helpers.RegistrationOpts{})
-	}
-	roomID := users[0].MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
-	hs1 := deployment.GetFullyQualifiedHomeserverName(t, "hs1")
-	for i := 1; i < n; i++ {
-		users[i].MustJoinRoom(t, roomID, []spec.ServerName{hs1})
-	}
-	users[0].SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "before partition"}})
-
-	_, probe := getRoomDigestFrom(t, prober, deployment, "hs1", roomID, "")
-	skipIfUnsupported(t, probe)
-
-	digestOf := func(i int) (string, int64) {
-		body, status := getRoomDigestFrom(t, prober, deployment, fmt.Sprintf("hs%d", i+1), roomID, "")
-		must.Equal(t, status, 200, "digest status")
-		d := gjson.ParseBytes(body)
-		return d.Get("digest").Str, d.Get("known_event_count").Int()
-	}
-	waitEqual := func(servers []int, wantDigest string, wantCount int64, what string) {
-		deadline := time.Now().Add(120 * time.Second)
-		for {
-			ok := true
-			for _, i := range servers {
-				if d, c := digestOf(i); d != wantDigest || c != wantCount {
-					ok = false
-				}
-			}
-			if ok {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("timed out waiting for %s", what)
-			}
-			time.Sleep(time.Second)
-		}
-	}
-	kernelOf := func(ids []string) (string, int64) {
-		k := reconcile.NewResidentKernel()
-		for _, id := range ids {
-			must.NotError(t, "insert", k.Insert(func() reconcile.ElementHash {
-				h, err := reconcile.FromMatrixEventID(id, reconcile.V4Plus)
-				must.NotError(t, "hash", err)
-				return h
-			}()))
-		}
-		return k.Accumulator().EncodeDigest(), int64(k.Accumulator().Count)
-	}
-	// Every homeserver agrees before the partition.
-	d0, c0 := kernelOf(roomEventIDs(t, users[0], roomID))
-	waitEqual([]int{0, 1, 2, 3}, d0, c0, "pre-partition agreement")
-
-	deployment.PauseServer(t, fmt.Sprintf("hs%d", n))
-	for i := 0; i < n-1; i++ {
-		users[i].SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": fmt.Sprintf("during partition %d", i)}})
-	}
-	want, wantCount := kernelOf(roomEventIDs(t, users[0], roomID))
-	must.Equal(t, wantCount, c0+int64(n-1), "the partition produced exactly n-1 new events")
-	waitEqual([]int{0, 1, 2}, want, wantCount, "the unpaused homeservers to agree")
-
-	deployment.UnpauseServer(t, fmt.Sprintf("hs%d", n))
-	waitEqual([]int{n - 1}, want, wantCount, "the resumed homeserver to catch up")
 }

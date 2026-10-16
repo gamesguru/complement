@@ -24,6 +24,7 @@ import (
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
+	"github.com/matrix-org/complement/federation/linkproxy"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/must"
 )
@@ -67,6 +68,7 @@ func TestMSC4521BulkReconciliation(t *testing.T) {
 	e.joinHomeservers(t)
 	e.joinOrigins(t)
 	e.waitForBaseSet(t)
+	e.restrictToHypercube()
 
 	t.Run("DigestAndStrata", e.testDigestAndStrata)
 	e.seed(t)
@@ -74,6 +76,56 @@ func TestMSC4521BulkReconciliation(t *testing.T) {
 	t.Run("Converges", e.testConverges)
 	t.Run("ExactEventSet", e.testExactEventSet)
 	t.Run("NoFallbackToOrigins", e.testNoFallbackToOrigins)
+	t.Run("ExchangesOnlyOverHypercubeEdges", e.testHypercubeEdges)
+}
+
+// isHypercubeEdge reports whether homeservers i and j are adjacent in the
+// 4-dimensional hypercube: their indices differ in exactly one bit.
+func isHypercubeEdge(i, j int) bool {
+	x := i ^ j
+	return x != 0 && x&(x-1) == 0
+}
+
+// restrictToHypercube blocks every link between non-adjacent homeservers, so
+// the only way for events to spread is hop by hop along hypercube edges.
+// Blocked links fail fast with 503 and are logged, so violations are visible.
+func (e *bulkEnv) restrictToHypercube() {
+	for i := 0; i < numGossipers; i++ {
+		for j := 0; j < numGossipers; j++ {
+			if i != j && !isHypercubeEdge(i, j) {
+				e.proxy.Set(hsName(i), hsName(j), linkproxy.Block)
+			}
+		}
+	}
+}
+
+// testHypercubeEdges asserts reconciliation traffic only succeeded between
+// adjacent homeservers, and logs how many exchanges each edge carried. This is
+// the observable spread profile: the Complement-visible record of who talked
+// to whom.
+func (e *bulkEnv) testHypercubeEdges(t *testing.T) {
+	perEdge := map[string]int{}
+	for _, en := range e.proxy.Log() {
+		if !strings.Contains(en.Path, "room_diff") && !strings.Contains(en.Path, "room_digest") {
+			continue
+		}
+		var i, j int
+		if _, err := fmt.Sscanf(en.Src+" "+en.Dst, "hs%d hs%d", &i, &j); err != nil {
+			continue
+		}
+		if en.Status == http.StatusOK && !isHypercubeEdge(i-1, j-1) {
+			t.Errorf("reconciliation succeeded over a non-edge: %s -> %s %s", en.Src, en.Dst, en.Path)
+		}
+		if en.Status == http.StatusOK {
+			perEdge[en.Src+"->"+en.Dst]++
+		}
+	}
+	for edge, n := range perEdge {
+		t.Logf("%s carried %d reconciliation requests", edge, n)
+	}
+	if len(perEdge) == 0 {
+		t.Error("no reconciliation request crossed any link: the homeservers did not initiate exchanges")
+	}
 }
 
 type bulkOrigin struct {
@@ -86,6 +138,7 @@ type bulkOrigin struct {
 type bulkEnv struct {
 	deployment complement.Deployment
 	prober     *federation.Server
+	proxy      *linkproxy.Proxy
 	hs1        spec.ServerName
 	users      []*client.CSAPI
 	roomID     string
@@ -112,9 +165,16 @@ func newBulkEnv(t *testing.T) *bulkEnv {
 	// Prober: a scripted server that only queries digests/room_diff.
 	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
 	t.Cleanup(prober.Listen())
+	names := make([]string, numGossipers)
+	for i := range names {
+		names[i] = hsName(i)
+	}
+	proxy := linkproxy.New(t, deployment, names...)
+	t.Cleanup(proxy.Close)
 	return &bulkEnv{
 		deployment: deployment,
 		prober:     prober,
+		proxy:      proxy,
 		hs1:        deployment.GetFullyQualifiedHomeserverName(t, "hs1"),
 	}
 }
@@ -131,7 +191,7 @@ func (e *bulkEnv) joinHomeservers(t *testing.T) {
 		e.users[i].MustJoinRoom(t, e.roomID, []spec.ServerName{e.hs1})
 	}
 	for i := range e.users {
-		e.users[i].SendEventSynced(t, e.roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"body": "base from " + hsName(i)}})
+		e.users[i].SendEventSynced(t, e.roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"msgtype": "m.text", "body": "base from " + hsName(i)}})
 	}
 }
 
