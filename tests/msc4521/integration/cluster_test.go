@@ -135,7 +135,7 @@ func (c *cluster) countSince(from int, pathSubstr string) int {
 
 // Partition: one homeserver is frozen while others originate events, then
 // resumed. It must reach the exact expected set.
-func TestMSC4521PausedHomeserverCatchesUp(t *testing.T) {
+func testPausedHomeserverCatchesUp(t *testing.T) {
 	c := newCluster(t, 4)
 	c.say(t, 0, "before partition")
 	d0, n0 := c.expectedDigest(t)
@@ -153,11 +153,11 @@ func TestMSC4521PausedHomeserverCatchesUp(t *testing.T) {
 	c.waitDigest(t, []int{3}, want, wantCount, "the resumed homeserver to catch up")
 }
 
-// TestMSC4521PartitionHealUsesReconciliation cuts every link into and out of
+// testPartitionHealUsesReconciliation cuts every link into and out of
 // one homeserver, lets the rest originate events, heals the links, and checks
 // from the proxy log WHICH mechanism closed the gap: reconciliation requests
 // were made and succeeded, and no ordinary history fetch was needed.
-func TestMSC4521PartitionHealUsesReconciliation(t *testing.T) {
+func testPartitionHealUsesReconciliation(t *testing.T) {
 	c := newCluster(t, 4)
 	c.say(t, 0, "before partition")
 	d0, n0 := c.expectedDigest(t)

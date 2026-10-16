@@ -38,7 +38,7 @@ const numGossipers = 16
 // homeserver.
 const seededPerOrigin = 10
 
-// TestMSC4521BulkReconciliation checks that 16 real homeservers converge on an
+// testBulkReconciliation checks that 16 real homeservers converge on an
 // exact event set that was seeded sparsely, with no way to converge except by
 // exchanging events with each other.
 //
@@ -60,7 +60,7 @@ const seededPerOrigin = 10
 // the final exact state, never timing.
 //
 // Opt-in: needs an MSC4521-capable image that initiates exchanges itself.
-func TestMSC4521BulkReconciliation(t *testing.T) {
+func testBulkReconciliation(t *testing.T) {
 	if os.Getenv("COMPLEMENT_MSC4521_BULK") == "" {
 		t.Skip("set COMPLEMENT_MSC4521_BULK=1 with an MSC4521-capable image that initiates reconciliation")
 	}

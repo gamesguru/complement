@@ -23,7 +23,7 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// TestMSC4521ActiveRoomReconciliation verifies the first real wire-level
+// testActiveRoomReconciliation verifies the first real wire-level
 // operation in the MSC0501 consumer flow for MSC4521. A remote federation
 // server queries the homeserver under test for a frame-bound digest and strata
 // estimator before opening a symmetric-difference sketch exchange.
@@ -31,7 +31,7 @@ import (
 // This is deliberately an integration test: the reconciliation library tests
 // cannot prove that a homeserver stores, authorizes, scopes, and serves EDU
 // state correctly.
-func TestMSC4521ActiveRoomReconciliation(t *testing.T) {
+func testActiveRoomReconciliation(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 

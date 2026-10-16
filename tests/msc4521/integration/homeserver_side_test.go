@@ -27,7 +27,7 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// homeserverSide is the real-homeserver half of TestMSC4521SetReconciliation.
+// homeserverSide is the real-homeserver half of testSetReconciliation.
 // A remote federation server holds the requester's side of a room's event set,
 // hs1 holds the other, and the library's own reconciliation client recovers the
 // difference over /room_digest and /room_diff. A nil *homeserverSide means no

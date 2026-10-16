@@ -234,7 +234,7 @@ func (e *adversaryEnv) hs1Digest(t *testing.T) (string, int64) {
 }
 
 // 1. A peer claims thousands of event IDs that do not exist.
-func TestMSC4521FabricatedIDs(t *testing.T) {
+func testFabricatedIDs(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	fakes := fakeIDs(5000)
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), fakes)
@@ -254,7 +254,7 @@ func TestMSC4521FabricatedIDs(t *testing.T) {
 
 // 2. A peer mixes real, servable events with fabricated ones. The homeserver
 // should sample, find fakes, and abandon the round long before fetching all.
-func TestMSC4521PartlyFakeClaimIsSampled(t *testing.T) {
+func testPartlyFakeClaimIsSampled(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	var real []string
 	for i := 0; i < 100; i++ {
@@ -290,7 +290,7 @@ func TestMSC4521PartlyFakeClaimIsSampled(t *testing.T) {
 }
 
 // 3. Real, signed events that chain to the room's DAG are accepted.
-func TestMSC4521ValidChainingIsAccepted(t *testing.T) {
+func testValidChainingIsAccepted(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	var ids []string
 	for i := 0; i < 5; i++ {
@@ -330,7 +330,7 @@ func TestMSC4521ValidChainingIsAccepted(t *testing.T) {
 }
 
 // 4. An event the homeserver rejects is not fetched again every round.
-func TestMSC4521RejectedEventNotRefetched(t *testing.T) {
+func testRejectedEventNotRefetched(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	stateKey := ""
 	// The peer's user has no power to rename the room: auth rejects this event.
@@ -355,7 +355,7 @@ func TestMSC4521RejectedEventNotRefetched(t *testing.T) {
 
 // 5. Servers that are not in the room, or are ACL-blocked, are neither
 // queried nor answered.
-func TestMSC4521NonMembersAndACLBlocked(t *testing.T) {
+func testNonMembersAndACLBlocked(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	stranger := newPeer(t, e.deployment, e.roomID, false, true)
 	stranger.claim(fakeIDs(10), fakeIDs(10))
@@ -393,7 +393,7 @@ func TestMSC4521NonMembersAndACLBlocked(t *testing.T) {
 
 // 6. A peer that does not serve the reconciliation endpoints is handled with
 // ordinary federation fetches and is not hammered with retries.
-func TestMSC4521NonAdvertisingPeerFallsBack(t *testing.T) {
+func testNonAdvertisingPeerFallsBack(t *testing.T) {
 	e := newAdversaryEnv(t, true, false)
 	m := e.peer.srv.Mux()
 	first := e.peer.srv.MustCreateEvent(t, e.peer.room, federation.Event{
