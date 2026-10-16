@@ -50,10 +50,17 @@ type FederationDeployment interface {
 	RoundTripper() http.RoundTripper
 }
 
+// federationAborter is implemented by deployments that can tell their homeservers to stop
+// sending to a federation server which has stopped listening.
+type federationAborter interface {
+	AbortFederationTo(t ct.TestLike, serverName spec.ServerName)
+}
+
 // EXPERIMENTAL
 // Server represents a federation server
 type Server struct {
-	t ct.TestLike
+	t          ct.TestLike
+	deployment FederationDeployment
 
 	// Default: true
 	UnexpectedRequestsAreErrors bool
@@ -84,10 +91,11 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 	}
 
 	srv := &Server{
-		t:     t,
-		Priv:  priv,
-		KeyID: gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:complement_%x", pub)),
-		mux:   mux.NewRouter(),
+		deployment: deployment,
+		t:          t,
+		Priv:       priv,
+		KeyID:      gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:complement_%x", pub)),
+		mux:        mux.NewRouter(),
 		// The server name will be updated when the caller calls Listen() to include the port number
 		// of the HTTP server e.g "host.docker.internal:56353"
 		serverName:                  spec.ServerName(deployment.GetConfig().HostnameRunningComplement),
@@ -764,6 +772,9 @@ func (s *Server) Listen() (cancel func()) {
 			ct.Fatalf(s.t, "ListenFederationServer: failed to shutdown server: %s", err)
 		}
 		wg.Wait() // wait for the server to shutdown
+		if a, ok := s.deployment.(federationAborter); ok {
+			a.AbortFederationTo(s.t, s.serverName)
+		}
 	}
 }
 

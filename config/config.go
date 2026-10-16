@@ -154,6 +154,12 @@ type Complement struct {
 	// called exactly once at the end of the test suite, and is called with the TestName of "COMPLEMENT_ENABLE_DIRTY_RUNS"
 	// and TestFailed=false.
 	PostTestScript string
+
+	// Default: ""
+	// Description: An arbitrary script to execute for every homeserver container when a federation.Server
+	// stops listening, so the homeserver can stop sending to it. The script is passed the parameters:
+	// ContainerID, ServerName (the stopped server's host:port).
+	FederationAbortScript string
 }
 
 var hsRegex = regexp.MustCompile(`COMPLEMENT_BASE_IMAGE_(.+)=(.+)$`)
@@ -169,6 +175,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg.EnableDirtyRuns = os.Getenv("COMPLEMENT_ENABLE_DIRTY_RUNS") == "1"
 	cfg.EnvVarsPropagatePrefix = os.Getenv("COMPLEMENT_SHARE_ENV_PREFIX")
 	cfg.PostTestScript = os.Getenv("COMPLEMENT_POST_TEST_SCRIPT")
+	cfg.FederationAbortScript = os.Getenv("COMPLEMENT_FEDERATION_ABORT_SCRIPT")
 	cfg.SpawnHSTimeout = time.Duration(parseEnvWithDefault("COMPLEMENT_SPAWN_HS_TIMEOUT_SECS", 30)) * time.Second
 	cfg.StopTimeout = time.Duration(parseEnvWithDefault("COMPLEMENT_STOP_TIMEOUT_SECS", 1)) * time.Second
 	if os.Getenv("COMPLEMENT_VERSION_CHECK_ITERATIONS") != "" {

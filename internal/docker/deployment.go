@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -116,6 +117,23 @@ func (d *Deployment) Destroy(t ct.TestLike) {
 		return
 	}
 	d.Deployer.Destroy(d, d.Deployer.config.AlwaysPrintServerLogs || t.Failed(), t.Name(), t.Failed())
+}
+
+// AbortFederationTo tells every homeserver in this deployment to stop sending to the given
+// federation server, which has stopped listening. It is a no-op unless
+// COMPLEMENT_FEDERATION_ABORT_SCRIPT is set.
+func (d *Deployment) AbortFederationTo(t ct.TestLike, serverName spec.ServerName) {
+	t.Helper()
+	script := d.Config.FederationAbortScript
+	if script == "" {
+		return
+	}
+	for hsName, hsDep := range d.HS {
+		out, err := exec.Command(script, hsDep.ContainerID, string(serverName)).CombinedOutput()
+		if err != nil {
+			ct.Errorf(t, "AbortFederationTo: %s failed for %s: %s\n%s", script, hsName, err, out)
+		}
+	}
 }
 
 func (d *Deployment) GetConfig() *config.Complement {
