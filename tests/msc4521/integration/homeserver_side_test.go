@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/url"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/Wombat-Foundation/gomatrixcrypto/reconcile"
@@ -290,7 +291,7 @@ func diffBody(t *testing.T, f frame, local reconcile.ResidentKernel, h64s []uint
 				must.NotError(t, "toggle into bucket sketch", sketch.Toggle(h64))
 			}
 		}
-		wire = append(wire, map[string]interface{}{"depth": request.Depth, "prefix": request.Prefix, "capacity": request.Capacity})
+		wire = append(wire, map[string]interface{}{"depth": request.Depth, "prefix": strconv.FormatUint(uint64(request.Prefix), 10), "capacity": request.Capacity})
 		sketches = append(sketches, sketch.Encode())
 	}
 	return map[string]interface{}{
@@ -321,7 +322,7 @@ func doRoomDiff(t *testing.T, srv *federation.Server, deployment complement.Depl
 	must.NotError(t, "encode room_diff request", err)
 	path := msc4521Prefix + "room_diff/" + url.PathEscape(roomID)
 	req := fclient.NewFederationRequest("POST", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), path)
-	must.NotError(t, "set room_diff request", req.SetContent(requestBody))
+	must.NotError(t, "set room_diff request", req.SetContent(json.RawMessage(requestBody)))
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "POST "+path, err)
 	defer res.Body.Close()
@@ -505,7 +506,7 @@ func (h *homeserverSide) malformedInputs(t *testing.T) {
 		"UnknownDigestType": func(b map[string]interface{}) { b["digest_type"] = "nope" },
 		"UndecodableSketch": func(b map[string]interface{}) { b["local_sketches"] = []string{"!!not-base64!!"} },
 		"ZeroCapacity": func(b map[string]interface{}) {
-			b["requests"] = []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 0}}
+			b["requests"] = []map[string]interface{}{{"depth": 0, "prefix": "0", "capacity": 0}}
 		},
 		"UnknownFrame":         func(b map[string]interface{}) { b["frame_id"] = "not-a-frame" },
 		"MalformedFrameAnchor": func(b map[string]interface{}) { b["frame_event_ids"] = []string{"not-an-event-id"} },

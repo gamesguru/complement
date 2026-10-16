@@ -112,7 +112,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 			"local_known_event_count": local.Accumulator().Count,
 			"frame_event_ids":         frameEventIDs,
 			"estimated_delta":         1,
-			"requests":                []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 2}},
+			"requests":                []map[string]interface{}{{"depth": 0, "prefix": "0", "capacity": 2}},
 			"local_sketches":          []string{sketch.Encode()},
 			"limit":                   100,
 		})
@@ -120,7 +120,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 
 		path := msc4521Prefix + "room_diff/" + url.PathEscape(roomID)
 		req := fclient.NewFederationRequest("POST", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), path)
-		must.NotError(t, "set room_diff request", req.SetContent(requestBody))
+		must.NotError(t, "set room_diff request", req.SetContent(json.RawMessage(requestBody)))
 		res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 		must.NotError(t, "POST /room_diff/{roomID}", err)
 		defer res.Body.Close()

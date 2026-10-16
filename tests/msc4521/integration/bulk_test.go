@@ -360,7 +360,7 @@ func (e *bulkEnv) testExactEventSet(t *testing.T) {
 			"local_digest": e.wantDigest, "digest_type": "algebraic_v1",
 			"local_known_event_count": e.expected.Accumulator().Count,
 			"frame_event_ids":         d.Get("frame_event_ids").Value(), "estimated_delta": 0,
-			"requests":       []map[string]interface{}{{"depth": 0, "prefix": 0, "capacity": 2}},
+			"requests":       []map[string]interface{}{{"depth": 0, "prefix": "0", "capacity": 2}},
 			"local_sketches": []string{sketch.Encode()}, "limit": 100,
 		})
 		must.NotError(t, "encode room_diff", err)
@@ -431,7 +431,7 @@ func postRoomDiff(t *testing.T, srv *federation.Server, deployment complement.De
 	t.Helper()
 	path := msc4521Prefix + "room_diff/" + url.PathEscape(roomID)
 	req := fclient.NewFederationRequest("POST", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, hs), path)
-	must.NotError(t, "set room_diff body", req.SetContent(body))
+	must.NotError(t, "set room_diff body", req.SetContent(json.RawMessage(body)))
 	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
 	must.NotError(t, "POST room_diff", err)
 	defer res.Body.Close()
