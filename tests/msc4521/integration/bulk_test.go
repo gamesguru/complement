@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -54,10 +55,9 @@ const seededPerOrigin = 10
 // seeded events can only come from another homeserver. A /state_ids or
 // /get_missing_events request reaching an origin is a failure.
 //
-// Not observable: which homeserver talked to which, and in how many rounds.
-// Complement sees only traffic addressed to its own servers. The test records
-// when each homeserver converges, as a coarse spread profile, but asserts only
-// the final exact state, never timing.
+// The link proxy records homeserver-to-homeserver exchanges. The test checks
+// that every reconciliation attempt follows the sparse room overlay and that
+// all homeservers converge on the exact set. It does not assert wall time.
 //
 // Opt-in: needs an MSC4521-capable image that initiates exchanges itself.
 func testBulkReconciliation(t *testing.T) {
@@ -68,7 +68,7 @@ func testBulkReconciliation(t *testing.T) {
 	e.joinHomeservers(t)
 	e.joinOrigins(t)
 	e.waitForBaseSet(t)
-	e.restrictToHypercube()
+	e.restrictToHypercube(t)
 
 	t.Run("DigestAndStrata", e.testDigestAndStrata)
 	e.seed(t)
@@ -79,33 +79,51 @@ func testBulkReconciliation(t *testing.T) {
 	t.Run("ExchangesOnlyOverHypercubeEdges", e.testHypercubeEdges)
 }
 
-// isHypercubeEdge reports whether homeservers i and j are adjacent in the
-// 4-dimensional hypercube: their indices differ in exactly one bit.
+// isHypercubeEdge reports whether two positions in the sorted room-server
+// list differ in exactly one bit, matching the server's sparse overlay.
 func isHypercubeEdge(i, j int) bool {
 	x := i ^ j
 	return x != 0 && x&(x-1) == 0
 }
 
-// restrictToHypercube blocks every link between non-adjacent homeservers, so
-// the only way for events to spread is hop by hop along hypercube edges.
-// Blocked links fail fast with 503 and are logged, so violations are visible.
-func (e *bulkEnv) restrictToHypercube() {
+// restrictToHypercube blocks links outside the server's XOR overlay. The
+// origin mocks are room members too, so positions must come from the sorted
+// full membership list rather than the numeric hs1..hs16 labels.
+func (e *bulkEnv) restrictToHypercube(t *testing.T) {
+	t.Helper()
+	servers := make([]string, 0, 2*numGossipers)
+	for i := 0; i < numGossipers; i++ {
+		servers = append(servers, string(e.deployment.GetFullyQualifiedHomeserverName(t, hsName(i))))
+		servers = append(servers, string(e.origins[i].srv.ServerName()))
+	}
+	sort.Strings(servers)
+	e.overlayIndex = make(map[string]int, len(servers))
+	for i, server := range servers {
+		e.overlayIndex[server] = i
+	}
+	e.restrictedLogStart = len(e.proxy.Log())
 	for i := 0; i < numGossipers; i++ {
 		for j := 0; j < numGossipers; j++ {
-			if i != j && !isHypercubeEdge(i, j) {
+			if i != j && !e.isOverlayEdge(t, i, j) {
 				e.proxy.Set(hsName(i), hsName(j), linkproxy.Block)
 			}
 		}
 	}
 }
 
-// testHypercubeEdges asserts reconciliation traffic only succeeded between
-// adjacent homeservers, and logs how many exchanges each edge carried. This is
-// the observable spread profile: the Complement-visible record of who talked
-// to whom.
+func (e *bulkEnv) isOverlayEdge(t *testing.T, i, j int) bool {
+	t.Helper()
+	a := string(e.deployment.GetFullyQualifiedHomeserverName(t, hsName(i)))
+	b := string(e.deployment.GetFullyQualifiedHomeserverName(t, hsName(j)))
+	return isHypercubeEdge(e.overlayIndex[a], e.overlayIndex[b])
+}
+
+// testHypercubeEdges rejects every reconciliation attempt outside the sparse
+// overlay, including requests that the proxy blocked. Successful requests
+// alone would let an all-to-all scheduler pass this test.
 func (e *bulkEnv) testHypercubeEdges(t *testing.T) {
 	perEdge := map[string]int{}
-	for _, en := range e.proxy.Log() {
+	for _, en := range e.proxy.Log()[e.restrictedLogStart:] {
 		if !strings.Contains(en.Path, "room_diff") && !strings.Contains(en.Path, "room_digest") {
 			continue
 		}
@@ -113,8 +131,8 @@ func (e *bulkEnv) testHypercubeEdges(t *testing.T) {
 		if _, err := fmt.Sscanf(en.Src+" "+en.Dst, "hs%d hs%d", &i, &j); err != nil {
 			continue
 		}
-		if en.Status == http.StatusOK && !isHypercubeEdge(i-1, j-1) {
-			t.Errorf("reconciliation succeeded over a non-edge: %s -> %s %s", en.Src, en.Dst, en.Path)
+		if !e.isOverlayEdge(t, i-1, j-1) {
+			t.Errorf("reconciliation attempted over a non-edge: %s -> %s %s (status %d)", en.Src, en.Dst, en.Path, en.Status)
 		}
 		if en.Status == http.StatusOK {
 			perEdge[en.Src+"->"+en.Dst]++
@@ -136,13 +154,15 @@ type bulkOrigin struct {
 
 // bulkEnv holds the state shared by the bulk test's phases.
 type bulkEnv struct {
-	deployment complement.Deployment
-	prober     *federation.Server
-	proxy      *linkproxy.Proxy
-	hs1        spec.ServerName
-	users      []*client.CSAPI
-	roomID     string
-	origins    []bulkOrigin
+	deployment         complement.Deployment
+	prober             *federation.Server
+	proxy              *linkproxy.Proxy
+	hs1                spec.ServerName
+	users              []*client.CSAPI
+	roomID             string
+	origins            []bulkOrigin
+	overlayIndex       map[string]int
+	restrictedLogStart int
 
 	mu             sync.Mutex
 	originRequests []string
