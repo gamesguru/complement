@@ -1831,6 +1831,8 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 		},
 		ExpiredTS: spec.AsTimestamp(expiredTS), // expired 1 hour ago
 	}
+	// Also publish the identical body as active: expired_ts must still govern event verification.
+	mockKeyServer.verifyKeys[keyIDExpired] = pubKeyExpired
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
 	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
@@ -2029,6 +2031,39 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	serverRoomV4 := srv.MustMakeRoom(t, ver4, federation.InitialRoomEvents(ver4, charlie))
 	roomAliasV4 := srv.MakeAliasMapping("valid_until_v4_test", serverRoomV4.RoomID)
 	alice.MustJoinRoom(t, roomAliasV4, []spec.ServerName{srv.ServerName()})
+	// Every event added to this room after setup is a message, so the current
+	// state is also the state before each event. Serving it lets hs1 resolve the
+	// refreshed event even though its predecessor is the intentionally rejected probe.
+	srv.Mux().HandleFunc("/_matrix/federation/v1/state_ids/{roomID}", func(w http.ResponseWriter, req *http.Request) {
+		roomID := mux.Vars(req)["roomID"]
+		if roomID != serverRoom.RoomID {
+			t.Errorf("unexpected /state_ids request for room %s", roomID)
+			http.Error(w, "unknown room", http.StatusNotFound)
+			return
+		}
+		roomState := serverRoom.AllCurrentState()
+
+		stateEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range roomState {
+			stateEventIDs = append(stateEventIDs, ev.EventID())
+		}
+		authEventIDs := make([]string, 0, len(roomState))
+		for _, ev := range serverRoom.AuthChainForEvents(roomState) {
+			authEventIDs = append(authEventIDs, ev.EventID())
+		}
+		responseBytes, err := json.Marshal(fclient.RespStateIDs{
+			AuthEventIDs:  authEventIDs,
+			StateEventIDs: stateEventIDs,
+		})
+		if err != nil {
+			t.Errorf("failed to marshal /state_ids response: %v", err)
+			http.Error(w, "failed to marshal state IDs", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(responseBytes)
+	}).Methods(http.MethodGet)
 
 	fedClient := federationClientWithSigningKey(
 		deployment,
@@ -3500,7 +3535,11 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 				StateEventIDs: stateEventIDs,
 			}
 			responseBytes, err := json.Marshal(&res)
-			must.NotError(t, "failed to marshal /state_ids response", err)
+			if err != nil {
+				t.Errorf("failed to marshal /state_ids response: %v", err)
+				http.Error(w, "failed to marshal state IDs", http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(200)
 			_, _ = w.Write(responseBytes)
 		}).Methods("GET")
