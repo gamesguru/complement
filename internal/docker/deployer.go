@@ -114,6 +114,21 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 	return hsDeployment, nil
 }
 
+// CreateEmptyDirtyDeployment creates a dirty deployment with no homeservers, and
+// makes its network, so that CreateDirtyServer can then be called concurrently
+// without racing to create the network.
+func (d *Deployer) CreateEmptyDirtyDeployment() (*Deployment, error) {
+	if _, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, d.config.RunID, "dirty"); err != nil {
+		return nil, fmt.Errorf("CreateEmptyDirtyDeployment: %w", err)
+	}
+	return &Deployment{
+		Deployer: d,
+		Dirty:    true,
+		HS:       map[string]*HomeserverDeployment{},
+		Config:   d.config,
+	}, nil
+}
+
 // CreateDirtyDeployment creates a clean HS without any blueprints. More HSes can be added later via
 // CreateDirtyServer()
 func (d *Deployer) CreateDirtyDeployment() (*Deployment, error) {

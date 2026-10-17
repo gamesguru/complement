@@ -187,10 +187,10 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 		if err != nil {
 			operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 		}
-		// this creates a single hs1
-		tp.existingDeployment, err = d.CreateDirtyDeployment()
+		// no servers yet: the scale-up below starts hs1..hsN together
+		tp.existingDeployment, err = d.CreateEmptyDirtyDeployment()
 		if err != nil {
-			operationalSetupFailure(t, "CreateDirtyDeployment failed: %s", err)
+			operationalSetupFailure(t, "CreateEmptyDirtyDeployment failed: %s", err)
 		}
 	}
 
