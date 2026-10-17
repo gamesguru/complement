@@ -2,8 +2,10 @@
 // lets a test allow, block, or hold federation traffic on individual
 // homeserver-to-homeserver links, and see every request that crossed each link.
 //
-// How it works: each homeserver's /etc/hosts is rewritten so that its peers'
-// names resolve to the machine running the test. The proxy listens on :8448,
+// How it works: each homeserver's peers resolve to the machine running the
+// test. With COMPLEMENT_LINK_PROXY_HOMESERVERS, Docker installs those names
+// before the homeserver starts; otherwise New appends them to /etc/hosts.
+// The proxy listens on :8448,
 // presents a certificate for the requested server name signed by the Complement
 // CA (which homeservers already trust), identifies the sending homeserver by
 // its container IP, applies the link's mode, and forwards allowed requests to
@@ -110,14 +112,16 @@ func New(t ct.TestLike, deployment complement.Deployment, hsNames ...string) *Pr
 	p.server = &http.Server{Handler: p}
 	go p.server.Serve(ln) //nolint:errcheck // returns on Close
 
-	for _, hs := range hsNames {
-		var peers []string
-		for _, other := range hsNames {
-			if other != hs {
-				peers = append(peers, other)
+	if cfg.LinkProxyHomeservers == 0 {
+		for _, hs := range hsNames {
+			var peers []string
+			for _, other := range hsNames {
+				if other != hs {
+					peers = append(peers, other)
+				}
 			}
+			pointAtHost(t, deployment, hs, cfg.HostnameRunningComplement, peers)
 		}
-		pointAtHost(t, deployment, hs, cfg.HostnameRunningComplement, peers)
 	}
 	return p
 }

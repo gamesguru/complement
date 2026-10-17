@@ -118,6 +118,13 @@ type Complement struct {
 	// like Podman that uses `host.containers.internal` instead.
 	HostnameRunningComplement string
 
+	// Name: COMPLEMENT_LINK_PROXY_HOMESERVERS
+	// Default: 0
+	// Description: For link-proxy tests, map hs1 through hsN to the Docker host
+	// before each homeserver starts. This lets resolvers that load /etc/hosts at
+	// startup use the proxy, including with reusable dirty deployments.
+	LinkProxyHomeservers int
+
 	// Name: COMPLEMENT_ENABLE_DIRTY_RUNS
 	// Default: 0
 	// Description: If 1, eligible tests will be provided with reusable deployments rather than a clean deployment.
@@ -173,6 +180,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg.DebugLoggingEnabled = os.Getenv("COMPLEMENT_DEBUG") == "1"
 	cfg.AlwaysPrintServerLogs = os.Getenv("COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS") == "1"
 	cfg.EnableDirtyRuns = os.Getenv("COMPLEMENT_ENABLE_DIRTY_RUNS") == "1"
+	cfg.LinkProxyHomeservers = parseEnvWithDefault("COMPLEMENT_LINK_PROXY_HOMESERVERS", 0)
 	cfg.EnvVarsPropagatePrefix = os.Getenv("COMPLEMENT_SHARE_ENV_PREFIX")
 	cfg.PostTestScript = os.Getenv("COMPLEMENT_POST_TEST_SCRIPT")
 	cfg.FederationAbortScript = os.Getenv("COMPLEMENT_FEDERATION_ABORT_SCRIPT")
