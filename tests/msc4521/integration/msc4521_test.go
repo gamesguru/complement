@@ -2,19 +2,26 @@ package integration
 
 import "testing"
 
-// TestMSC4521 groups every MSC4521 check under one parent, so a single test is
-// selected with a slash path (`TestMSC4521/SetReconciliation/Porcelain`)
-// instead of a name prefix. Every test here needs the Complement runner.
+// TestMSC4521 groups MSC4521 checks by the behavior they exercise. Every test
+// here needs the Complement runner, except the primitive library checks.
 func TestMSC4521(t *testing.T) {
 	t.Run("Primitives", testPrimitives)
-	t.Run("ActiveRoomReconciliation", testActiveRoomReconciliation)
-	t.Run("FabricatedIDs", testFabricatedIDs)
-	t.Run("PartlyFakeClaimIsSampled", testPartlyFakeClaimIsSampled)
-	t.Run("ValidChainingIsAccepted", testValidChainingIsAccepted)
-	t.Run("RejectedEventNotRefetched", testRejectedEventNotRefetched)
-	t.Run("NonMembersAndACLBlocked", testNonMembersAndACLBlocked)
-	t.Run("NonAdvertisingPeerFallsBack", testNonAdvertisingPeerFallsBack)
-	t.Run("PausedHomeserverCatchesUp", testPausedHomeserverCatchesUp)
-	t.Run("PartitionHealUsesReconciliation", testPartitionHealUsesReconciliation)
-	t.Run("BulkReconciliation", testBulkReconciliation)
+	t.Run("Convergence", func(t *testing.T) {
+		t.Run("ActiveRoom", testActiveRoomReconciliation)
+		t.Run("PausedHomeserverCatchesUp", testPausedHomeserverCatchesUp)
+		t.Run("PartitionHeal", testPartitionHealUsesReconciliation)
+		t.Run("Bulk", testBulkReconciliation)
+	})
+	t.Run("Adversarial", func(t *testing.T) {
+		t.Run("FabricatedIDs", testFabricatedIDs)
+		t.Run("PartlyFakeClaimIsSampled", testPartlyFakeClaimIsSampled)
+		t.Run("ValidChainAccepted", testValidChainingIsAccepted)
+		t.Run("RejectedEventNotRefetched", testRejectedEventNotRefetched)
+	})
+	t.Run("Authorization", func(t *testing.T) {
+		t.Run("NonMembersAndACLBlocked", testNonMembersAndACLBlocked)
+	})
+	t.Run("Compatibility", func(t *testing.T) {
+		t.Run("NonAdvertisingPeerFallsBack", testNonAdvertisingPeerFallsBack)
+	})
 }
