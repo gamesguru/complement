@@ -14,11 +14,19 @@
 package tests
 
 import (
+	"encoding/json"
 	"math"
+	"net/http"
 	"testing"
+	"time"
+
+	"github.com/gorilla/mux"
 
 	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/internal/web"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
@@ -32,6 +40,8 @@ const pollEndRuleID = ".org.matrix.msc3930.rule.poll_end"
 
 func TestPollsLocalPushRules(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite)
+	// Venator does not yet implement pushers.
+	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -178,7 +188,152 @@ func TestPollsLocalPushRules(t *testing.T) {
 			}
 		}
 	})
+}
 
-	// TODO: Test whether the homeserver correctly calls POST /_matrix/push/v1/notify on the push gateway
-	// in accordance with the push rules. Blocked by Complement not having a push gateway implementation.
+// TestPollsPushGatewayNotifications checks that the homeserver actually calls
+// POST /_matrix/push/v1/notify according to the MSC3930 rules: poll starts
+// notify, poll responses are silenced.
+func TestPollsPushGatewayNotifications(t *testing.T) {
+	runtime.SkipIf(t, runtime.Dendrite)
+	// Venator does not yet implement pushers.
+	runtime.SkipIf(t, runtime.Venator)
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	notified := make(chan string, 16)
+	gateway := web.NewServer(t, deployment.GetConfig(), func(router *mux.Router) {
+		router.HandleFunc("/_matrix/push/v1/notify", func(w http.ResponseWriter, req *http.Request) {
+			var body struct {
+				Notification struct {
+					EventID string `json:"event_id"`
+				} `json:"notification"`
+			}
+			if err := json.NewDecoder(req.Body).Decode(&body); err == nil {
+				select {
+				case notified <- body.Notification.EventID:
+				default:
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"rejected":[]}`))
+		}).Methods("POST")
+	})
+	defer gateway.Close()
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	// A third member keeps the room out of the one-to-one rules, so the generic
+	// poll_start rule is the one under test.
+	charlie := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	bob.MustDo(t, "POST", []string{"_matrix", "client", "v3", "pushers", "set"}, client.WithJSONBody(t, map[string]interface{}{
+		"kind":                "http",
+		"app_id":              "complement.msc3930",
+		"app_display_name":    "Complement",
+		"device_display_name": "Complement",
+		"pushkey":             "msc3930_push_key",
+		"lang":                "en",
+		"data": map[string]interface{}{
+			"url":    gateway.URL + "/_matrix/push/v1/notify",
+			"format": "event_id_only",
+		},
+		"append": false,
+	}))
+
+	roomID := alice.MustCreateRoom(t, map[string]interface{}{"preset": "public_chat"})
+	bob.MustJoinRoom(t, roomID, nil)
+	charlie.MustJoinRoom(t, roomID, nil)
+
+	// Alice's own activity (the join above) must not leak into the assertions below,
+	// so drain anything the gateway has already seen.
+	drain := func() {
+		for {
+			select {
+			case <-notified:
+			default:
+				return
+			}
+		}
+	}
+	waitFor := func(eventID string) bool {
+		timeout := time.After(10 * time.Second)
+		for {
+			select {
+			case got := <-notified:
+				if got == eventID {
+					return true
+				}
+			case <-timeout:
+				return false
+			}
+		}
+	}
+
+	pollStartID := ""
+	t.Run("Poll start triggers a push gateway notification", func(t *testing.T) {
+		drain()
+		id := alice.SendEventSynced(t, roomID, b.Event{
+			Type: "org.matrix.msc3381.poll.start",
+			Content: map[string]interface{}{
+				"org.matrix.msc3381.poll.start": map[string]interface{}{
+					"kind":           "org.matrix.msc3381.poll.disclosed",
+					"max_selections": 1,
+					"question":       map[string]interface{}{"org.matrix.msc1767.text": "Pizza?"},
+					"answers": []map[string]interface{}{
+						{"id": "yes", "org.matrix.msc1767.text": "Yes"},
+						{"id": "no", "org.matrix.msc1767.text": "No"},
+					},
+				},
+				"org.matrix.msc1767.text": "Pizza?\n1. Yes\n2. No",
+			},
+		})
+		if !waitFor(id) {
+			t.Fatalf("push gateway was not notified of poll start %s", id)
+		}
+		pollStartID = id
+	})
+
+	t.Run("Poll response does not trigger a push gateway notification", func(t *testing.T) {
+		if pollStartID == "" {
+			t.Skip("no poll start to respond to")
+		}
+		drain()
+		responseID := alice.SendEventSynced(t, roomID, b.Event{
+			Type: "org.matrix.msc3381.poll.response",
+			Content: map[string]interface{}{
+				"m.relates_to": map[string]interface{}{
+					"rel_type": "m.reference",
+					"event_id": pollStartID,
+				},
+				"org.matrix.msc3381.poll.response": map[string]interface{}{"answers": []string{"yes"}},
+			},
+		})
+		// A plain message afterwards acts as a barrier. Push delivery order is not
+		// guaranteed, so after the barrier arrives we keep listening for a grace
+		// period. This is best-effort: it can miss a very late notification, but it
+		// never fails a conforming homeserver.
+		barrierID := alice.SendEventSynced(t, roomID, b.Event{
+			Type:    "m.room.message",
+			Content: map[string]interface{}{"msgtype": "m.text", "body": "barrier"},
+		})
+		barrierSeen := false
+		timeout := time.After(10 * time.Second)
+		for {
+			select {
+			case got := <-notified:
+				if got == responseID {
+					t.Fatalf("push gateway was notified of poll response %s, which MSC3930 silences", responseID)
+				}
+				if got == barrierID {
+					barrierSeen = true
+					timeout = time.After(2 * time.Second)
+				}
+			case <-timeout:
+				if !barrierSeen {
+					t.Fatalf("push gateway never received the barrier message %s", barrierID)
+				}
+				return
+			}
+		}
+	})
 }

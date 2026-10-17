@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
@@ -13,7 +15,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
 
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/tidwall/gjson"

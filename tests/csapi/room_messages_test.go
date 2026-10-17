@@ -12,6 +12,8 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -19,7 +21,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // sytest: GET /rooms/:room_id/messages returns a message
@@ -459,13 +460,13 @@ func _sendAndTestMessageHistory(
 
 		// Make it easy to understand what each `/messages` request returned
 		relevantActualEventIDsFromRequest := filterEventIDs(t, actualEventIDsFromRequest, eventIDs)
-		firstEventIndex := -1
-		lastEventIndex := -1
+		firstEventIndex := "none"
+		lastEventIndex := "none"
 		if len(relevantActualEventIDsFromRequest) > 0 {
-			firstEventIndex = slices.Index(eventIDs, relevantActualEventIDsFromRequest[0])
-			lastEventIndex = slices.Index(eventIDs, relevantActualEventIDsFromRequest[len(relevantActualEventIDsFromRequest)-1])
+			firstEventIndex = strconv.Itoa(slices.Index(eventIDs, relevantActualEventIDsFromRequest[0]))
+			lastEventIndex = strconv.Itoa(slices.Index(eventIDs, relevantActualEventIDsFromRequest[len(relevantActualEventIDsFromRequest)-1]))
 		}
-		t.Logf("Fetched %d events from the `/messages` endpoint that included events %d to %d",
+		t.Logf("Fetched %d events from the `/messages` endpoint that included events %s to %s",
 			len(actualEventIDsFromRequest),
 			firstEventIndex, lastEventIndex,
 		)

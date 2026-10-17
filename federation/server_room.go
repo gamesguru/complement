@@ -165,7 +165,7 @@ func (r *ServerRoom) AuthEvents(sn gomatrixserverlib.StateNeeded) (eventIDs []st
 	for _, mem := range sn.Member {
 		appendIfExists("m.room.member", mem)
 	}
-	return
+	return eventIDs
 }
 
 // ReplaceCurrentState inserts a new state event for this room or replaces current state depending
@@ -193,7 +193,7 @@ func (r *ServerRoom) AllCurrentState() (events []gomatrixserverlib.PDU) {
 		events = append(events, ev)
 	}
 	r.StateMutex.RUnlock()
-	return
+	return events
 }
 
 // AuthChain returns all auth events for all events in the current state TODO: recursively
@@ -241,7 +241,7 @@ func (r *ServerRoom) AuthChainForEvents(events []gomatrixserverlib.PDU) (chain [
 		}
 	}
 
-	return
+	return chain
 }
 
 // Check that the user currently has the membership provided in this room. Fails the test if not.

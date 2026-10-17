@@ -5,8 +5,12 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
+
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
@@ -14,8 +18,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 )
 
 // This test ensures that an authorised (PL 100) user is able to modify the users_default value

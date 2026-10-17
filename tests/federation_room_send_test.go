@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 	"golang.org/x/exp/slices"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"

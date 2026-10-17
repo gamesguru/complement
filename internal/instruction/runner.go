@@ -13,11 +13,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement/b"
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/internal"
 )
 
@@ -192,7 +192,7 @@ func (r *Runner) Run(hs b.Homeserver, hsURL string) (resErr error) {
 func (r *Runner) runInstructionSet(contextStr string, hsURL string, instrs []instruction) error {
 	i := 0
 	cli := http.Client{
-		Timeout: 30 * time.Second,
+		Timeout: client.DefaultClientTimeout(),
 	}
 	isFatalErr := func(err error) error {
 		if r.bestEffort {

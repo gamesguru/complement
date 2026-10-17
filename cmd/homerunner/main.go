@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/matrix-org/complement/config"
 	"github.com/matrix-org/complement/internal/docker"
-	"github.com/sirupsen/logrus"
 )
 
 const Pkg = "homerunner"
