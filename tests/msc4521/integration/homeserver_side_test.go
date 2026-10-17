@@ -474,9 +474,10 @@ func (h *homeserverSide) validateBucketRequests(t *testing.T) {
 		"ReversedOrder":    {{Depth: 1, Prefix: 1, Capacity: 4}, {Depth: 1, Prefix: 0, Capacity: 4}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, status := doRoomDiff(t, h.srv, h.deployment, r.id, diffBody(t, f, local, h64s, requests))
-			must.Equal(t, status >= 400 && status < 500 && status != 404, true,
-				"malformed bucket requests must be a client error, not success, 404 or 5xx")
+			body, status := doRoomDiff(t, h.srv, h.deployment, r.id, diffBody(t, f, local, h64s, requests))
+			must.Equal(t, status, 400, "malformed bucket requests must return M_INVALID_PARAM")
+			must.Equal(t, gjson.GetBytes(body, "errcode").Str, "M_INVALID_PARAM",
+				"malformed bucket requests must return M_INVALID_PARAM: "+string(body))
 		})
 	}
 }
