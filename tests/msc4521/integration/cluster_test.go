@@ -141,7 +141,13 @@ func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count i
 // failure shows which paths crossed which links and with what status.
 func (c *cluster) logSince(t *testing.T, from int) {
 	t.Helper()
-	for _, e := range c.proxy.Log()[from:] {
+	log := c.proxy.Log()
+	t.Logf("proxy: %d requests in all, %d since offset %d", len(log), len(log)-from, from)
+	start := from
+	if tail := len(log) - 15; start < tail {
+		start = tail
+	}
+	for _, e := range log[start:] {
 		t.Logf("proxy: %s -> %s %s %s => %d (%s)", e.Src, e.Dst, e.Method, e.Path, e.Status, e.Mode)
 	}
 }
