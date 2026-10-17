@@ -28,7 +28,7 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// homeserverSide is the real-homeserver half of testSetReconciliation.
+// homeserverSide is the real-homeserver half of testPrimitives.
 // A remote federation server holds the requester's side of a room's event set,
 // hs1 holds the other, and the library's own reconciliation client recovers the
 // difference over /room_digest and /room_diff.
@@ -473,7 +473,7 @@ func (h *homeserverSide) validateBucketRequests(t *testing.T) {
 		"Overlapping":      {{Depth: 1, Prefix: 0, Capacity: 4}, {Depth: 2, Prefix: 1, Capacity: 4}},
 		"ReversedOrder":    {{Depth: 1, Prefix: 1, Capacity: 4}, {Depth: 1, Prefix: 0, Capacity: 4}},
 	} {
-		t.Run("Homeserver/"+name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			_, status := doRoomDiff(t, h.srv, h.deployment, r.id, diffBody(t, f, local, h64s, requests))
 			must.Equal(t, status >= 400 && status < 500 && status != 404, true,
 				"malformed bucket requests must be a client error, not success, 404 or 5xx")
@@ -525,7 +525,7 @@ func (h *homeserverSide) malformedInputs(t *testing.T) {
 		"MalformedFrameAnchor": func(b map[string]interface{}) { b["frame_event_ids"] = []string{"not-an-event-id"} },
 		"SketchCountMismatch":  func(b map[string]interface{}) { b["local_sketches"] = []string{} },
 	} {
-		t.Run("Homeserver/"+name, func(t *testing.T) {
+		t.Run(name, func(t *testing.T) {
 			body := map[string]interface{}{}
 			for k, v := range valid {
 				body[k] = v
