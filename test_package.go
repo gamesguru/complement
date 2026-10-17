@@ -2,6 +2,7 @@ package complement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -203,18 +204,34 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	if err != nil {
 		operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 	}
+	// Start the missing servers in parallel: each one blocks until it answers
+	// /versions, so doing them one at a time costs several seconds apiece.
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
 	for i := 1; i <= numServers; i++ {
 		hsName := fmt.Sprintf("hs%d", i)
-		_, ok := tp.existingDeployment.HS[hsName]
-		if ok {
+		if _, ok := tp.existingDeployment.HS[hsName]; ok {
 			continue
 		}
-		// scale up
-		hsDep, err := d.CreateDirtyServer(hsName)
-		if err != nil {
-			operationalSetupFailure(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
-		}
-		tp.existingDeployment.HS[hsName] = hsDep
+		wg.Add(1)
+		go func(hsName string) {
+			defer wg.Done()
+			hsDep, err := d.CreateDirtyServer(hsName)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("failed to add %s: %w", hsName, err))
+				return
+			}
+			tp.existingDeployment.HS[hsName] = hsDep
+		}(hsName)
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		operationalSetupFailure(t, "dirtyDeploy: %s", err)
 	}
 
 	return tp.existingDeployment
