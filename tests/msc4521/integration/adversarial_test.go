@@ -155,6 +155,17 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(v)
 	}
+	m.HandleFunc("/_matrix/federation/v1/version", func(w http.ResponseWriter, _ *http.Request) {
+		features := map[string]bool{}
+		if p.advertise {
+			features["tk.nutra.msc4521.digest.algebraic_v1"] = true
+			features["tk.nutra.msc0501.reconciliation"] = true
+		}
+		reply(w, http.StatusOK, map[string]interface{}{
+			"server":            map[string]string{"name": "complement", "version": "mock"},
+			"unstable_features": features,
+		})
+	}).Methods("GET")
 	m.HandleFunc(msc4521Prefix+"room_digest/{roomID}", func(w http.ResponseWriter, r *http.Request) {
 		if !p.advertise {
 			reply(w, 404, map[string]string{"errcode": "M_UNRECOGNIZED"})
