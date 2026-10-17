@@ -70,6 +70,12 @@ func newCluster(t *testing.T, n int) *cluster {
 	c.known = roomEventIDs(t, c.users[0], c.roomID)
 	want, count := c.expectedDigest(t)
 	c.waitDigest(t, c.all(), want, count, "the cluster to agree on its starting state")
+	// Every join and send above was homeserver-to-homeserver. If none crossed
+	// the proxy it is not in the path, and every later assertion about links
+	// would pass or fail for the wrong reason.
+	if len(proxy.Log()) == 0 {
+		t.Fatal("the link proxy saw no homeserver-to-homeserver request during setup: the homeservers are not routed through it (they may not re-read /etc/hosts after startup)")
+	}
 	return c
 }
 
