@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,28 +15,24 @@ import (
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/tidwall/gjson"
-	"github.com/zeebo/blake3"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
-	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 )
 
-// TestMSC4500State exercises the MSC4500 state_accumulator endpoint and the
+// TestMSC4500State exercises the
 // outbound state_hashes extension on /send transactions.
 func TestMSC4500State(t *testing.T) {
-	t.Run("Accumulator", testMSC4500StateAccumulator)
 	t.Run("StateHashes", testMSC4500StateHashes)
 	t.Run("Outbound", testMSC4500StateOutbound)
 }
 
 const (
-	// msc4500PrimaryAlgorithm names the primary BLAKE3 LtHash16 accumulator as
-	// served by the state_accumulator endpoint. The "-v1" is an algorithm
+	// msc4500PrimaryAlgorithm names the primary BLAKE3 LtHash16 accumulator. The
+	// "-v1" is an algorithm
 	// identifier, not a spec version.
 	msc4500PrimaryAlgorithm = "lthash16-blake3-v1"
 
@@ -51,156 +45,6 @@ const (
 	// redaction digest of a state in which no selected event is redacted.
 	msc4500EmptyDigest = "viqN49z0bJTOhc3I4HrDCPTYqVSQ2VbDjXgP1hDbCBM"
 )
-
-// testMSC4500StateAccumulator verifies the state_accumulator endpoint against a
-// lattice rebuilt independently with gomatrixcrypto's lthash package, covering a
-// baseline snapshot, a rejected state event, and an accepted state replacement.
-func testMSC4500StateAccumulator(t *testing.T) {
-	deployment := complement.Deploy(t, 1)
-	defer deployment.Destroy(t)
-
-	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
-
-	// Create a remote homeserver to make authenticated federation requests
-	srv := federation.NewServer(t, deployment,
-		federation.HandleKeyRequests(),
-		federation.HandleMakeSendJoinRequests(),
-		federation.HandleTransactionRequests(nil, nil),
-	)
-	cancel := srv.Listen()
-	defer cancel()
-
-	roomID := alice.MustCreateRoom(t, map[string]interface{}{
-		"preset": "public_chat",
-	})
-
-	charlie := srv.UserID("charlie")
-	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
-
-	// The join exchange already handed this test the membership events, so they
-	// enter the cache for free; every other state event must be fetched lazily
-	// over federation.
-	cache := newMSC4500StateCache(srv, deployment)
-	seeded := cache.seed(
-		serverRoom.CurrentState("m.room.member", alice.UserID),
-		serverRoom.CurrentState("m.room.member", charlie),
-	)
-	must.Equal(t, seeded >= 1, true, "expected to already know at least one membership event")
-
-	// --- Baseline ---------------------------------------------------------------
-	// A message event does not change room state, so the accumulator's
-	// post-event snapshot and federation's pre-event /state_ids snapshot are the
-	// same set. That is what makes the rebuild below meaningful.
-	msg1 := alice.SendEventSynced(t, roomID, b.Event{
-		Type: "m.room.message",
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "accumulator baseline",
-		},
-	})
-
-	baseline := mustGetAccumulator(t, srv, deployment, roomID, msg1)
-	baselineEntries, baselineFetched := cache.mustRebuildAccumulator(t, roomID, baseline)
-	must.Equal(t, baselineFetched >= 1, true, "expected to lazily fetch at least one state event")
-
-	// --- A rejected state event leaves the accumulator alone --------------------
-	// Charlie has no power to set m.room.name, so hs1 must reject this event and
-	// apply no state change at all.
-	emptyStateKey := ""
-	rejected := srv.MustCreateEvent(t, serverRoom, federation.Event{
-		Sender:   charlie,
-		Type:     "m.room.name",
-		StateKey: &emptyStateKey,
-		Content: map[string]interface{}{
-			"name": "rejected by auth rules",
-		},
-	})
-	response := mustSendTransaction(t, srv, deployment, []json.RawMessage{rejected.JSON()})
-	rejectedResult, ok := response.PDUs[rejected.EventID()]
-	if !ok || rejectedResult.Error == "" {
-		t.Fatalf("/send did not explicitly reject %s: response=%#v", rejected.EventID(), response)
-	}
-
-	msg2 := alice.SendEventSynced(t, roomID, b.Event{
-		Type: "m.room.message",
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "after the rejected state event",
-		},
-	})
-
-	afterReject := mustGetAccumulator(t, srv, deployment, roomID, msg2)
-	must.Equal(t, afterReject.latticeB64, baseline.latticeB64, "rejected state event changed the lattice")
-	must.Equal(t, afterReject.digestB64, baseline.digestB64, "rejected state event changed the digest")
-	must.Equal(t, afterReject.nStateEvents, baseline.nStateEvents, "rejected state event changed n_state_events")
-
-	rejectEntries, rejectFetched := cache.mustRebuildAccumulator(t, roomID, afterReject)
-	// The unchanged lattice only shows the observable result; confirm the cause
-	// by checking the rejected event never became part of the room's state.
-	rejectIDs := msc4500SortedEventIDs(rejectEntries)
-	must.Equal(t, slices.Contains(rejectIDs, rejected.EventID()), false, "rejected state event is present in the state set")
-	must.Equal(t, rejectFetched, 0, "state set did not change, so nothing should have been fetched")
-	must.Equal(t,
-		strings.Join(rejectIDs, ","),
-		strings.Join(msc4500SortedEventIDs(baselineEntries), ","),
-		"rejected state event changed the state set",
-	)
-
-	// --- An accepted state event replaces exactly one element -------------------
-	// Alice's displayname update rewrites her m.room.member event: same tuple
-	// position, new event ID, so n_state_events is unchanged and the lattice
-	// must move by exactly Remove(old) + Insert(new).
-	res := alice.MustDo(t, "PUT", []string{"_matrix", "client", "v3", "rooms", roomID, "state", "m.room.member", alice.UserID},
-		client.WithJSONBody(t, map[string]interface{}{
-			"membership":  "join",
-			"displayname": "Accumulator Rewrite",
-		}))
-	newMemberEventID := must.ParseJSON(t, res.Body).Get("event_id").Str
-	must.NotEqual(t, newMemberEventID, "", "displayname update returned no event ID")
-	alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, newMemberEventID))
-
-	oldMemberEventID := msc4500MemberEventID(baselineEntries, alice.UserID)
-	must.NotEqual(t, oldMemberEventID, "", "baseline state set has no member event for alice")
-	must.NotEqual(t, newMemberEventID, oldMemberEventID, "displayname update did not mint a new member event")
-
-	msg3 := alice.SendEventSynced(t, roomID, b.Event{
-		Type: "m.room.message",
-		Content: map[string]interface{}{
-			"msgtype": "m.text",
-			"body":    "after the displayname update",
-		},
-	})
-
-	afterReplace := mustGetAccumulator(t, srv, deployment, roomID, msg3)
-	must.Equal(t, afterReplace.nStateEvents, baseline.nStateEvents, "a state replacement must not change n_state_events")
-
-	expected := lthash.FromEntries(baselineEntries)
-	expected.Remove("m.room.member", alice.UserID, oldMemberEventID)
-	expected.Insert("m.room.member", alice.UserID, newMemberEventID)
-	expectedLattice := expected.Bytes()
-	must.Equal(t,
-		afterReplace.latticeB64,
-		base64.RawURLEncoding.EncodeToString(expectedLattice[:]),
-		"accumulator did not move by exactly Remove(old) + Insert(new)",
-	)
-	expectedDigest := expected.Checksum()
-	must.Equal(t,
-		afterReplace.digestB64,
-		base64.RawURLEncoding.EncodeToString(expectedDigest[:]),
-		"digest does not match the expected single-element replacement",
-	)
-
-	replaceEntries, replaceFetched := cache.mustRebuildAccumulator(t, roomID, afterReplace)
-	// Exact on purpose: the cache already held every other event, so only the
-	// replacement member event can be missing.
-	must.Equal(t, replaceFetched, 1, "expected to fetch exactly the replacement member event")
-	must.Equal(t, msc4500MemberEventID(replaceEntries, alice.UserID), newMemberEventID, "rebuilt state set still holds the old member event")
-	must.Equal(t,
-		strings.Join(msc4500SortedEventIDs(replaceEntries), ","),
-		strings.Join(msc4500ReplacedEventIDs(baselineEntries, oldMemberEventID, newMemberEventID), ","),
-		"state set was not replaced by exactly one event",
-	)
-}
 
 // testMSC4500StateHashes drives the receiver contract with hand-built
 // state_hashes payloads: a match, primary and redaction-only mismatches, and the
@@ -226,7 +70,7 @@ func testMSC4500StateHashes(t *testing.T) {
 
 	// A message leaves state untouched, so its before and after digests are the
 	// digest after charlie's join, which hs1 already knows.
-	stateDigest := mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
+	stateDigest := msc4500StateDigest(serverRoom)
 	const bogusDigest = "ABEiM0RVZneImaq7zN3u_wARIjNEVWZ3iJmqu8zd7v8"
 
 	// send builds a fresh message, sends it with the given state_hashes entry
@@ -355,283 +199,6 @@ func mustSendStateHashes(
 	return result
 }
 
-func mustGetStateAccumulatorDigest(
-	t *testing.T,
-	srv *federation.Server,
-	deployment complement.Deployment,
-	roomID string,
-	eventID string,
-) string {
-	t.Helper()
-
-	reqURI := fmt.Sprintf("/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/%s?event_id=%s", roomID, eventID)
-	req := fclient.NewFederationRequest("GET", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-
-	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
-	must.NotError(t, "do federation request", err)
-	defer fedRes.Body.Close()
-
-	fedBody := must.ParseJSON(t, fedRes.Body)
-	digestB64 := fedBody.Get("digest").Str
-	must.NotEqual(t, digestB64, "", "Digest is empty")
-	return digestB64
-}
-
-// msc4500Accumulator is one observation of the MSC4500 state_accumulator
-// endpoint at a single DAG point.
-type msc4500Accumulator struct {
-	eventID      string
-	algorithm    string
-	latticeB64   string
-	digestB64    string
-	nStateEvents uint64
-}
-
-// mustGetAccumulator reads the accumulator at eventID and checks the parts that
-// need no rebuild: the profile identifier, the lattice width, and that the
-// digest really is the BLAKE3-256 collapse of the lattice that was served.
-func mustGetAccumulator(
-	t *testing.T,
-	srv *federation.Server,
-	deployment complement.Deployment,
-	roomID string,
-	eventID string,
-) msc4500Accumulator {
-	t.Helper()
-
-	reqURI := fmt.Sprintf("/_matrix/federation/unstable/tk.nutra.msc4500/state_accumulator/%s?event_id=%s", roomID, eventID)
-	req := fclient.NewFederationRequest("GET", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-
-	fedRes, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
-	must.NotError(t, "do state_accumulator request", err)
-	defer fedRes.Body.Close()
-
-	fedBody := must.ParseJSON(t, fedRes.Body)
-
-	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("event_id", eventID))
-	must.MatchGJSON(t, fedBody, match.JSONKeyEqual("algorithm", msc4500PrimaryAlgorithm))
-
-	latticeB64 := fedBody.Get("lattice").Str
-	digestB64 := fedBody.Get("digest").Str
-	must.NotEqual(t, latticeB64, "", "Lattice is empty")
-	must.Equal(t, len(digestB64), 43, "Digest is not 43 base64url characters")
-
-	latticeBytes, err := base64.RawURLEncoding.DecodeString(latticeB64)
-	must.NotError(t, "base64 decode lattice", err)
-	must.Equal(t, len(latticeBytes), lthash.ByteSize, "Lattice is not 2048 bytes")
-
-	// Deliberately independent of gomatrixcrypto: this checks the collapse on
-	// its own before the rebuild below checks the expansion.
-	hash := blake3.Sum256(latticeBytes)
-	must.Equal(t, digestB64, base64.RawURLEncoding.EncodeToString(hash[:]), "Digest does not match BLAKE3-256 of lattice")
-
-	return msc4500Accumulator{
-		eventID:      eventID,
-		algorithm:    fedBody.Get("algorithm").Str,
-		latticeB64:   latticeB64,
-		digestB64:    digestB64,
-		nStateEvents: fedBody.Get("n_state_events").Uint(),
-	}
-}
-
-// msc4500StateCache stands in for a homeserver's local event store. State event
-// IDs come from federation /state_ids, and only IDs the cache does not already
-// hold are fetched over federation /event.
-type msc4500StateCache struct {
-	srv        *federation.Server
-	deployment complement.Deployment
-	known      map[string]lthash.Entry
-}
-
-func newMSC4500StateCache(srv *federation.Server, deployment complement.Deployment) *msc4500StateCache {
-	return &msc4500StateCache{
-		srv:        srv,
-		deployment: deployment,
-		known:      make(map[string]lthash.Entry),
-	}
-}
-
-// seed records events the test already knows without asking hs1 for them.
-// Nil PDUs are skipped so optional lookups can be passed straight through.
-func (c *msc4500StateCache) seed(pdus ...gomatrixserverlib.PDU) int {
-	seeded := 0
-	for _, pdu := range pdus {
-		if pdu == nil {
-			continue
-		}
-		stateKey := pdu.StateKey()
-		if stateKey == nil {
-			continue
-		}
-		c.known[pdu.EventID()] = lthash.Entry{
-			EventType: pdu.Type(),
-			StateKey:  *stateKey,
-			EventID:   pdu.EventID(),
-		}
-		seeded++
-	}
-	return seeded
-}
-
-// entriesAt returns the authoritative state event ID set at eventID, fetching
-// only the IDs the cache does not hold, and reports how many were fetched.
-func (c *msc4500StateCache) entriesAt(t *testing.T, roomID, eventID string) ([]lthash.Entry, int) {
-	t.Helper()
-
-	reqURI := fmt.Sprintf("/_matrix/federation/v1/state_ids/%s?event_id=%s", roomID, eventID)
-	req := fclient.NewFederationRequest("GET", c.srv.ServerName(), c.deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	res, err := c.srv.DoFederationRequest(context.Background(), t, c.deployment, req)
-	must.NotError(t, "do state_ids request", err)
-	defer res.Body.Close()
-
-	ids := must.ParseJSON(t, res.Body).Get("pdu_ids").Array()
-	must.NotEqual(t, len(ids), 0, "state_ids returned an empty state set")
-
-	fetched := 0
-	entries := make([]lthash.Entry, 0, len(ids))
-	for _, id := range ids {
-		if entry, ok := c.known[id.Str]; ok {
-			entries = append(entries, entry)
-			continue
-		}
-		entry := c.mustFetchEvent(t, id.Str)
-		c.known[id.Str] = entry
-		fetched++
-		entries = append(entries, entry)
-	}
-	return entries, fetched
-}
-
-// mustFetchEvent pulls a single event over federation and reduces it to the
-// (type, state_key, event_id) tuple the accumulator is built from.
-func (c *msc4500StateCache) mustFetchEvent(t *testing.T, eventID string) lthash.Entry {
-	t.Helper()
-
-	reqURI := fmt.Sprintf("/_matrix/federation/v1/event/%s", eventID)
-	req := fclient.NewFederationRequest("GET", c.srv.ServerName(), c.deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	res, err := c.srv.DoFederationRequest(context.Background(), t, c.deployment, req)
-	must.NotError(t, "do event request", err)
-	defer res.Body.Close()
-
-	body := must.ParseJSON(t, res.Body)
-	// The federation response normally carries the PDU in a one-element `pdus`
-	// array; tolerate a bare object too.
-	pdu := body.Get("pdus.0")
-	if !pdu.IsObject() {
-		pdu = body.Get("pdus")
-	}
-	must.Equal(t, pdu.IsObject(), true, "event response carried no PDU for "+eventID)
-	must.NotEqual(t, pdu.Get("type").Str, "", "event has no type: "+eventID)
-	// /state_ids should only ever return state events, so a missing state_key
-	// means the response is malformed or the set contains something unexpected.
-	must.Equal(t, pdu.Get("state_key").Exists(), true, "event is not a state event (no state_key): "+eventID)
-
-	return lthash.Entry{
-		EventType: pdu.Get("type").Str,
-		StateKey:  pdu.Get("state_key").Str,
-		EventID:   eventID,
-	}
-}
-
-// mustRebuildAccumulator rebuilds the lattice from the state set at the
-// accumulator's event ID and asserts it matches, byte for byte, everything the
-// endpoint served. It returns the entries used and how many had to be fetched.
-func (c *msc4500StateCache) mustRebuildAccumulator(t *testing.T, roomID string, acc msc4500Accumulator) ([]lthash.Entry, int) {
-	t.Helper()
-
-	entries, fetched := c.entriesAt(t, roomID, acc.eventID)
-	rebuilt := lthash.FromEntries(entries)
-
-	rebuiltLattice := rebuilt.Bytes()
-	must.Equal(t,
-		base64.RawURLEncoding.EncodeToString(rebuiltLattice[:]),
-		acc.latticeB64,
-		"lattice rebuilt from /state_ids does not match the served lattice",
-	)
-
-	rebuiltDigest := rebuilt.Checksum()
-	must.Equal(t,
-		base64.RawURLEncoding.EncodeToString(rebuiltDigest[:]),
-		acc.digestB64,
-		"digest of rebuilt lattice does not match the served digest",
-	)
-
-	must.Equal(t, uint64(len(entries)), acc.nStateEvents, "n_state_events does not match the /state_ids set")
-
-	return entries, fetched
-}
-
-// mustSendTransaction PUTs the given PDUs to hs1 over federation.
-type msc4500SendResponse struct {
-	PDUs map[string]struct {
-		Error string `json:"error"`
-	} `json:"pdus"`
-}
-
-func mustSendTransaction(t *testing.T, srv *federation.Server, deployment complement.Deployment, pdus []json.RawMessage) msc4500SendResponse {
-	t.Helper()
-
-	txnBody, err := json.Marshal(map[string]interface{}{
-		"origin":           srv.ServerName(),
-		"origin_server_ts": time.Now().UnixNano() / 1000000,
-		"pdus":             pdus,
-	})
-	must.NotError(t, "json marshal txn", err)
-
-	txnID := fmt.Sprintf("txn-%d", time.Now().UnixNano())
-	reqURI := fmt.Sprintf("/_matrix/federation/v1/send/%s", txnID)
-	req := fclient.NewFederationRequest("PUT", srv.ServerName(), deployment.GetFullyQualifiedHomeserverName(t, "hs1"), reqURI)
-	must.NotError(t, "set content", req.SetContent(json.RawMessage(txnBody)))
-
-	res, err := srv.DoFederationRequest(context.Background(), t, deployment, req)
-	must.NotError(t, "do federation request", err)
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	must.NotError(t, "read send response", err)
-	t.Logf("send transaction response: %d %s", res.StatusCode, string(body))
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		t.Fatalf("send transaction failed with HTTP %d: %s", res.StatusCode, body)
-	}
-	var response msc4500SendResponse
-	must.NotError(t, "decode send response", json.Unmarshal(body, &response))
-	return response
-}
-
-// msc4500SortedEventIDs returns the event IDs of entries in a stable order so
-// two state sets can be compared as strings.
-func msc4500SortedEventIDs(entries []lthash.Entry) []string {
-	ids := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		ids = append(ids, entry.EventID)
-	}
-	slices.Sort(ids)
-	return ids
-}
-
-// msc4500MemberEventID finds the member event ID for userID in entries.
-func msc4500MemberEventID(entries []lthash.Entry, userID string) string {
-	for _, entry := range entries {
-		if entry.EventType == "m.room.member" && entry.StateKey == userID {
-			return entry.EventID
-		}
-	}
-	return ""
-}
-
-// msc4500ReplacedEventIDs is entries' ID set with one member event swapped for
-// another, used to assert a replacement changed the set by exactly -1/+1.
-func msc4500ReplacedEventIDs(entries []lthash.Entry, oldEventID, newEventID string) []string {
-	replaced := make([]lthash.Entry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.EventID == oldEventID {
-			entry.EventID = newEventID
-		}
-		replaced = append(replaced, entry)
-	}
-	return msc4500SortedEventIDs(replaced)
-}
-
 // testMSC4500StateOutbound verifies that outbound /send transactions carry the
 // MSC4500 state_hashes extension, so that remote
 // servers can validate state equivalence across the wire.
@@ -680,7 +247,7 @@ func testMSC4500StateOutbound(t *testing.T) {
 	serverRoom := srv.MustJoinRoom(t, deployment, "hs1", roomID, charlie)
 	joinEvent := serverRoom.CurrentState("m.room.member", charlie)
 	must.NotEqual(t, joinEvent, nil, "expected charlie join event in remote room state")
-	expectedDigest = mustGetStateAccumulatorDigest(t, srv, deployment, roomID, joinEvent.EventID())
+	expectedDigest = msc4500StateDigest(serverRoom)
 
 	// Trigger an outbound transaction by having alice send a message and syncing
 	// until it is present (which forces the homeserver to forward it to charlie).
@@ -762,4 +329,16 @@ func checkMSC4500Outbound(raw json.RawMessage, found *helpers.Waiter, mu *sync.M
 		found.Finish()
 		return
 	}
+}
+
+// msc4500StateDigest is the MSC4500 state digest of the room's current state as
+// the test server holds it: the BLAKE3 collapse of the LtHash over every
+// (type, state_key, event_id) tuple.
+func msc4500StateDigest(room *federation.ServerRoom) string {
+	var entries []lthash.Entry
+	for _, ev := range room.AllCurrentState() {
+		entries = append(entries, lthash.Entry{EventType: ev.Type(), StateKey: *ev.StateKey(), EventID: ev.EventID()})
+	}
+	digest := lthash.FromEntries(entries).Checksum()
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
