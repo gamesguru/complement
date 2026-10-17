@@ -165,6 +165,9 @@ func testPausedHomeserverCatchesUp(t *testing.T) {
 	d0, n0 := c.expectedDigest(t)
 	c.waitDigest(t, c.all(), d0, n0, "pre-partition agreement")
 
+	// Ordinary delivery into the paused server stays off, so only
+	// reconciliation can close the gap.
+	c.proxy.BlockPathInto(hsName(1), "/send/")
 	c.deployment.PauseServer(t, hsName(1))
 	for i := 0; i < 2; i++ {
 		c.say(t, 0, fmt.Sprintf("during partition %d", i))
@@ -204,6 +207,9 @@ func testPartitionHealUsesReconciliation(t *testing.T) {
 	d0, n0 := c.expectedDigest(t)
 	c.waitDigest(t, c.all(), d0, n0, "pre-partition agreement")
 
+	// Ordinary delivery into the partitioned server stays off after the heal,
+	// so only reconciliation can close the gap.
+	c.proxy.BlockPathInto(hsName(3), "/send/")
 	c.proxy.SetInto(hsName(3), linkproxy.Block)
 	c.proxy.SetAll(hsName(3), linkproxy.Block)
 	for i := 0; i < 3; i++ {

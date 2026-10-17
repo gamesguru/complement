@@ -53,6 +53,8 @@ func (m Mode) String() string { return [...]string{"allow", "block", "hold"}[m] 
 
 type link struct{ src, dst string }
 
+type pathBlock struct{ dst, substr string }
+
 // Entry records one request that reached the proxy.
 type Entry struct {
 	Time     time.Time
@@ -71,12 +73,14 @@ type Proxy struct {
 	caKey      *rsa.PrivateKey
 	ipToHS     map[string]string
 
-	mu      sync.Mutex
-	modes   map[link]Mode
-	changed chan struct{} // closed and replaced whenever a mode changes
-	log     []Entry
-	certs   map[string]*tls.Certificate
-	server  *http.Server
+	mu    sync.Mutex
+	modes map[link]Mode
+	// pathBlocks answer 503 to matching requests even on an Allow link.
+	pathBlocks []pathBlock
+	changed    chan struct{} // closed and replaced whenever a mode changes
+	log        []Entry
+	certs      map[string]*tls.Certificate
+	server     *http.Server
 }
 
 // New starts a proxy for the named homeservers (e.g. "hs1", "hs2") and points
@@ -155,6 +159,27 @@ func (p *Proxy) SetInto(dst string, m Mode) {
 	close(p.changed)
 	p.changed = make(chan struct{})
 	p.mu.Unlock()
+}
+
+// BlockPathInto makes every request into dst whose path contains pathSubstr
+// fail with 503 regardless of the link mode, until the proxy is closed. A test
+// uses it to switch off one delivery mechanism (such as /send/) so that only
+// another (reconciliation) can close a gap.
+func (p *Proxy) BlockPathInto(dst, pathSubstr string) {
+	p.mu.Lock()
+	p.pathBlocks = append(p.pathBlocks, pathBlock{dst, pathSubstr})
+	p.mu.Unlock()
+}
+
+func (p *Proxy) pathBlocked(dst, path string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, b := range p.pathBlocks {
+		if b.dst == dst && strings.Contains(path, b.substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // Log returns a copy of every request seen so far, oldest first.
@@ -237,7 +262,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-	if m == Block {
+	if m == Block || p.pathBlocked(dst, r.URL.Path) {
 		sw.WriteHeader(http.StatusServiceUnavailable)
 		p.record(Entry{Time: time.Now(), Src: src, Dst: dst, Method: r.Method, Path: r.URL.Path, Mode: Block, Status: sw.status})
 		return
