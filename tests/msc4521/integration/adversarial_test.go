@@ -245,13 +245,14 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 }
 
 // rounds counts the exchanges the homeserver has started with this peer: each
-// begins with a plain room_digest request, before any strata request.
+// begins with a room_digest/strata request (see exchange in the reconcile
+// service), which is also what separates it from a prober's plain digest read.
 func (p *scriptedPeer) rounds() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	n := 0
 	for _, r := range p.reqs {
-		if strings.Contains(r, "room_digest/") && !strings.HasSuffix(r, "/strata") {
+		if strings.HasSuffix(r, "/strata") {
 			n++
 		}
 	}
