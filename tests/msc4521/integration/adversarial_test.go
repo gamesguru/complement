@@ -275,11 +275,22 @@ func (e *adversaryEnv) hs1Digest(t *testing.T) (string, int64) {
 	return d.Get("digest").Str, d.Get("known_event_count").Int()
 }
 
+// triggerRoomActivity makes a claim change observable to the homeserver. A
+// mock changing its digest in memory does not itself send a federation event.
+func (e *adversaryEnv) triggerRoomActivity(t *testing.T) {
+	t.Helper()
+	e.alice.SendEventSynced(t, e.roomID, b.Event{
+		Type:    "m.room.message",
+		Content: map[string]interface{}{"msgtype": "m.text", "body": "trigger reconciliation"},
+	})
+}
+
 // 1. A peer claims thousands of event IDs that do not exist.
 func testFabricatedIDs(t *testing.T) {
 	e := newAdversaryEnv(t, true, true)
 	fakes := fakeIDs(5000)
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), fakes)
+	e.triggerRoomActivity(t)
 	digest, count := e.hs1Digest(t)
 
 	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
@@ -310,6 +321,7 @@ func testPartlyFakeClaimIsSampled(t *testing.T) {
 	fakes := fakeIDs(100)
 	offered := append(append([]string{}, real...), fakes...)
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), offered)
+	e.triggerRoomActivity(t)
 
 	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
 
@@ -339,6 +351,7 @@ func testValidChainingIsAccepted(t *testing.T) {
 		ids = append(ids, ev.EventID())
 	}
 	e.peer.claim(timelineIDs(e.peer), ids)
+	e.triggerRoomActivity(t)
 
 	start := time.Now()
 	deadline := start.Add(60 * time.Second)
@@ -377,6 +390,7 @@ func testRejectedEventNotRefetched(t *testing.T) {
 	})
 	e.peer.room.AddEvent(bad)
 	e.peer.claim(timelineIDs(e.peer), []string{bad.EventID()})
+	e.triggerRoomActivity(t)
 
 	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
 
