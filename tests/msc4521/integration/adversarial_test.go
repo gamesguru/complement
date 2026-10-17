@@ -166,15 +166,6 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 			"unstable_features": features,
 		})
 	}).Methods("GET")
-	if advertise {
-		// A homeserver reads this before it sends the reconciliation endpoints.
-		m.HandleFunc("/_matrix/federation/v1/version", func(w http.ResponseWriter, r *http.Request) {
-			reply(w, 200, map[string]interface{}{
-				"server":            map[string]string{"name": "scripted-peer", "version": "test"},
-				"unstable_features": map[string]bool{"tk.nutra.msc4521.digest.algebraic_v1": true},
-			})
-		}).Methods("GET")
-	}
 	m.HandleFunc(msc4521Prefix+"room_digest/{roomID}", func(w http.ResponseWriter, r *http.Request) {
 		if !p.advertise {
 			reply(w, 404, map[string]string{"errcode": "M_UNRECOGNIZED"})
