@@ -137,6 +137,15 @@ func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count i
 	}
 }
 
+// logSince reports every proxied request after log offset `from`, so a
+// failure shows which paths crossed which links and with what status.
+func (c *cluster) logSince(t *testing.T, from int) {
+	t.Helper()
+	for _, e := range c.proxy.Log()[from:] {
+		t.Logf("proxy: %s -> %s %s %s => %d (%s)", e.Src, e.Dst, e.Method, e.Path, e.Status, e.Mode)
+	}
+}
+
 func (c *cluster) all() []int {
 	s := make([]int, c.n)
 	for i := range s {
@@ -183,6 +192,7 @@ func testPausedHomeserverCatchesUp(t *testing.T) {
 		d, n, status := c.tryDigest(t, 1)
 		if status == 200 && d == want && n == wantCount {
 			if recon == 0 {
+				c.logSince(t, resumedAt)
 				t.Fatal("the resumed homeserver caught up without reconciliation")
 			}
 			return
@@ -235,14 +245,17 @@ func testPartitionHealUsesReconciliation(t *testing.T) {
 		recon := c.countSince(healedAt, "room_diff") + c.countSince(healedAt, "room_digest")
 		if d, n, status := c.tryDigest(t, 3); status == 200 && d == want && n == wantCount {
 			if recon == 0 {
+				c.logSince(t, healedAt)
 				t.Fatal("the healed homeserver caught up without any reconciliation request crossing a link")
 			}
 			return
 		}
 		if recon == 0 && time.Since(start) >= noActivityGrace {
+			c.logSince(t, healedAt)
 			t.Fatalf("no reconciliation request crossed a link within %s of healing: the homeserver does not reconcile", noActivityGrace)
 		}
 		if time.Since(start) >= 10*time.Second {
+			c.logSince(t, healedAt)
 			t.Fatalf("the healed homeserver did not catch up within 10s of reconciling (%d requests seen)", recon)
 		}
 		time.Sleep(250 * time.Millisecond)

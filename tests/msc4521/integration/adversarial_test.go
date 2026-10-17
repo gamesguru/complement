@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -397,11 +398,14 @@ func testNonMembersAndACLBlocked(t *testing.T) {
 	stranger.claim(fakeIDs(10), fakeIDs(10))
 	blocked := e.peer
 	blocked.claim(fakeIDs(10), fakeIDs(10))
+	// ACL entries match the host only: an entry with a port matches nothing.
+	blockedHost, _, err := net.SplitHostPort(string(blocked.srv.ServerName()))
+	must.NotError(t, "split the blocked server's name", err)
 	e.alice.SendEventSynced(t, e.roomID, b.Event{
 		Type: "m.room.server_acl", StateKey: b.Ptr(""),
 		Content: map[string]interface{}{
 			"allow": []string{"*"},
-			"deny":  []string{string(blocked.srv.ServerName())},
+			"deny":  []string{blockedHost},
 		},
 	})
 	before := blocked.count("room_digest") + blocked.count("room_diff")
