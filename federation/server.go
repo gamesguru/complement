@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +130,23 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 		})
 	})
 	srv.mux.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Ask a plain mock about its capabilities and it has none, rather than
+		// being an unexpected request: a homeserver may check before using an
+		// optional feature. Anything a test registers itself matches first.
+		if req.Method == http.MethodGet && req.URL.Path == "/_matrix/federation/v1/version" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"server":{"name":"complement","version":"mock"}}`))
+			return
+		}
+		// A server that lacks an optional endpoint answers M_UNRECOGNIZED. This
+		// covers a homeserver that probes MSC4521 reconciliation without
+		// reading the mock's (empty) capabilities first.
+		if isMSC4521FallbackPath(req.Method, req.URL.Path) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(404)
+			w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+			return
+		}
 		if srv.UnexpectedRequestsAreErrors {
 			body, _ := ioutil.ReadAll(req.Body)
 			ct.Errorf(t, "Server.UnexpectedRequestsAreErrors=true received unexpected request to server: %s %s\n%s", req.Method, req.URL.Path, string(body))
@@ -150,6 +168,28 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 		opt(srv)
 	}
 	return srv
+}
+
+// isMSC4521FallbackPath reports whether path is one of the optional
+// reconciliation endpoints that a server without MSC4521 should reject as
+// unrecognized. Keep this narrow so unrelated unexpected requests still fail.
+func isMSC4521FallbackPath(method, path string) bool {
+	const prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	path = strings.TrimPrefix(path, prefix)
+	parts := strings.Split(path, "/")
+	switch {
+	case method == http.MethodGet && len(parts) == 2 && parts[0] == "room_digest":
+		return parts[1] != ""
+	case method == http.MethodGet && len(parts) == 3 && parts[0] == "room_digest":
+		return parts[1] != "" && parts[2] == "strata"
+	case method == http.MethodPost && len(parts) == 2 && parts[0] == "room_diff":
+		return parts[1] != ""
+	default:
+		return false
+	}
 }
 
 // Return the server name of this federation server. Only valid AFTER calling Listen() - doing so
