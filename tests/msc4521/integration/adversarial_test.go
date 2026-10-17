@@ -35,6 +35,14 @@ const (
 	settle             = 20 * time.Second // upper bound on any wait for the homeserver
 	noActivityGrace    = 3 * time.Second  // give up early if the homeserver sends nothing at all
 	quietPeriod        = 2 * time.Second  // activity counts as finished after this much silence
+	// roundQuiet ends a wait whose bound is per exchange. Fetches within one
+	// exchange arrive milliseconds apart, so this much silence means the
+	// exchange is over; it does not wait for any retry.
+	roundQuiet = 500 * time.Millisecond
+	// laterRoundWait bounds the wait for another exchange to start after a
+	// trigger. Exceeding it weakens a check but is not a failure: whether and
+	// when the homeserver starts another exchange is its own policy.
+	laterRoundWait = 5 * time.Second
 )
 
 const msc4521Prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
@@ -201,11 +209,11 @@ func requireSupported(t *testing.T, digestStatus int) {
 }
 
 // settleOn waits for the homeserver's activity, measured by count, to start
-// and then go quiet. It returns after quietPeriod without change once there has
+// and then go quiet. It returns after quiet without change once there has
 // been activity, after noActivityGrace if there never is, or after settle at
 // the latest, so a homeserver that does nothing fails in seconds instead of
 // sleeping out the whole bound.
-func settleOn(count func() int) {
+func settleOn(count func() int, quiet time.Duration) {
 	start := time.Now()
 	last, changed := count(), time.Now()
 	for time.Since(start) < settle {
@@ -216,10 +224,38 @@ func settleOn(count func() int) {
 		if last == 0 && time.Since(start) >= noActivityGrace {
 			return
 		}
-		if last > 0 && time.Since(changed) >= quietPeriod {
+		if last > 0 && time.Since(changed) >= quiet {
 			return
 		}
 	}
+}
+
+// waitFor polls cond until it holds or timeout passes, and reports which.
+func waitFor(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if cond() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// rounds counts the exchanges the homeserver has started with this peer: each
+// begins with a plain room_digest request, before any strata request.
+func (p *scriptedPeer) rounds() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, r := range p.reqs {
+		if strings.Contains(r, "room_digest/") && !strings.HasSuffix(r, "/strata") {
+			n++
+		}
+	}
+	return n
 }
 
 func fakeEventID(n int) string {
@@ -293,7 +329,7 @@ func testFabricatedIDs(t *testing.T) {
 	e.triggerRoomActivity(t)
 	digest, count := e.hs1Digest(t)
 
-	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
+	settleOn(func() int { return e.peer.count("/federation/v1/event/") }, roundQuiet)
 
 	fetches := e.peer.count("/federation/v1/event/")
 	t.Logf("peer saw %d /event fetches for %d fabricated IDs", fetches, len(fakes))
@@ -323,7 +359,7 @@ func testPartlyFakeClaimIsSampled(t *testing.T) {
 	e.peer.claim(append(timelineIDs(e.peer), fakes...), offered)
 	e.triggerRoomActivity(t)
 
-	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
+	settleOn(func() int { return e.peer.count("/federation/v1/event/") }, roundQuiet)
 
 	fetches := e.peer.count("/federation/v1/event/")
 	t.Logf("peer saw %d fetches for %d claimed IDs (50%% fake)", fetches, len(offered))
@@ -392,13 +428,27 @@ func testRejectedEventNotRefetched(t *testing.T) {
 	e.peer.claim(timelineIDs(e.peer), []string{bad.EventID()})
 	e.triggerRoomActivity(t)
 
-	settleOn(func() int { return e.peer.count("/federation/v1/event/") })
-
-	n := e.peer.count("/federation/v1/event/" + bad.EventID())
-	t.Logf("rejected event fetched %d time(s) over %s", n, settle)
-	if n == 0 {
+	badPath := "/federation/v1/event/" + bad.EventID()
+	// Positive: the offered event must be fetched, or rejection was not tested.
+	if !waitFor(noActivityGrace, func() bool { return e.peer.count(badPath) >= 1 }) {
 		t.Fatal("homeserver never fetched the offered event, so the test did not exercise rejection")
 	}
+	// Negative: a later exchange must have run to completion before silence
+	// means anything. Exchanges with a peer never overlap, so the start of the
+	// next one shows the previous one is over. Two triggers make the one that
+	// could have refetched finish before the count is read.
+	observed := true
+	for i := 0; i < 2 && observed; i++ {
+		want := e.peer.rounds() + 1
+		e.triggerRoomActivity(t)
+		observed = waitFor(laterRoundWait, func() bool { return e.peer.rounds() >= want })
+	}
+	if !observed {
+		t.Logf("no later exchange started within %s of a trigger; the check below rests on silence alone", laterRoundWait)
+	}
+
+	n := e.peer.count(badPath)
+	t.Logf("rejected event fetched %d time(s)", n)
 	if n > 1 {
 		t.Errorf("rejected event refetched %d times; it should be remembered", n)
 	}
@@ -427,7 +477,7 @@ func testNonMembersAndACLBlocked(t *testing.T) {
 	settleOn(func() int {
 		return blocked.count("room_digest") + blocked.count("room_diff") +
 			stranger.count("room_digest") + stranger.count("room_diff")
-	})
+	}, quietPeriod)
 
 	for name, p := range map[string]*scriptedPeer{"stranger": stranger} {
 		if n := p.count("room_digest") + p.count("room_diff"); n != 0 {
@@ -473,7 +523,7 @@ func testNonAdvertisingPeerFallsBack(t *testing.T) {
 
 	settleOn(func() int {
 		return e.peer.count("/get_missing_events/") + e.peer.count("/state_ids/") + e.peer.count("/federation/v1/event/")
-	})
+	}, quietPeriod)
 
 	ordinary := e.peer.count("/get_missing_events/") + e.peer.count("/state_ids/") + e.peer.count("/federation/v1/event/")
 	if ordinary == 0 {
