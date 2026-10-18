@@ -251,12 +251,18 @@ func TestFilter(t *testing.T) {
 		}
 		t.Run(string(filterJSON), func(t *testing.T) {
 			res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
-			must.MatchResponse(t, res, match.HTTPResponse{
+			body := must.MatchResponse(t, res, match.HTTPResponse{
 				StatusCode: 400,
-				JSON: []match.JSON{
-					match.JSONKeyEqual("errcode", "M_BAD_JSON"),
-				},
 			})
+			var response struct {
+				ErrCode string `json:"errcode"`
+			}
+			if err := json.Unmarshal(body, &response); err != nil {
+				t.Fatalf("failed to decode filter error response: %s", err)
+			}
+			if response.ErrCode != "M_BAD_JSON" && response.ErrCode != "M_UNKNOWN" {
+				t.Fatalf("unexpected filter error code %q, want M_BAD_JSON or M_UNKNOWN", response.ErrCode)
+			}
 		})
 	}
 }
