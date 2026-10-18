@@ -2244,54 +2244,50 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		}
 	}
 
-	// === Refresh: origin extends its window, then the same shape → ACCEPT ===
-	// hs1's cache still holds the original (by now stale) validUntil, so this
-	// exercises the refetch path rather than a warm cache: a stale copy must
-	// trigger a refresh, not a blanket rejection of that origin's events.
-	mockKeyServer.mu.Lock()
-	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
-	mockKeyServer.mu.Unlock()
-	// The HS caches the key document until its original valid_until_ts. Wait
-	// for that timestamp to pass so the request-auth key lookup has to fetch
-	// the extended document before validating refreshEvent.
-	if wait := time.Until(validUntil); wait > 0 {
-		time.Sleep(wait + 100*time.Millisecond)
-	}
+	t.Run("RefreshAfterWindowExtension", func(t *testing.T) {
+		// The event timestamp exceeds the cached key document's valid_until_ts,
+		// but the document is still valid at the current wall-clock time. A
+		// conforming server must refresh the key document to validate the event.
+		mockKeyServer.mu.Lock()
+		mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+		mockKeyServer.mu.Unlock()
 
-	refreshEvent := buildEventWithSigningKey(
-		t,
-		serverRoom,
-		spec.ServerName(srv.ServerName()),
-		keyID,
-		privKey,
-		validUntil.Add(10*time.Minute),
-		federation.Event{
-			Sender: charlie,
-			Type:   "m.room.message",
-			Content: map[string]interface{}{
-				"msgtype": "m.text",
-				"body":    "Event signed after the origin extended its window — must be accepted",
+		refreshEvent := buildEventWithSigningKey(
+			t,
+			serverRoom,
+			spec.ServerName(srv.ServerName()),
+			keyID,
+			privKey,
+			validUntil.Add(10*time.Minute),
+			federation.Event{
+				Sender: charlie,
+				Type:   "m.room.message",
+				Content: map[string]interface{}{
+					"msgtype": "m.text",
+					"body":    "Event signed after the origin extended its window — must be accepted",
+				},
 			},
-		},
-	)
-	serverRoom.AddEvent(refreshEvent)
+		)
+		serverRoom.AddEvent(refreshEvent)
 
-	ctx4, cancelCtx4 := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelCtx4()
-	refreshResp, refreshErr := fedClient.SendTransaction(ctx4, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-refresh-%d", time.Now().UnixNano())),
-		Origin:        spec.ServerName(srv.ServerName()),
-		Destination:   "hs1",
-		PDUs:          []json.RawMessage{refreshEvent.JSON()},
-	})
-	must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
-	for eventID, pduResp := range refreshResp.PDUs {
-		if pduResp.Error != "" {
-			// Dendrite verifies against its stale cached key and never re-fetches
-			// (no fetcher request is logged for this transaction).
-			skipKnownGap(t, []string{runtime.Dendrite}, "Server does not refresh a stale cached key — hs1 rejected event %s after the origin extended valid_until_ts past the event's origin_server_ts: %s", eventID, pduResp.Error)
+		ctx4, cancelCtx4 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx4()
+		refreshResp, refreshErr := fedClient.SendTransaction(ctx4, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-refresh-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{refreshEvent.JSON()},
+		})
+		must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
+		for eventID, pduResp := range refreshResp.PDUs {
+			if pduResp.Error != "" {
+				// FIXME: Dendrite currently decides whether to refresh a cached
+				// key based on wall-clock validity, not the event's requested
+				// minimum validity timestamp (federationapi/internal/keys.go).
+				skipKnownGap(t, []string{runtime.Dendrite}, "Server did not refresh its cached key for event %s after valid_until_ts was extended: %s", eventID, pduResp.Error)
+			}
 		}
-	}
+	})
 }
 
 // Test that duplicate JSON keys within a single object in key response payloads
