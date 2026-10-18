@@ -1999,6 +1999,7 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 
 	srv := federation.NewServer(t, deployment,
 		federation.HandleMakeSendJoinRequests(),
+		federation.HandleEventRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
 	srv.UnexpectedRequestsAreErrors = false
