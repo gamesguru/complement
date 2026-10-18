@@ -3739,6 +3739,13 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Bob joins too")
+			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				if e.Type() != "m.room.member" || string(e.SenderID()) != bob.UserID ||
+					e.StateKey() == nil || *e.StateKey() != bob.UserID {
+					return false
+				}
+				return gjson.ParseBytes(e.Content()).Get("membership").Str == "join"
+			})
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
 			t.Log("Bob waits to see his join")
