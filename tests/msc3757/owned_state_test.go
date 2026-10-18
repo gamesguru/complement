@@ -4,8 +4,11 @@
 package tests
 
 import (
+	"io"
 	"net/http"
 	"testing"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
@@ -84,7 +87,7 @@ func TestMSC3757OwnedState(t *testing.T) {
 	user1 := deployment.Register(t, hsName, helpers.RegistrationOpts{})
 	user2 := deployment.Register(t, hsName, helpers.RegistrationOpts{})
 
-	roomID := creator.MustCreateRoom(t, map[string]interface{}{
+	res := creator.CreateRoom(t, map[string]interface{}{
 		"room_version": "org.matrix.msc3757.10",
 		"preset":       "public_chat",
 		"power_level_content_override": map[string]interface{}{
@@ -93,6 +96,16 @@ func TestMSC3757OwnedState(t *testing.T) {
 			},
 		},
 	})
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	must.NotError(t, "read createRoom response", err)
+	// A homeserver that does not implement the MSC refuses its room version.
+	// Any other failure is still a failure.
+	if res.StatusCode == http.StatusBadRequest && gjson.GetBytes(body, "errcode").Str == "M_UNSUPPORTED_ROOM_VERSION" {
+		t.Skip("homeserver does not implement MSC3757 owned state (unsupported room version org.matrix.msc3757.10)")
+	}
+	must.Equal(t, res.StatusCode, http.StatusOK, "createRoom status: "+string(body))
+	roomID := gjson.GetBytes(body, "room_id").Str
 	user1.MustJoinRoom(t, roomID, nil)
 	user2.MustJoinRoom(t, roomID, nil)
 
