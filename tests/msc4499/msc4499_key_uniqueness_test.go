@@ -49,11 +49,12 @@ type MockKeyServer struct {
 	privKey    ed25519.PrivateKey
 	pubKey     ed25519.PublicKey
 
-	mu            sync.Mutex
-	verifyKeys    map[gomatrixserverlib.KeyID]ed25519.PublicKey
-	oldVerifyKeys map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey
-	validUntil    time.Time
-	shouldCollide bool
+	mu                sync.Mutex
+	verifyKeys        map[gomatrixserverlib.KeyID]ed25519.PublicKey
+	oldVerifyKeys     map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey
+	additionalSigners map[gomatrixserverlib.KeyID]ed25519.PrivateKey
+	validUntil        time.Time
+	shouldCollide     bool
 
 	// Advanced test controls
 	delay        time.Duration
@@ -142,6 +143,14 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(500)
 		w.Write([]byte(err.Error()))
 		return
+	}
+	for keyID, privateKey := range m.additionalSigners {
+		k.Raw, err = gomatrixserverlib.SignJSON(string(m.serverName), keyID, privateKey, k.Raw)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(err.Error()))
+			return
+		}
 	}
 
 	w.WriteHeader(200)
@@ -1851,6 +1860,10 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	}
 	// Also publish the identical body as active: expired_ts must still govern event verification.
 	mockKeyServer.verifyKeys[keyIDExpired] = pubKeyExpired
+	// Every key in verify_keys must sign the key document for it to pass CheckKeys.
+	mockKeyServer.additionalSigners = map[gomatrixserverlib.KeyID]ed25519.PrivateKey{
+		keyIDExpired: privKeyExpired,
+	}
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
 	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
@@ -2027,6 +2040,9 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		verifyKeys: map[gomatrixserverlib.KeyID]ed25519.PublicKey{
 			keyID:     pubKey,
 			srv.KeyID: federationPubKey,
+		},
+		additionalSigners: map[gomatrixserverlib.KeyID]ed25519.PrivateKey{
+			srv.KeyID: srv.Priv,
 		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    validUntil,
