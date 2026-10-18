@@ -158,7 +158,7 @@ func preMapped(linkProxyHomeservers int, hsNames []string) bool {
 	}
 	for _, hs := range hsNames {
 		n, err := strconv.Atoi(strings.TrimPrefix(hs, "hs"))
-		if err != nil || !strings.HasPrefix(hs, "hs") || n < 1 || n > linkProxyHomeservers {
+		if err != nil || !strings.HasPrefix(hs, "hs") || hs != fmt.Sprintf("hs%d", n) || n < 1 || n > linkProxyHomeservers {
 			return false
 		}
 	}
