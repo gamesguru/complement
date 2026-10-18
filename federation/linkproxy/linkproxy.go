@@ -112,7 +112,18 @@ func New(t ct.TestLike, deployment complement.Deployment, hsNames ...string) *Pr
 	p.server = &http.Server{Handler: p}
 	go p.server.Serve(ln) //nolint:errcheck // returns on Close
 
-	if cfg.LinkProxyHomeservers == 0 {
+	premapped := func(hs string) bool {
+		var n int
+		_, err := fmt.Sscanf(hs, "hs%d", &n)
+		return err == nil && fmt.Sprintf("hs%d", n) == hs && n >= 1 && n <= cfg.LinkProxyHomeservers
+	}
+	allPremapped := true
+	for _, hs := range hsNames {
+		if !premapped(hs) {
+			allPremapped = false
+		}
+	}
+	if !allPremapped {
 		for _, hs := range hsNames {
 			var peers []string
 			for _, other := range hsNames {

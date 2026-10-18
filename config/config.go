@@ -162,6 +162,7 @@ type Complement struct {
 	// and TestFailed=false.
 	PostTestScript string
 
+	// Name: COMPLEMENT_FEDERATION_ABORT_SCRIPT
 	// Default: ""
 	// Description: An arbitrary script to execute for every homeserver container when a federation.Server
 	// stops listening, so the homeserver can stop sending to it. The script is passed the parameters:

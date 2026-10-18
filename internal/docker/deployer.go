@@ -444,12 +444,13 @@ func deployImageOnce(
 		// Note: this feature of docker landed in Docker 20.10,
 		// see https://github.com/moby/moby/pull/40007
 		extraHosts = []string{fmt.Sprintf("%s:host-gateway", cfg.HostnameRunningComplement)}
-		for i := 1; i <= cfg.LinkProxyHomeservers; i++ {
-			peer := fmt.Sprintf("hs%d", i)
-			if peer != hsName {
-				extraHosts = append(extraHosts, peer+":host-gateway")
-			}
+	}
+	for i := 1; i <= cfg.LinkProxyHomeservers; i++ {
+		peer := fmt.Sprintf("hs%d", i)
+		if peer != hsName {
+			extraHosts = append(extraHosts, peer+":host-gateway")
 		}
+	}
 	}
 
 	for _, m := range cfg.HostMounts {

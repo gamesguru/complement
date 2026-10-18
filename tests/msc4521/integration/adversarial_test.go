@@ -284,6 +284,8 @@ func fakeIDs(n int) []string {
 }
 
 func timelineIDs(p *scriptedPeer) []string {
+	p.room.TimelineMutex.RLock()
+	defer p.room.TimelineMutex.RUnlock()
 	var ids []string
 	for _, ev := range p.room.Timeline {
 		ids = append(ids, ev.EventID())
