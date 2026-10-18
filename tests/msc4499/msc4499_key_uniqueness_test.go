@@ -2025,10 +2025,10 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	must.NotError(t, "failed to generate active signing key", err)
 	keyID := gomatrixserverlib.KeyID("ed25519:valid_until_probe")
 
-	// Keep the initial key document valid only briefly. The probe event's
-	// origin_server_ts is placed past this instant while the key stays active;
-	// the later refresh case explicitly extends the window.
-	validUntil := time.Now().Add(5 * time.Second)
+	// Deliberately keep this window well ahead of wall-clock time: the probe
+	// event's origin_server_ts is past it, while the cached key document remains
+	// fresh. This isolates refresh-on-event-time from ordinary cache expiry.
+	validUntil := time.Now().Add(2 * time.Hour)
 	// This endpoint is also used while bootstrapping the rooms. Publish the
 	// federation server's key alongside the probe key so Synapse can verify the
 	// create and membership events signed by srv.KeyID.
@@ -2102,14 +2102,11 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		_, _ = w.Write(responseBytes)
 	}).Methods(http.MethodGet)
 
-	// Use the federation server key for request authentication. The PDU itself
-	// is signed by keyID; keeping those keys separate lets the final request
-	// refresh the key document after its original valid_until_ts has elapsed.
 	fedClient := federationClientWithSigningKey(
 		deployment,
 		spec.ServerName(srv.ServerName()),
-		srv.KeyID,
-		srv.Priv,
+		keyID,
+		privKey,
 	)
 
 	// === Control: origin_server_ts = now, inside validUntil → MUST ACCEPT ===
