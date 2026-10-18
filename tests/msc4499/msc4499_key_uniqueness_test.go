@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -145,6 +146,22 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(200)
 	w.Write(k.Raw)
+}
+
+// Handle the legacy key query endpoint used by some homeservers when fetching
+// keys from a remote server. The regular mock endpoint above serves the same
+// signed key document at /key/v2/server.
+func registerMockKeyQuery(srv *federation.Server, mock *MockKeyServer) {
+	srv.Mux().HandleFunc("/_matrix/key/v2/query", func(w http.ResponseWriter, req *http.Request) {
+		keyResponse := httptest.NewRecorder()
+		mock.ServeHTTP(keyResponse, req)
+		if keyResponse.Code != http.StatusOK {
+			http.Error(w, keyResponse.Body.String(), keyResponse.Code)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"server_keys":[%s]}`, keyResponse.Body.String())
+	}).Methods(http.MethodPost)
 }
 
 // queryNotary requests a specific server key via the homeserver-under-test's
@@ -1809,6 +1826,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+	registerMockKeyQuery(srv, mockKeyServer)
 
 	// Create a public room on srv and have hs1 join.
 	// hs1 fetches keys during join, caches ONLY keyIDActive.
@@ -2015,6 +2033,7 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+	registerMockKeyQuery(srv, mockKeyServer)
 
 	ver := alice.GetDefaultRoomVersion(t)
 	if n, parseErr := strconv.Atoi(string(ver)); parseErr != nil || n < 5 {
