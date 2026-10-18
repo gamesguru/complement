@@ -116,7 +116,8 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 
 // CreateEmptyDirtyDeployment creates a dirty deployment with no homeservers, and
 // makes its network, so that CreateDirtyServer can then be called concurrently
-// without racing to create the network.
+// without racing to create the network. Returns nil and a wrapped error if the
+// network cannot be found or created.
 func (d *Deployer) CreateEmptyDirtyDeployment() (*Deployment, error) {
 	if _, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, d.config.RunID, "dirty"); err != nil {
 		return nil, fmt.Errorf("CreateEmptyDirtyDeployment: %w", err)
@@ -428,6 +429,14 @@ func isRetryableDeployBootstrapError(err error) bool {
 	}
 }
 
+// deployImageOnce creates and starts one homeserver container on networkName,
+// installs its application-service registrations and CA files, and waits for it
+// to become responsive. cfg controls host mappings, mounts, resources, and readiness
+// timeout; extraEnv adds container environment variables.
+// On success it returns the deployment with host-accessible client and federation URLs.
+// Docker, file-copy, CA-encoding, URL-discovery, and readiness errors are returned
+// without retrying or removing the container. On failure after container creation,
+// the returned deployment contains at least its container ID; creation failure returns nil.
 // nolint
 func deployImageOnce(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
