@@ -2025,9 +2025,10 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	must.NotError(t, "failed to generate active signing key", err)
 	keyID := gomatrixserverlib.KeyID("ed25519:valid_until_probe")
 
-	// Deliberately never mutated, unlike other tests here: the probe event's
-	// origin_server_ts is placed past this instant while the key stays active.
-	validUntil := time.Now().Add(2 * time.Hour)
+	// Keep the initial key document valid only briefly. The probe event's
+	// origin_server_ts is placed past this instant while the key stays active;
+	// the later refresh case explicitly extends the window.
+	validUntil := time.Now().Add(5 * time.Second)
 	// This endpoint is also used while bootstrapping the rooms. Publish the
 	// federation server's key alongside the probe key so Synapse can verify the
 	// create and membership events signed by srv.KeyID.
@@ -2101,11 +2102,14 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		_, _ = w.Write(responseBytes)
 	}).Methods(http.MethodGet)
 
+	// Use the federation server key for request authentication. The PDU itself
+	// is signed by keyID; keeping those keys separate lets the final request
+	// refresh the key document after its original valid_until_ts has elapsed.
 	fedClient := federationClientWithSigningKey(
 		deployment,
 		spec.ServerName(srv.ServerName()),
-		keyID,
-		privKey,
+		srv.KeyID,
+		srv.Priv,
 	)
 
 	// === Control: origin_server_ts = now, inside validUntil → MUST ACCEPT ===
@@ -2247,6 +2251,12 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	mockKeyServer.mu.Lock()
 	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
 	mockKeyServer.mu.Unlock()
+	// The HS caches the key document until its original valid_until_ts. Wait
+	// for that timestamp to pass so the request-auth key lookup has to fetch
+	// the extended document before validating refreshEvent.
+	if wait := time.Until(validUntil); wait > 0 {
+		time.Sleep(wait + 100*time.Millisecond)
+	}
 
 	refreshEvent := buildEventWithSigningKey(
 		t,
