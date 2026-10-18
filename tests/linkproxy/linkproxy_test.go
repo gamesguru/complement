@@ -5,6 +5,7 @@
 package linkproxy
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ func TestLinkProxy(t *testing.T) {
 	})
 
 	t.Run("BlockedLinkFailsFastAndHealsOnRelease", func(t *testing.T) {
+		blocked := len(proxy.Log())
 		proxy.Set("hs1", "hs2", linkproxy.Block)
 		sent := alice.SendEventSynced(t, roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"msgtype": "m.text", "body": "blocked"}})
 
@@ -58,6 +60,19 @@ func TestLinkProxy(t *testing.T) {
 		proxy.Set("hs1", "hs2", linkproxy.Allow)
 		// hs1 retries with backoff, so allow generous time.
 		bob.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, sent))
-		must.Equal(t, proxy.CountStatus("hs1", "hs2", "/send/", 200) > 0, true, "the event arrived through the released link")
+		// Only hs1 -> hs2 is blocked, so the event may be redelivered by hs1's
+		// /send retry or pulled by hs2 with MSC4521 reconciliation, possibly even
+		// before the release. Either way it reached hs2 without a blocked /send.
+		viaSend, viaReconcile := false, false
+		for _, e := range proxy.Log()[blocked:] {
+			switch {
+			case e.Src == "hs1" && e.Dst == "hs2" && strings.Contains(e.Path, "/send/") && e.Status == 200:
+				viaSend = true
+			case e.Src == "hs2" && e.Dst == "hs1" && strings.Contains(e.Path, "room_digest"):
+				viaReconcile = true
+			}
+		}
+		must.Equal(t, viaSend || viaReconcile, true, "the event reached hs2 via /send or reconciliation")
+		t.Logf("healed via /send: %t, via reconciliation: %t", viaSend, viaReconcile)
 	})
 }
