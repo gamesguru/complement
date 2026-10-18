@@ -241,7 +241,7 @@ func (r *ServerRoom) AuthChainForEvents(events []gomatrixserverlib.PDU) (chain [
 		}
 	}
 
-	return
+	return chain
 }
 
 // Check that the user currently has the membership provided in this room. Fails the test if not.

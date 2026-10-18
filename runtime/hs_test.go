@@ -5,9 +5,8 @@ import (
 )
 
 type mockTest struct {
-	name       string
-	skipped    bool
-	skipReason string
+	name    string
+	skipped bool
 }
 
 func (m *mockTest) Name() string {

@@ -31,7 +31,7 @@ func TestLogout(t *testing.T) {
 				match.JSONKeyArrayOfSize("devices", 2),
 			},
 		})
-		res = clientToLogout.MustDo(t, "POST", []string{"_matrix", "client", "v3", "logout"})
+		clientToLogout.MustDo(t, "POST", []string{"_matrix", "client", "v3", "logout"})
 		// the session should be invalidated
 		res = clientToLogout.Do(t, "GET", []string{"_matrix", "client", "v3", "sync"})
 		must.MatchResponse(t, res, match.HTTPResponse{StatusCode: http.StatusUnauthorized})

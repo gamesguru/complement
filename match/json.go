@@ -310,7 +310,7 @@ func JSONMapEach(wantKey string, fn func(k, v gjson.Result) error) JSON {
 }
 
 // JSONArraySome returns a matcher which will check that `wantKey` is an array then
-// loops over each item calling `fn`. If `fn` returns nil, the matcher is satisifed,
+// loops over each item calling `fn`. If `fn` returns nil, the matcher is satisfied,
 // iterating stops and we return.
 //
 // Will fail if the array is empty and the check never runs
@@ -326,7 +326,7 @@ func JSONArraySome(wantKey string, fn func(gjson.Result) error) JSON {
 		if !body.IsArray() {
 			return fmt.Errorf("JSONArraySome: key '%s' is not an array", wantKey)
 		}
-		var satisfied bool = false
+		var satisfied = false
 		body.ForEach(func(_, val gjson.Result) bool {
 			err := fn(val)
 			satisfied = err == nil

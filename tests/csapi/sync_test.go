@@ -9,16 +9,17 @@ import (
 
 	"github.com/tidwall/gjson"
 
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/matrix-org/util"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
-	"github.com/matrix-org/gomatrixserverlib/spec"
-	"github.com/matrix-org/util"
 )
 
 // Observes "first bug" from https://github.com/matrix-org/dendrite/pull/1394#issuecomment-687056673

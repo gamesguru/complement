@@ -38,7 +38,7 @@ const (
 var (
 	// use a deterministic seed but globally so we don't generate the same numbers for each client.
 	// This could be non-deterministic if used concurrently.
-	prng = rand.New(rand.NewSource(42))
+	prng = rand.New(rand.NewSource(42)) //nolint:gosec // deterministic keys are required by the test client.
 )
 
 type retryUntilParams struct {

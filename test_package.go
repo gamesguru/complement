@@ -9,14 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/sirupsen/logrus"
+
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/config"
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/internal/docker"
-	"github.com/matrix-org/gomatrixserverlib/spec"
-	"github.com/sirupsen/logrus"
 )
 
 // Deployment provides a way for tests to interact with a set of homeservers.

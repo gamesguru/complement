@@ -4,8 +4,9 @@ import (
 	"context"
 	"slices"
 
-	"github.com/matrix-org/complement/ct"
 	"github.com/moby/moby/client"
+
+	"github.com/matrix-org/complement/ct"
 )
 
 const (

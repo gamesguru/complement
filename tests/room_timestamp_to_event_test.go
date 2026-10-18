@@ -15,6 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/tidwall/gjson"
+	"golang.org/x/exp/slices"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -22,9 +26,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/spec"
-	"github.com/tidwall/gjson"
-	"golang.org/x/exp/slices"
 )
 
 func TestJumpToDateEndpoint(t *testing.T) {
@@ -528,7 +529,6 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 	// The givenTimestamp could be newer(after-in-time) than any of the other events
 	if givenTimestamp > events[len(events)-1].Get("origin_server_ts").Int() && !givenTimestampAlreadyInserted {
 		resultantString += givenTimestampMarker
-		givenTimestampAlreadyInserted = true
 	}
 
 	resultantString += fmt.Sprintf("%s-- newest events --\n", paddingString)

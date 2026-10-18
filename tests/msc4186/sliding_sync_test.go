@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -24,7 +26,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/tidwall/gjson"
 )
 
 const maxSafeJSONInteger = 1<<53 - 1
@@ -383,13 +384,6 @@ func slidingSubscription(timelineLimit int) map[string]interface{} {
 		"required_state": map[string]interface{}{
 			"include": []map[string]interface{}{},
 		},
-	}
-}
-
-func slidingSubscriptionWithRequiredState(timelineLimit int, requiredState map[string]interface{}) map[string]interface{} {
-	return map[string]interface{}{
-		"timeline_limit": timelineLimit,
-		"required_state": requiredState,
 	}
 }
 

@@ -3,7 +3,6 @@ package csapi_tests
 import (
 	"bytes"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/matrix-org/complement"
@@ -35,8 +34,6 @@ func TestAsyncUpload(t *testing.T) {
 		// and always returns M_NOT_FOUND
 		runtime.SkipIf(t, runtime.Venator)
 		mxcURI := alice.CreateMedia(t)
-		parts := strings.Split(mxcURI, "/")
-		mediaID := parts[len(parts)-1]
 		origin, mediaID := client.SplitMxc(mxcURI)
 
 		// Check that the media is not yet uploaded
@@ -57,8 +54,6 @@ func TestAsyncUpload(t *testing.T) {
 	t.Run("Cannot upload to a media ID that has already been uploaded to", func(t *testing.T) {
 		// First upload some media that we can conflict with
 		mxcURI := asyncUploadMedia(t, alice)
-		parts := strings.Split(mxcURI, "/")
-		mediaID := parts[len(parts)-1]
 		origin, mediaID := client.SplitMxc(mxcURI)
 
 		// Then try upload again using the same `mediaID`
@@ -110,8 +105,6 @@ func asyncUploadMedia(
 	t.Helper()
 
 	mxcURI := matrixClient.CreateMedia(t)
-	parts := strings.Split(mxcURI, "/")
-	mediaID := parts[len(parts)-1]
 	origin, mediaID := client.SplitMxc(mxcURI)
 	matrixClient.UploadMediaAsync(t, origin, mediaID, data.MatrixPng, "test.png", pngContentType)
 

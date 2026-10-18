@@ -13,13 +13,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/internal/data"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
 )
 
 // TODO: add JPEG testing

@@ -39,10 +39,7 @@ type Builder struct {
 }
 
 func NewBuilder(cfg *config.Complement) (*Builder, error) {
-	cli, err := client.NewClientWithOpts(
-		client.FromEnv,
-		client.WithAPIVersionNegotiation(),
-	)
+	cli, err := client.New(client.FromEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +254,7 @@ func (d *Builder) construct(bprint b.Blueprint) (errs []error) {
 				d.log("%s: failed to remove container which failed to deploy: %s", res.contextStr, delErr)
 			}
 			// there is little point continuing to set up the remaining homeservers at this point
-			return
+			return errs
 		}
 		// kill the container
 		defer func(r result) {

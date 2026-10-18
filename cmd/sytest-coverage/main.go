@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,15 +51,15 @@ func main() {
 
 	// Walk all files defined under ./tests
 	// we already panic inside Walk, so we can ignore the error
-	_ = filepath.Walk("./tests", func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk("./tests", func(path string, info os.FileInfo, _ error) error {
 		// we don't care about directories or files not named "_test.go"
 		if info.IsDir() || !strings.HasSuffix(info.Name(), "_test.go") {
 			return nil
 		}
 		fset := token.NewFileSet()
-		astFile, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			panic(err)
+		astFile, parseErr := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if parseErr != nil {
+			panic(parseErr)
 		}
 		for _, cmt := range astFile.Comments {
 			comment := strings.TrimSpace(cmt.Text())
@@ -110,7 +109,7 @@ func main() {
 func getList() (map[string][]string, map[string]string) {
 	var ignoredTests = make(map[string]bool)
 	var ignoredPaths []string
-	ignoredBody, err := ioutil.ReadFile("./sytest.ignored.list")
+	ignoredBody, err := os.ReadFile("./sytest.ignored.list")
 	if err != nil {
 		// ignore error, set body to nothing
 		ignoredBody = []byte{}
@@ -130,7 +129,7 @@ func getList() (map[string][]string, map[string]string) {
 		ignoredTests[ignoredLine] = true
 	}
 
-	body, err := ioutil.ReadFile("./sytest.list")
+	body, err := os.ReadFile("./sytest.list")
 	if err != nil {
 		panic(err)
 	}

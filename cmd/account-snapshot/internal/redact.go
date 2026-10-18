@@ -598,13 +598,6 @@ func split(matrixID string) (local, domain string) {
 	return parts[0][1:], parts[1]
 }
 
-// gjsonEscape escapes . and * from the input so it can be used with gjson.Get
-func gjsonEscape(in string) string {
-	in = strings.ReplaceAll(in, ".", `\.`)
-	in = strings.ReplaceAll(in, "*", `\*`)
-	return in
-}
-
 // Find the event `type` and `state_key` in one or more gjson arrays, returns first match given.
 func findEventInArray(evType, stateKey string, arrs ...gjson.Result) (event *gjson.Result) {
 	for _, arr := range arrs {

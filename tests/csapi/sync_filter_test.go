@@ -1,7 +1,7 @@
 package csapi_tests
 
 import (
-	"io/ioutil"
+	"io"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -53,7 +53,7 @@ func createFilter(t *testing.T, c *client.CSAPI, filterContent map[string]interf
 	if res.StatusCode != 200 {
 		t.Fatalf("MatchResponse got status %d want 200", res.StatusCode)
 	}
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatalf("unable to read response body: %v", err)
 	}

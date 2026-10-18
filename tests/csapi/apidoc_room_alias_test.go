@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement/runtime"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/runtime"
+
+	"github.com/matrix-org/gomatrixserverlib"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
@@ -15,7 +18,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/should"
-	"github.com/matrix-org/gomatrixserverlib"
 )
 
 func setRoomAliasResp(t *testing.T, c *client.CSAPI, roomID, roomAlias string) *http.Response {
@@ -114,7 +116,7 @@ func TestRoomAlias(t *testing.T) {
 			//
 			// If (4) arrives at the reader before (2), the reader responds with
 			// old data. Bodge around this by retrying for up to a second.
-			res = alice.Do(
+			alice.Do(
 				t,
 				"GET",
 				[]string{"_matrix", "client", "v3", "rooms", roomID, "aliases"},

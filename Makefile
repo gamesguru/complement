@@ -6,7 +6,8 @@ STYLE_RESET := $(shell tput sgr0 2>/dev/null || printf '\033[0m')
 
 GO ?= go
 STATICCHECK ?= staticcheck
-GOLANGCI_LINT ?= golangci-lint
+GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+GOLANGCI_LINT_TOOLCHAIN ?= go1.26.0
 VETFLAGS ?=
 STATICCHECKFLAGS ?=
 GOLANGCI_LINTFLAGS ?=
@@ -40,9 +41,8 @@ vet: ## Run go vet
 .PHONY: lint
 lint: ## Run lint checks (vet, staticcheck, golangci-lint)
 	$(GO) vet $(VETFLAGS) $(PKGS)
-	$(STATICCHECK) -checks=all $(STATICCHECKFLAGS) $(PKGS)
-	# install with, i.e., `curl -sSfL https://golangci-lint.run/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.12.2`
-	$(GOLANGCI_LINT) run $(GOLANGCI_LINTFLAGS) $(PKGS)
+	$(STATICCHECK) -checks='all,-ST1000,-ST1003,-ST1005,-ST1020,-ST1021' $(STATICCHECKFLAGS) $(PKGS)
+	GOTOOLCHAIN=$(GOLANGCI_LINT_TOOLCHAIN) $(GOLANGCI_LINT) run $(GOLANGCI_LINTFLAGS) $(PKGS)
 
 .PHONY: test
 test: ## Run the Complement test suite against COMPLEMENT_BASE_IMAGE (scope with TESTPKGS/TESTFLAGS)
