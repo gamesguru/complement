@@ -165,8 +165,14 @@ func newBulkEnv(t *testing.T) *bulkEnv {
 	t.Helper()
 	deployment := complement.Deploy(t, numGossipers)
 	t.Cleanup(func() { deployment.Destroy(t) })
-	// Prober: a scripted server that only queries digests/room_diff.
-	prober := federation.NewServer(t, deployment, federation.HandleKeyRequests())
+	// Prober: a scripted server that only queries digests/room_diff. It does so
+	// as a room member (see joinHomeservers): a homeserver rightly refuses them
+	// to a server that is not in the room.
+	prober := federation.NewServer(t, deployment,
+		federation.HandleKeyRequests(),
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
 	declineReconciliation(prober)
 	t.Cleanup(prober.Listen())
 	names := make([]string, numGossipers)
@@ -183,7 +189,8 @@ func newBulkEnv(t *testing.T) *bulkEnv {
 	}
 }
 
-// joinHomeservers has all homeservers join one room and each originate a real event.
+// joinHomeservers has all homeservers, and the prober, join one room and each
+// homeserver originate a real event.
 func (e *bulkEnv) joinHomeservers(t *testing.T) {
 	t.Helper()
 	e.users = make([]*client.CSAPI, numGossipers)
@@ -194,6 +201,7 @@ func (e *bulkEnv) joinHomeservers(t *testing.T) {
 	for i := 1; i < numGossipers; i++ {
 		e.users[i].MustJoinRoom(t, e.roomID, []spec.ServerName{e.hs1})
 	}
+	e.prober.MustJoinRoom(t, e.deployment, e.hs1, e.roomID, e.prober.UserID("prober"))
 	for i := range e.users {
 		e.users[i].SendEventSynced(t, e.roomID, b.Event{Type: "m.room.message", Content: map[string]interface{}{"msgtype": "m.text", "body": "base from " + hsName(i)}})
 	}
