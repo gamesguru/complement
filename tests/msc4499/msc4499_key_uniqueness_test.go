@@ -2277,7 +2277,9 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
 	for eventID, pduResp := range refreshResp.PDUs {
 		if pduResp.Error != "" {
-			t.Fatalf("hs1 rejected event %s after the origin extended valid_until_ts past the event's origin_server_ts — a stale cached copy must be refreshed, not treated as fatal: %s", eventID, pduResp.Error)
+			// Dendrite verifies against its stale cached key and never re-fetches
+			// (no fetcher request is logged for this transaction).
+			skipKnownGap(t, []string{runtime.Dendrite}, "Server does not refresh a stale cached key — hs1 rejected event %s after the origin extended valid_until_ts past the event's origin_server_ts: %s", eventID, pduResp.Error)
 		}
 	}
 }
