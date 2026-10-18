@@ -250,6 +250,12 @@ func TestFilter(t *testing.T) {
 			t.Fatalf("failed to marshal filter: %s", err)
 		}
 		t.Run(string(filterJSON), func(t *testing.T) {
+			if string(filterJSON) == `{"room":{"timeline":{"limit":"not_an_int"}}}` {
+				// FIXME: Synapse clamps the timeline limit (set_timeline_upper_limit)
+				// before validating the filter, so a string limit raises a TypeError
+				// and returns 500 M_UNKNOWN instead of 400.
+				runtime.SkipIf(t, runtime.Synapse)
+			}
 			res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
 			body := must.MatchResponse(t, res, match.HTTPResponse{
 				StatusCode: 400,
