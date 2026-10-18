@@ -25,14 +25,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/matrix-org/complement"
@@ -105,14 +108,11 @@ func New(t ct.TestLike, deployment complement.Deployment, hsNames ...string) *Pr
 		p.ipToHS[ip] = hs
 	}
 
-	ln, err := tls.Listen("tcp", ":8448", &tls.Config{GetCertificate: p.certFor})
-	if err != nil {
-		ct.Fatalf(t, "linkproxy: cannot listen on :8448 (is another proxy or homeserver using it?): %s", err)
-	}
+	ln := listenExclusive(t, &tls.Config{GetCertificate: p.certFor})
 	p.server = &http.Server{Handler: p}
 	go p.server.Serve(ln) //nolint:errcheck // returns on Close
 
-	if cfg.LinkProxyHomeservers == 0 {
+	if !preMapped(cfg.LinkProxyHomeservers, hsNames) {
 		for _, hs := range hsNames {
 			var peers []string
 			for _, other := range hsNames {
@@ -124,6 +124,45 @@ func New(t ct.TestLike, deployment complement.Deployment, hsNames ...string) *Pr
 		}
 	}
 	return p
+}
+
+// listenTimeout bounds how long New waits for another proxy, possibly in a
+// test process for another package, to release :8448.
+const listenTimeout = 10 * time.Minute
+
+// listenExclusive binds :8448. The kernel allows one listener per port, so the
+// bind is the cross-process reservation: when another proxy holds the port it
+// waits for that proxy's Close rather than failing, and gives up after
+// listenTimeout.
+func listenExclusive(t ct.TestLike, cfg *tls.Config) net.Listener {
+	t.Helper()
+	deadline := time.Now().Add(listenTimeout)
+	for {
+		ln, err := tls.Listen("tcp", ":8448", cfg)
+		if err == nil {
+			return ln
+		}
+		if !errors.Is(err, syscall.EADDRINUSE) || time.Now().After(deadline) {
+			ct.Fatalf(t, "linkproxy: cannot listen on :8448 (is another proxy or homeserver using it?): %s", err)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// preMapped reports whether Docker already maps every name to the host, which
+// COMPLEMENT_LINK_PROXY_HOMESERVERS=n does for hs1 through hsn. Any other name
+// is not covered, so New falls back to rewriting /etc/hosts for all of them.
+func preMapped(linkProxyHomeservers int, hsNames []string) bool {
+	if linkProxyHomeservers == 0 {
+		return false
+	}
+	for _, hs := range hsNames {
+		n, err := strconv.Atoi(strings.TrimPrefix(hs, "hs"))
+		if err != nil || !strings.HasPrefix(hs, "hs") || n < 1 || n > linkProxyHomeservers {
+			return false
+		}
+	}
+	return true
 }
 
 // Close stops the proxy. Defer it after New.

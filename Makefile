@@ -50,7 +50,7 @@ ifeq ($(strip $(COMPLEMENT_BASE_IMAGE)),)
 endif
 	COMPLEMENT_BASE_IMAGE=$(COMPLEMENT_BASE_IMAGE) $(GO) test $(TESTFLAGS) $(TESTPKGS)
 
-UNITPKGS ?= ./runtime/... ./match/... ./federation/... ./internal/... ./tests/msc4521
+UNITPKGS ?= ./runtime/... ./match/... ./federation/... ./internal/... ./tests/msc4521/library
 UNITTESTPKGS = $(shell $(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' $(UNITPKGS))
 UNITCOVPKGS = $(shell $(GO) list -f '{{if and .GoFiles (or .TestGoFiles .XTestGoFiles)}}{{.ImportPath}}{{end}}' $(UNITPKGS))
 
@@ -60,7 +60,7 @@ unit: ## Run homeserverless unit tests (no COMPLEMENT_BASE_IMAGE needed)
 
 .PHONY: cov
 cov: ## Report statement coverage of the homeserverless unit tests
-	$(GO) test ./tests/msc4521 && $(GO) test -cover $(UNITCOVPKGS)
+	$(GO) test ./tests/msc4521/library && $(GO) test -cover $(UNITCOVPKGS)
 
 .PHONY: tidy
 tidy: ## Tidy module dependencies

@@ -1,3 +1,5 @@
+//go:build !dendrite_blacklist && !venator_blacklist
+
 package integration
 
 import (

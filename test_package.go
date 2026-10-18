@@ -213,7 +213,10 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	)
 	for i := 1; i <= numServers; i++ {
 		hsName := fmt.Sprintf("hs%d", i)
-		if _, ok := tp.existingDeployment.HS[hsName]; ok {
+		mu.Lock()
+		_, ok := tp.existingDeployment.HS[hsName]
+		mu.Unlock()
+		if ok {
 			continue
 		}
 		wg.Add(1)
