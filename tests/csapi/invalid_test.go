@@ -202,14 +202,7 @@ func getFilters() []map[string]interface{} {
 			},
 		},
 
-		// RoomEventFilter fields.
-		{
-			"room": map[string]interface{}{
-				"timeline": map[string]interface{}{
-					"limit": "not_an_int",
-				},
-			},
-		},
+		// RoomEventFilter fields. The timeline limit case is in getKnownBugFilters.
 		{
 			"room": map[string]interface{}{
 				"timeline": map[string]interface{}{
