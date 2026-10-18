@@ -234,6 +234,33 @@ func getFilters() []map[string]interface{} {
 	}
 }
 
+// filterCase is an invalid filter, optionally skipped on homeservers with a known bug.
+type filterCase struct {
+	filter map[string]interface{}
+	skipOn []string
+}
+
+// getKnownBugFilters returns invalid filters that some homeservers mishandle.
+// These are lost coverage on the skipped homeservers, not passing checks.
+func getKnownBugFilters() []filterCase {
+	return []filterCase{
+		{
+			// FIXME: Synapse clamps the timeline limit (set_timeline_upper_limit)
+			// before validating the filter, so a string limit raises a TypeError
+			// and returns 500 M_UNKNOWN instead of 400. Remove the skip once Synapse
+			// validates first. TODO: link the upstream Synapse issue.
+			filter: map[string]interface{}{
+				"room": map[string]interface{}{
+					"timeline": map[string]interface{}{
+						"limit": "not_an_int",
+					},
+				},
+			},
+			skipOn: []string{runtime.Synapse},
+		},
+	}
+}
+
 // sytest: Check creating invalid filters returns 4xx
 func TestFilter(t *testing.T) {
 	runtime.SkipIf(t, runtime.Dendrite) // FIXME: https://github.com/matrix-org/dendrite/issues/2067
@@ -242,19 +269,21 @@ func TestFilter(t *testing.T) {
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 
-	filters := getFilters()
+	var cases []filterCase
+	for _, filter := range getFilters() {
+		cases = append(cases, filterCase{filter: filter})
+	}
+	cases = append(cases, getKnownBugFilters()...)
 
-	for _, filter := range filters {
+	for _, tc := range cases {
+		filter := tc.filter
 		filterJSON, err := json.Marshal(filter)
 		if err != nil {
 			t.Fatalf("failed to marshal filter: %s", err)
 		}
 		t.Run(string(filterJSON), func(t *testing.T) {
-			if string(filterJSON) == `{"room":{"timeline":{"limit":"not_an_int"}}}` {
-				// FIXME: Synapse clamps the timeline limit (set_timeline_upper_limit)
-				// before validating the filter, so a string limit raises a TypeError
-				// and returns 500 M_UNKNOWN instead of 400.
-				runtime.SkipIf(t, runtime.Synapse)
+			if len(tc.skipOn) > 0 {
+				runtime.SkipIf(t, tc.skipOn...)
 			}
 			res := alice.Do(t, "POST", []string{"_matrix", "client", "v3", "user", alice.UserID, "filter"}, client.WithJSONBody(t, filter))
 			body := must.MatchResponse(t, res, match.HTTPResponse{
