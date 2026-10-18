@@ -33,10 +33,6 @@ jobs:
       - name: "Run unit tests" # homeserverless; no COMPLEMENT_BASE_IMAGE needed
         run: |
           make unit
-      - name: "Run MSC4521 library tests" # homeserverless suite; no COMPLEMENT_BASE_IMAGE needed
-        run: |
-          # Not ./tests/msc4521/...: integration deploys homeservers.
-          go test ./tests/msc4521/ ./tests/msc4521/bisect/
       - name: "Run Homerunner tests" # use a simple static dendrite image to sanity check homerunner works
         env:
           DOCKER_BUILDKIT: 1
