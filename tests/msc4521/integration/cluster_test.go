@@ -43,6 +43,7 @@ func newCluster(t *testing.T, n int) *cluster {
 	// them to a server that is not in the room.
 	prober := federation.NewServer(t, deployment,
 		federation.HandleKeyRequests(),
+		federation.HandleMissingEventsRequests(),
 		federation.HandleMakeSendJoinRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)

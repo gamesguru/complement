@@ -328,6 +328,19 @@ func HandleEventRequests() func(*Server) {
 	}
 }
 
+// HandleMissingEventsRequests returns an empty result for missing-event
+// lookups. A homeserver may ask every joined server for a missing predecessor
+// while applying an event; tests using a prober should not fail just because
+// that prober has no additional timeline history.
+func HandleMissingEventsRequests() func(*Server) {
+	return func(srv *Server) {
+		srv.mux.Handle("/_matrix/federation/v1/get_missing_events/{roomID}", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"events":[]}`))
+		}))
+	}
+}
+
 // EXPERIMENTAL
 // HandleEventAuthRequests is an option which will process GET /_matrix/federation/v1/event_auth/{roomId}/{eventId}
 // requests universally when requested.
