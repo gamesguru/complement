@@ -100,7 +100,7 @@ func equalU64Set(got, want []uint64) bool {
 
 // TestVectors pins the small, stable algebraic and encoding vectors that the
 // wire format depends on.
-func TestVectors(t *testing.T) {
+func testVectors(t *testing.T) {
 	mulVectors := []struct {
 		left  uint64
 		right uint64
@@ -157,7 +157,7 @@ func TestVectors(t *testing.T) {
 
 // TestIdenticalSets verifies that peers holding the same population agree on
 // both the accumulator digest and the exact event count.
-func TestIdenticalSets(t *testing.T) {
+func testIdenticalSets(t *testing.T) {
 	local := kernelWith(t, "a", "b", "c")
 	remote := kernelWith(t, "a", "b", "c")
 
@@ -168,7 +168,7 @@ func TestIdenticalSets(t *testing.T) {
 
 // TestOneSidedChanges verifies the accumulator tracks one-sided insertions and
 // removals, including count underflow protection.
-func TestOneSidedChanges(t *testing.T) {
+func testOneSidedChanges(t *testing.T) {
 	local := kernelWith(t, "a", "b", "c")
 	remote := kernelWith(t, "a", "b")
 
@@ -195,7 +195,7 @@ func TestOneSidedChanges(t *testing.T) {
 
 // TestSymmetricDifference verifies that the XOR of two sketches decodes exactly
 // the symmetric difference, and that underprovisioned capacity fails closed.
-func TestSymmetricDifference(t *testing.T) {
+func testSymmetricDifference(t *testing.T) {
 	const capacity = 8
 
 	local := sketchOf(t, []string{"a", "b", "c", "d"}, capacity)
@@ -229,7 +229,7 @@ func TestSymmetricDifference(t *testing.T) {
 
 // TestEstimateDelta verifies the strata estimator reports a non-zero delta for
 // divergent populations.
-func TestEstimateDelta(t *testing.T) {
+func testEstimateDelta(t *testing.T) {
 	local := kernelWith(t, "a", "b", "c", "d", "e")
 	remote := kernelWith(t, "a", "b", "c", "d", "f")
 
@@ -243,7 +243,7 @@ func TestEstimateDelta(t *testing.T) {
 
 // TestResidualVerification verifies that decoded roots reproduce the accumulator
 // residual both globally and per-side.
-func TestResidualVerification(t *testing.T) {
+func testResidualVerification(t *testing.T) {
 	local := kernelWith(t, "a", "b", "c", "d")
 	remote := kernelWith(t, "a", "b", "c", "e")
 	residual := local.Accumulator().Residual(remote.Accumulator())
@@ -259,7 +259,7 @@ func TestResidualVerification(t *testing.T) {
 
 // TestAdaptiveBuckets runs the requester action selection, bucket sketch
 // construction and batch transition end to end for a small difference.
-func TestAdaptiveBuckets(t *testing.T) {
+func testAdaptiveBuckets(t *testing.T) {
 	localLabels := []string{"a", "b", "c", "d", "e"}
 	remoteLabels := []string{"a", "b", "c", "d", "f"}
 	local := kernelWith(t, localLabels...)
@@ -293,7 +293,7 @@ func TestAdaptiveBuckets(t *testing.T) {
 	}
 }
 
-func TestMixedBucketBatch(t *testing.T) {
+func testMixedBucketBatch(t *testing.T) {
 	client, err := reconcile.NewReconciliationClient(reconcile.MaxLocalSketchDecodeCapacity)
 	must.NotError(t, "NewReconciliationClient", err)
 	requests := []reconcile.BucketRequest{
@@ -324,7 +324,7 @@ func TestMixedBucketBatch(t *testing.T) {
 // decode and is retried with a larger capacity rather than aborting the
 // exchange. Unlike a forged syndrome, the sketch here is well formed; it simply
 // carries more elements than the requested capacity can extract.
-func TestBucketEscalation(t *testing.T) {
+func testBucketEscalation(t *testing.T) {
 	client, err := reconcile.NewReconciliationClient(reconcile.MaxLocalSketchDecodeCapacity)
 	must.NotError(t, "NewReconciliationClient", err)
 
@@ -366,7 +366,7 @@ func TestBucketEscalation(t *testing.T) {
 
 // TestBucketSplit verifies that a bucket at the maximum per-bucket capacity is
 // split into two child buckets one level deeper instead of being retried.
-func TestBucketSplit(t *testing.T) {
+func testBucketSplit(t *testing.T) {
 	client, err := reconcile.NewReconciliationClient(reconcile.MaxLocalSketchDecodeCapacity)
 	must.NotError(t, "NewReconciliationClient", err)
 
@@ -394,7 +394,7 @@ func TestBucketSplit(t *testing.T) {
 
 // TestMalformedInputs verifies decoding fails closed on malformed or
 // structurally invalid inputs.
-func TestMalformedInputs(t *testing.T) {
+func testMalformedInputs(t *testing.T) {
 	if _, err := reconcile.NewSyndromeSketch(0); !errors.Is(err, reconcile.ErrInvalidSketchCapacity) {
 		t.Fatalf("NewSyndromeSketch(0) = %v, want ErrInvalidSketchCapacity", err)
 	}
@@ -431,7 +431,7 @@ func TestMalformedInputs(t *testing.T) {
 // their rejection of unsupported or malformed identifiers. The 0xfb vector
 // exercises both base64 alphabets, and the all-zero vector pins the
 // first-non-zero-chunk fallback.
-func TestEventIDBinding(t *testing.T) {
+func testEventIDBinding(t *testing.T) {
 	digest := make([]byte, 32)
 	for i := range digest {
 		digest[i] = byte(i + 1)
@@ -482,7 +482,7 @@ func TestEventIDBinding(t *testing.T) {
 
 // TestValidateBucketRequests verifies the bucket request validator enforces the
 // antichain ordering, per-bucket caps and aggregate capacity limit.
-func TestValidateBucketRequests(t *testing.T) {
+func testValidateBucketRequests(t *testing.T) {
 	must.NotError(t, "valid antichain", reconcile.ValidateBucketRequests([]reconcile.BucketRequest{
 		{Depth: 1, Prefix: 0, Capacity: 4},
 		{Depth: 1, Prefix: 1, Capacity: 4},
@@ -523,4 +523,29 @@ func TestValidateBucketRequests(t *testing.T) {
 	if err := reconcile.ValidateBucketRequests(many); !errors.Is(err, reconcile.ErrInvalidSketchCapacity) {
 		t.Fatalf("ValidateBucketRequests(aggregate over capacity) = %v, want ErrInvalidSketchCapacity", err)
 	}
+}
+
+func TestMSC4521(t *testing.T) {
+	t.Run("Unit", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			fn   func(*testing.T)
+		}{
+			{"Vectors", testVectors},
+			{"IdenticalSets", testIdenticalSets},
+			{"OneSidedChanges", testOneSidedChanges},
+			{"SymmetricDifference", testSymmetricDifference},
+			{"EstimateDelta", testEstimateDelta},
+			{"ResidualVerification", testResidualVerification},
+			{"AdaptiveBuckets", testAdaptiveBuckets},
+			{"MixedBucketBatch", testMixedBucketBatch},
+			{"BucketEscalation", testBucketEscalation},
+			{"BucketSplit", testBucketSplit},
+			{"MalformedInputs", testMalformedInputs},
+			{"EventIDBinding", testEventIDBinding},
+			{"ValidateBucketRequests", testValidateBucketRequests},
+		} {
+			t.Run(test.name, test.fn)
+		}
+	})
 }
