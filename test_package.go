@@ -178,6 +178,10 @@ func (tp *TestPackage) Deploy(t ct.TestLike, numServers int) Deployment {
 	return dep
 }
 
+// dirtyDeploy returns the package's reusable deployment, starting any missing
+// hs1 through hsN concurrently, where N is numServers. Existing homeservers and
+// their data are retained, so the deployment may contain more than numServers.
+// Setup or startup errors terminate the test after outstanding starts finish.
 func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	tp.existingDeploymentMu.Lock()
 	defer tp.existingDeploymentMu.Unlock()
@@ -213,7 +217,10 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	)
 	for i := 1; i <= numServers; i++ {
 		hsName := fmt.Sprintf("hs%d", i)
-		if _, ok := tp.existingDeployment.HS[hsName]; ok {
+		mu.Lock()
+		_, ok := tp.existingDeployment.HS[hsName]
+		mu.Unlock()
+		if ok {
 			continue
 		}
 		wg.Add(1)

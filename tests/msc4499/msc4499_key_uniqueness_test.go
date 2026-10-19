@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -48,11 +49,12 @@ type MockKeyServer struct {
 	privKey    ed25519.PrivateKey
 	pubKey     ed25519.PublicKey
 
-	mu            sync.Mutex
-	verifyKeys    map[gomatrixserverlib.KeyID]ed25519.PublicKey
-	oldVerifyKeys map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey
-	validUntil    time.Time
-	shouldCollide bool
+	mu                sync.Mutex
+	verifyKeys        map[gomatrixserverlib.KeyID]ed25519.PublicKey
+	oldVerifyKeys     map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey
+	additionalSigners map[gomatrixserverlib.KeyID]ed25519.PrivateKey
+	validUntil        time.Time
+	shouldCollide     bool
 
 	// Advanced test controls
 	delay        time.Duration
@@ -142,9 +144,33 @@ func (m *MockKeyServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Write([]byte(err.Error()))
 		return
 	}
+	for keyID, privateKey := range m.additionalSigners {
+		k.Raw, err = gomatrixserverlib.SignJSON(string(m.serverName), keyID, privateKey, k.Raw)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(err.Error()))
+			return
+		}
+	}
 
 	w.WriteHeader(200)
 	w.Write(k.Raw)
+}
+
+// Handle the legacy key query endpoint used by some homeservers when fetching
+// keys from a remote server. The regular mock endpoint above serves the same
+// signed key document at /key/v2/server.
+func registerMockKeyQuery(srv *federation.Server, mock *MockKeyServer) {
+	srv.Mux().HandleFunc("/_matrix/key/v2/query", func(w http.ResponseWriter, req *http.Request) {
+		keyResponse := httptest.NewRecorder()
+		mock.ServeHTTP(keyResponse, req)
+		if keyResponse.Code != http.StatusOK {
+			http.Error(w, keyResponse.Body.String(), keyResponse.Code)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"server_keys":[%s]}`, keyResponse.Body.String())
+	}).Methods(http.MethodPost)
 }
 
 // queryNotary requests a specific server key via the homeserver-under-test's
@@ -1809,6 +1835,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+	registerMockKeyQuery(srv, mockKeyServer)
 
 	// Create a public room on srv and have hs1 join.
 	// hs1 fetches keys during join, caches ONLY keyIDActive.
@@ -1833,6 +1860,10 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 	}
 	// Also publish the identical body as active: expired_ts must still govern event verification.
 	mockKeyServer.verifyKeys[keyIDExpired] = pubKeyExpired
+	// Every key in verify_keys must sign the key document for it to pass CheckKeys.
+	mockKeyServer.additionalSigners = map[gomatrixserverlib.KeyID]ed25519.PrivateKey{
+		keyIDExpired: privKeyExpired,
+	}
 	// Shorten valid_until_ts to force hs1 to re-fetch when it encounters the new key ID
 	mockKeyServer.validUntil = time.Now().Add(500 * time.Millisecond)
 	mockKeyServer.mu.Unlock()
@@ -1981,6 +2012,7 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 
 	srv := federation.NewServer(t, deployment,
 		federation.HandleMakeSendJoinRequests(),
+		federation.HandleEventRequests(),
 		federation.HandleTransactionRequests(nil, nil),
 	)
 	srv.UnexpectedRequestsAreErrors = false
@@ -1993,8 +2025,9 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 	must.NotError(t, "failed to generate active signing key", err)
 	keyID := gomatrixserverlib.KeyID("ed25519:valid_until_probe")
 
-	// Deliberately never mutated, unlike other tests here: the probe event's
-	// origin_server_ts is placed past this instant while the key stays active.
+	// Deliberately keep this window well ahead of wall-clock time: the probe
+	// event's origin_server_ts is past it, while the cached key document remains
+	// fresh. This isolates refresh-on-event-time from ordinary cache expiry.
 	validUntil := time.Now().Add(2 * time.Hour)
 	// This endpoint is also used while bootstrapping the rooms. Publish the
 	// federation server's key alongside the probe key so Synapse can verify the
@@ -2009,12 +2042,16 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 			keyID:     pubKey,
 			srv.KeyID: federationPubKey,
 		},
+		additionalSigners: map[gomatrixserverlib.KeyID]ed25519.PrivateKey{
+			srv.KeyID: srv.Priv,
+		},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
 		validUntil:    validUntil,
 	}
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+	registerMockKeyQuery(srv, mockKeyServer)
 
 	ver := alice.GetDefaultRoomVersion(t)
 	if n, parseErr := strconv.Atoi(string(ver)); parseErr != nil || n < 5 {
@@ -2204,46 +2241,47 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		}
 	}
 
-	// === Refresh: origin extends its window, then the same shape → ACCEPT ===
-	// hs1's cache still holds the original (by now stale) validUntil, so this
-	// exercises the refetch path rather than a warm cache: a stale copy must
-	// trigger a refresh, not a blanket rejection of that origin's events.
-	mockKeyServer.mu.Lock()
-	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
-	mockKeyServer.mu.Unlock()
+	t.Run("RefreshAfterWindowExtension", func(t *testing.T) {
+		// The event timestamp exceeds the cached key document's valid_until_ts,
+		// but the document is still valid at the current wall-clock time. A
+		// conforming server must refresh the key document to validate the event.
+		mockKeyServer.mu.Lock()
+		mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+		mockKeyServer.mu.Unlock()
 
-	refreshEvent := buildEventWithSigningKey(
-		t,
-		serverRoom,
-		spec.ServerName(srv.ServerName()),
-		keyID,
-		privKey,
-		validUntil.Add(10*time.Minute),
-		federation.Event{
-			Sender: charlie,
-			Type:   "m.room.message",
-			Content: map[string]interface{}{
-				"msgtype": "m.text",
-				"body":    "Event signed after the origin extended its window — must be accepted",
+		refreshEvent := buildEventWithSigningKey(
+			t,
+			serverRoom,
+			spec.ServerName(srv.ServerName()),
+			keyID,
+			privKey,
+			validUntil.Add(10*time.Minute),
+			federation.Event{
+				Sender: charlie,
+				Type:   "m.room.message",
+				Content: map[string]interface{}{
+					"msgtype": "m.text",
+					"body":    "Event signed after the origin extended its window — must be accepted",
+				},
 			},
-		},
-	)
-	serverRoom.AddEvent(refreshEvent)
+		)
+		serverRoom.AddEvent(refreshEvent)
 
-	ctx4, cancelCtx4 := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelCtx4()
-	refreshResp, refreshErr := fedClient.SendTransaction(ctx4, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-refresh-%d", time.Now().UnixNano())),
-		Origin:        spec.ServerName(srv.ServerName()),
-		Destination:   "hs1",
-		PDUs:          []json.RawMessage{refreshEvent.JSON()},
-	})
-	must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
-	for eventID, pduResp := range refreshResp.PDUs {
-		if pduResp.Error != "" {
-			t.Fatalf("hs1 rejected event %s after the origin extended valid_until_ts past the event's origin_server_ts — a stale cached copy must be refreshed, not treated as fatal: %s", eventID, pduResp.Error)
+		ctx4, cancelCtx4 := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCtx4()
+		refreshResp, refreshErr := fedClient.SendTransaction(ctx4, gomatrixserverlib.Transaction{
+			TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-valid-until-refresh-%d", time.Now().UnixNano())),
+			Origin:        spec.ServerName(srv.ServerName()),
+			Destination:   "hs1",
+			PDUs:          []json.RawMessage{refreshEvent.JSON()},
+		})
+		must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
+		for eventID, pduResp := range refreshResp.PDUs {
+			if pduResp.Error != "" {
+				t.Fatalf("Server did not refresh its cached key for event %s after valid_until_ts was extended: %s", eventID, pduResp.Error)
+			}
 		}
-	}
+	})
 }
 
 // Test that duplicate JSON keys within a single object in key response payloads

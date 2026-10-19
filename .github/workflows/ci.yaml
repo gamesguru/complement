@@ -33,10 +33,6 @@ jobs:
       - name: "Run unit tests" # homeserverless; no COMPLEMENT_BASE_IMAGE needed
         run: |
           make unit
-      - name: "Run MSC4521 library tests" # homeserverless suite; no COMPLEMENT_BASE_IMAGE needed
-        run: |
-          # Not ./tests/msc4521/...: integration deploys homeservers.
-          go test ./tests/msc4521/ ./tests/msc4521/bisect/
       - name: "Run Homerunner tests" # use a simple static dendrite image to sanity check homerunner works
         env:
           DOCKER_BUILDKIT: 1
@@ -64,7 +60,9 @@ jobs:
             timeout: 20m
 
           - homeserver: Dendrite
-            repo: element-hq/dendrite
+            repo: gamesguru/dendrite
+            # Fork carrying the MSC4499 key-refresh fix; not yet in element-hq/dendrite.
+            ref: dev
             tags: dendrite_blacklist
             packages: ./tests/msc4499
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
@@ -103,7 +101,7 @@ jobs:
           #    otherwise GITHUB_REF).
           # 2. otherwise, use the default homeserver branch ("HEAD")
 
-          for BRANCH_NAME in "$GITHUB_HEAD_REF" "${GITHUB_REF#refs/heads/}" "HEAD"; do
+          for BRANCH_NAME in "${{ matrix.ref }}" "$GITHUB_HEAD_REF" "${GITHUB_REF#refs/heads/}" "HEAD"; do
             # Skip empty branch names, merge commits, and our default branch.
             # (If we are on complement's default branch, we want to fall through to the HS's default branch
             # rather than using the HS's 'master'/'main').

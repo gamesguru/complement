@@ -121,7 +121,9 @@ func (d *Deployment) Destroy(t ct.TestLike) {
 
 // AbortFederationTo tells every homeserver in this deployment to stop sending to the given
 // federation server, which has stopped listening. It is a no-op unless
-// COMPLEMENT_FEDERATION_ABORT_SCRIPT is set.
+// COMPLEMENT_FEDERATION_ABORT_SCRIPT is set. The script receives the container ID
+// and serverName as arguments. Script failures report test errors, and the remaining
+// homeservers are still processed.
 func (d *Deployment) AbortFederationTo(t ct.TestLike, serverName spec.ServerName) {
 	t.Helper()
 	script := d.Config.FederationAbortScript
