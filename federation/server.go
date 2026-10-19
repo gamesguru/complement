@@ -83,7 +83,12 @@ type Server struct {
 }
 
 // EXPERIMENTAL
-// NewServer creates a new federation server with configured options.
+// NewServer creates a new federation server with configured options; call Listen
+// to start serving. Unless overridden by a registered handler, GET /_matrix/federation/v1/version
+// returns mock server information and MSC4521 reconciliation endpoints return
+// 404 M_UNRECOGNIZED without reporting an unexpected request. Other unhandled
+// requests report a test error by default and return 404.
+// Key or certificate generation failures terminate the test.
 func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Server)) *Server {
 	// generate signing key
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -701,7 +706,10 @@ var (
 )
 
 // listenOnUnusedPort listens on an unused port that no other federation `Server` has
-// used before in this test run, including servers created by other Go test binaries.
+// used before in this test run, including servers created by other Go test binaries
+// sharing the allocator directory. Reservations remain after the listener closes.
+// Directory or reservation errors, or exhaustion of ports 1024 through 65535,
+// terminate the test; ports that cannot be bound are skipped.
 func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	lastUsedPortMu.Lock()
 	defer lastUsedPortMu.Unlock()
@@ -765,6 +773,10 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	return nil
 }
 
+// portAllocatorDir returns the temporary directory path for shared port reservations
+// without creating it. The name is derived from COMPLEMENT_PORT_ALLOCATOR_ID when
+// set, otherwise from the GitHub run ID, attempt, and job, or the parent process ID
+// when GITHUB_RUN_ID is empty.
 func portAllocatorDir() string {
 	// CI provides a stable identifier shared by all package test processes in a
 	// job. Locally, the `go test` command is the common parent of those processes.
@@ -780,6 +792,11 @@ func portAllocatorDir() string {
 	return filepath.Join(os.TempDir(), "complement-federation-ports-"+hex.EncodeToString(allocatorHash[:8]))
 }
 
+// Listen starts serving HTTPS on a reserved port and updates the server name to
+// include it. The returned function closes the server, waits for serving to stop,
+// and asks the deployment to abort further federation to it if supported.
+// A second call returns nil, even after the server has been closed.
+// Port allocation and shutdown failures terminate the test.
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
 		return nil

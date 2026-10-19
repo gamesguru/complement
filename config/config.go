@@ -172,6 +172,12 @@ type Complement struct {
 
 var hsRegex = regexp.MustCompile(`COMPLEMENT_BASE_IMAGE_(.+)=(.+)$`)
 
+// NewConfigFromEnvVars reads Complement's environment settings, using baseImageURI
+// when COMPLEMENT_BASE_IMAGE is empty. pkgNamespace identifies Docker resources;
+// COMPLEMENT_PACKAGE_NAMESPACE_PREFIX, when set, is prepended to it with an underscore.
+// The returned configuration includes a new run ID and a generated CA certificate and key.
+// It panics on invalid numeric, memory, or host-mount settings, a missing base image,
+// an empty resulting namespace, or a failure to generate the CA.
 func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg := &Complement{BaseImageURIs: map[string]string{}}
 	cfg.BaseImageURI = os.Getenv("COMPLEMENT_BASE_IMAGE")
