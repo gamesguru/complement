@@ -2278,10 +2278,7 @@ func testMSC4499KeyActiveKeyValidUntilEnforcement(t *testing.T) {
 		must.NotError(t, "SendTransaction failed for the post-refresh event", refreshErr)
 		for eventID, pduResp := range refreshResp.PDUs {
 			if pduResp.Error != "" {
-				// FIXME: Dendrite currently decides whether to refresh a cached
-				// key based on wall-clock validity, not the event's requested
-				// minimum validity timestamp (federationapi/internal/keys.go).
-				skipKnownGap(t, []string{runtime.Dendrite}, "Server did not refresh its cached key for event %s after valid_until_ts was extended: %s", eventID, pduResp.Error)
+				t.Fatalf("Server did not refresh its cached key for event %s after valid_until_ts was extended: %s", eventID, pduResp.Error)
 			}
 		}
 	})
