@@ -17,6 +17,7 @@ const (
 	Tuwunel      = "tuwunel"
 	Continuwuity = "continuwuity"
 	Venator      = "venator"
+	Congruent    = "congruent"
 )
 
 var Homeserver string
@@ -52,6 +53,12 @@ var Exemptions = map[string][]string{
 	"TestPartialStateJoin":      {Tuwunel},
 	"TestTxnIdempotency":        {Conduwuit, Continuwuity, Tuwunel},
 	"TestTxnIdWithRefreshToken": {Conduwuit, Continuwuity, Tuwunel},
+}
+
+// Congruent is not skipped by SkipIf (it runs every test the Conduit family
+// would skip), but it satisfies SkipUnless for the servers it derives from.
+var derivedFrom = map[string][]string{
+	Congruent: {Conduwuit, Continuwuity, Conduit},
 }
 
 func isParent(child, parent string) bool {
@@ -112,6 +119,11 @@ func SkipUnless(t ct.TestLike, hses ...string) {
 	t.Helper()
 	if slices.Contains(hses, Homeserver) {
 		return
+	}
+	for _, hs := range derivedFrom[Homeserver] {
+		if slices.Contains(hses, hs) {
+			return
+		}
 	}
 	if Homeserver == "" {
 		t.Logf(
