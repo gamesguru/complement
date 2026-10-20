@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +49,27 @@ type server struct {
 
 	nextPDUHandlerKey int
 	nextEDUHandlerKey int
+
+	// failStateRequests makes the /state_ids and /state handlers answer with an
+	// error once they are released, instead of serving the room state.
+	failStateRequests atomic.Bool
+	// failStateRoomID is the room whose state requests the fallback routes fail.
+	// It is published before failStateRequests is set.
+	failStateRoomID atomic.Pointer[string]
+}
+
+// AddLeaveHandler expects exactly the given user's leave of the given room, and
+// nothing else: the homeserver must federate a local user's leave, but any other
+// membership event is still an unexpected PDU.
+func (s *server) AddLeaveHandler(roomID, userID string) func() {
+	return s.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+		ev := gjson.ParseBytes(e.JSON())
+		return ev.Get("type").Str == "m.room.member" &&
+			ev.Get("room_id").Str == roomID &&
+			ev.Get("sender").Str == userID &&
+			ev.Get("state_key").Str == userID &&
+			ev.Get("content.membership").Str == "leave"
+	})
 }
 
 // createTestServer spins up a federation server suitable for the tests in this file
@@ -96,6 +118,30 @@ func createTestServer(t *testing.T, deployment complement.Deployment, opts ...fu
 
 	// the homeserver under test may send us presence when the joining user syncs
 	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.presence" })
+
+	// Once FailStateRequest is called, answer a /state_ids or /state request for
+	// any event in its room with the same error as the handlers registered for
+	// specific events. The routes are registered here, before the caller starts
+	// listening, because the router must not change while it serves. They match
+	// only once the failure is on, so until then other handlers, including later
+	// ones, are unaffected.
+	failing := func(req *http.Request, _ *mux.RouteMatch) bool {
+		roomID := server.failStateRoomID.Load()
+		if !server.failStateRequests.Load() || roomID == nil {
+			return false
+		}
+		return req.URL.Path == "/_matrix/federation/v1/state_ids/"+*roomID ||
+			req.URL.Path == "/_matrix/federation/v1/state/"+*roomID
+	}
+	for _, endpoint := range []string{"state_ids", "state"} {
+		server.Mux().NewRoute().Methods("GET").MatcherFunc(failing).PathPrefix(
+			fmt.Sprintf("/_matrix/federation/v1/%s/", endpoint),
+		).HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			t.Logf("Failing %s", req.URL)
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+		})
+	}
 
 	return server
 }
@@ -3124,7 +3170,9 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
-			// alice aborts her join before the resync completes
+			// alice aborts her join before the resync completes. The homeserver
+			// must federate her leave to the server it joined through.
+			server.AddLeaveHandler(room.RoomID, alice.UserID)
 			alice.MustLeaveRoom(t, room.RoomID)
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
@@ -3163,9 +3211,12 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
-			t.Fatalf("TODO: fail the partial state join")
-			psjResult.FinishStateRequest()
-			awaitPartialStateJoinCompletion(t, room, alice)
+			// Every server in the room fails to give usable state, so after
+			// partial_state_resync_give_up_after the homeserver abandons the join:
+			// alice leaves, and the leave is federated.
+			server.AddLeaveHandler(room.RoomID, alice.UserID)
+			alice.SyncUntilTimeout = 30 * time.Second
+			psjResult.FailStateRequest()
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
 			// key requests from alice require a federation request.
@@ -4395,6 +4446,15 @@ func (psj *partialStateJoinResult) AwaitStateIdsRequest(t *testing.T) {
 	psj.fedStateIdsRequestReceivedWaiter.Waitf(t, 5*time.Second, "Waiting for /state_ids request")
 }
 
+// release the /state_ids request with an error, and fail every /state_ids and /state
+// request for the room, whatever the event ID, so that the state re-sync cannot complete
+func (psj *partialStateJoinResult) FailStateRequest() {
+	roomID := psj.ServerRoom.RoomID
+	psj.Server.failStateRoomID.Store(&roomID)
+	psj.Server.failStateRequests.Store(true)
+	psj.fedStateIdsSendResponseWaiter.Finish()
+}
+
 // allow the /state_ids request to complete, thus allowing the state re-sync to complete
 func (psj *partialStateJoinResult) FinishStateRequest() {
 	psj.fedStateIdsSendResponseWaiter.Finish()
@@ -4441,6 +4501,12 @@ func handleStateIdsRequests(
 							"to serve /state_ids response for event %s", queryParams["event_id"],
 					)
 				}
+			}
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state_ids request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+				return
 			}
 			t.Logf("Replying to /state_ids request for event %s", queryParams["event_id"])
 
@@ -4503,6 +4569,12 @@ func handleStateRequests(
 				}
 			}
 
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+				return
+			}
 			t.Logf("Replying to /state request for event %s", queryParams["event_id"])
 
 			res := fclient.RespState{
