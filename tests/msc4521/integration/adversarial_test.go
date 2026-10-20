@@ -112,6 +112,16 @@ func declineReconciliation(srv *federation.Server) {
 	srv.Mux().HandleFunc(msc4521Prefix+"room_digest/{roomID}/strata", decline).Methods("GET")
 }
 
+// declineEventRelationships answers the /event_relationships fallback that a
+// homeserver tries on every joined server once get_missing_events came back
+// empty, as it does for a prober that holds no history.
+func declineEventRelationships(srv *federation.Server) {
+	srv.Mux().HandleFunc("/_matrix/federation/unstable/event_relationships", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+	}).Methods("POST")
+}
+
 func (p *scriptedPeer) digestJSON(withStrata bool) map[string]interface{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
