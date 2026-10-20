@@ -4131,9 +4131,10 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 	})
 
 	t.Run("Purge during resync", func(t *testing.T) {
-		if runtime.Homeserver != runtime.Synapse {
+		if runtime.Homeserver != runtime.Synapse && runtime.Homeserver != runtime.Congruent {
 			// TODO: Pull this into a Synapse-specific suite when someone figures out how
 			// to do that (https://github.com/matrix-org/complement/issues/226)
+			// Congruent implements the same /_synapse/admin/v1/rooms/{roomId} DELETE.
 			t.Skipf("Skipping test of Synapse-internal API on %s", runtime.Homeserver)
 		}
 		t.Log("Alice begins a partial join to a room")
