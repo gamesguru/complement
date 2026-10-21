@@ -10,14 +10,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement/client"
-	"github.com/matrix-org/complement/ct"
-	"github.com/matrix-org/complement/federation"
-	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/client"
+	"github.com/matrix-org/complement/ct"
+	"github.com/matrix-org/complement/federation"
+	"github.com/matrix-org/complement/must"
 )
 
 var (
@@ -51,7 +52,7 @@ func ServerRoomImplStateDAG(t ct.TestLike) federation.ServerRoomImpl {
 			if ev.Type == spec.MRoomCreate && ev.StateKey != nil && *ev.StateKey == "" {
 				proto.PrevStateEvents = &[]string{}
 			} else {
-				// if the fwd extrems are state, use that.
+				// if the fwd extremities are state, use that.
 				var fwdExtrems []gomatrixserverlib.PDU
 				for _, id := range room.ForwardExtremities {
 					pdu, ok := room.GetEventInTimeline(id)
