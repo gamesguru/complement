@@ -1,6 +1,6 @@
 //go:build !dendrite_blacklist && !venator_blacklist
 
-package integration
+package msc4521
 
 import (
 	"testing"

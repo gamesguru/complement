@@ -2,7 +2,7 @@
 
 // Venator does not yet implement federation.
 
-package integration
+package msc4521
 
 import (
 	"context"

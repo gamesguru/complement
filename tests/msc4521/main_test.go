@@ -1,4 +1,4 @@
-package integration
+package msc4521
 
 import (
 	"os"
