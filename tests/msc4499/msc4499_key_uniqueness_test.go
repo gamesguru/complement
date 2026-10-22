@@ -3164,9 +3164,10 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 			"(MSC4499 L147-157)")
 	}
 
-	if foundKey == pubKeyABase64 {
+	switch foundKey {
+	case pubKeyABase64:
 		t.Logf("hs1 correctly returned frozen provisional key A despite expired valid_until_ts")
-	} else if foundKey == "" {
+	case "":
 		t.Logf("hs1 correctly omitted the server (expired key A can't satisfy constraint, key B rejected)")
 	}
 }

@@ -517,10 +517,11 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 		eventID := ev.Get("event_id").String()
 		eventIDString := eventID
 		labelString := paddingString
-		if eventID == expectedEventId {
+		switch eventID {
+		case expectedEventId:
 			eventIDString = decorateStringWithAnsiColor(eventID, AnsiColorGreen)
 			labelString = "(want) "
-		} else if eventID == actualEventId {
+		case actualEventId:
 			eventIDString = decorateStringWithAnsiColor(eventID, AnsiColorRed)
 			labelString = " (got) "
 		}

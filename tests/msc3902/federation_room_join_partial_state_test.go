@@ -561,7 +561,7 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 		select {
 		case pdu := <-pdusChannel:
-			if !(pdu.Type() == "m.room.message") {
+			if pdu.Type() != "m.room.message" {
 				t.Error("Received PDU is not of type m.room.message")
 			}
 		case <-time.After(1 * time.Second):
@@ -778,7 +778,7 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 					return false
 				}
 
-				if result.Get("content").Get("mytesteventid").Get("m\\.read").Get(strings.Replace(derekUserId, ".", "\\.", -1)).Get("ts").Int() == 1436451550453 {
+				if result.Get("content").Get("mytesteventid").Get("m\\.read").Get(strings.ReplaceAll(derekUserId, ".", "\\.")).Get("ts").Int() == 1436451550453 {
 					return true
 				}
 				return false

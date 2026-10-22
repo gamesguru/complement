@@ -401,7 +401,7 @@ func (i *instruction) url(hsURL string, lookup *sync.Map) string {
 		} else {
 			valToEncode = v
 		}
-		pathTemplate = strings.Replace(pathTemplate, k, url.PathEscape(valToEncode), -1)
+		pathTemplate = strings.ReplaceAll(pathTemplate, k, url.PathEscape(valToEncode))
 	}
 	return hsURL + pathTemplate
 }

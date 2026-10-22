@@ -178,7 +178,7 @@ var RedactRules = map[string][]redaction{
 			replaceWith: func(mappings *AnonMappings, event, key gjson.Result, anonRoomID string) interface{} {
 				_, domain := split(key.Str)
 				anonServer := mappings.Server(domain)
-				return "#" + strings.Replace(anonRoomID[1:], ":", "", -1) + ":" + anonServer
+				return "#" + strings.ReplaceAll(anonRoomID[1:], ":", "") + ":" + anonServer
 			},
 		},
 		// TODO alt_aliases

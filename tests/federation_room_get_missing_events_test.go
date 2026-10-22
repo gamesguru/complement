@@ -914,7 +914,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 		if event == nil {
 			t.Logf("/event returning 404 for event %v", eventID)
 			w.WriteHeader(404)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+			fmt.Fprintf(w, `complement: failed to find event: %s`, eventID)
 			return
 		}
 
@@ -928,7 +928,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 		resp, err := json.Marshal(txn)
 		if err != nil {
 			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 			return
 		}
 		w.WriteHeader(200)
@@ -1242,7 +1242,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		if event == nil {
 			t.Logf("/event returning 404 for event %v", eventID)
 			w.WriteHeader(404)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+			fmt.Fprintf(w, `complement: failed to find event: %s`, eventID)
 			return
 		}
 
@@ -1256,7 +1256,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		resp, err := json.Marshal(txn)
 		if err != nil {
 			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 			return
 		}
 		w.WriteHeader(200)
@@ -1487,7 +1487,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		responseBytes, err := json.Marshal(&res)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1622,7 +1622,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		if event == nil {
 			t.Logf("/event returning 404 for event %v", eventID)
 			w.WriteHeader(404)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+			fmt.Fprintf(w, `complement: failed to find event: %s`, eventID)
 			return
 		}
 
@@ -1636,7 +1636,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		resp, err := json.Marshal(txn)
 		if err != nil {
 			w.WriteHeader(500)
-			w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+			fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 			return
 		}
 		w.WriteHeader(200)

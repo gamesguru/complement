@@ -276,19 +276,20 @@ func fetchAndValidateThumbnail(t *testing.T, c *client.CSAPI, mxcUri string, aut
 	// https://spec.matrix.org/v1.2/client-server-api/#thumbnails
 	//
 	// We're just picking common ones found "in the wild" and validate them on their own dime.
-	if mimeType == "image/png" {
+	switch mimeType {
+	case "image/png":
 		_, err := png.Decode(bytes.NewReader(body))
 
 		if err != nil {
 			t.Fatalf("validating png thumbnail failed: %s", err)
 		}
-	} else if mimeType == "image/jpg" || mimeType == "image/jpeg" {
+	case "image/jpg", "image/jpeg":
 		_, err := jpeg.Decode(bytes.NewReader(body))
 
 		if err != nil {
 			t.Fatalf("validating jp(e)g thumbnail failed: %s", err)
 		}
-	} else {
+	default:
 		// TODO: more mimetypes?
 		t.Fatalf("Encountered unknown mimetype %s", mimeType)
 	}

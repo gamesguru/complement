@@ -279,10 +279,10 @@ func SyncPresenceHas(fromUser string, expectedPresence *string, checks ...func(g
 			return fmt.Errorf("presence.events does not exist")
 		}
 		for _, x := range presenceEvents.Array() {
-			if !(x.Get("type").Exists() &&
-				x.Get("sender").Exists() &&
-				x.Get("content").Exists() &&
-				x.Get("content.presence").Exists()) {
+			if !x.Get("type").Exists() ||
+				!x.Get("sender").Exists() ||
+				!x.Get("content").Exists() ||
+				!x.Get("content.presence").Exists() {
 				return fmt.Errorf(
 					"malformatted presence event, expected the following fields: [sender, type, content, content.presence]: %s",
 					x.Raw,
@@ -339,15 +339,16 @@ func syncMembershipIn(userID, roomID, membership string, checks ...func(gjson.Re
 		// Otherwise, if the client is the user whose membership we are checking, we need to
 		// pick the correct room type JSON key based on the membership being checked.
 		if clientUserID == userID {
-			if membership == "join" {
+			switch membership {
+			case "join":
 				roomTypeKey = "join"
-			} else if membership == "leave" || membership == "ban" {
+			case "leave", "ban":
 				roomTypeKey = "leave"
-			} else if membership == "invite" {
+			case "invite":
 				roomTypeKey = "invite"
-			} else if membership == "knock" {
+			case "knock":
 				roomTypeKey = "knock"
-			} else {
+			default:
 				return fmt.Errorf("syncMembershipIn(%s, %s, %s): unknown membership: %s", userID, roomID, membership, membership)
 			}
 		}
@@ -357,13 +358,14 @@ func syncMembershipIn(userID, roomID, membership string, checks ...func(gjson.Re
 		// Otherwise, if the client is the user whose membership we are checking,
 		// we need to pick the correct JSON key based on the membership being checked.
 		if clientUserID == userID {
-			if membership == "join" || membership == "leave" || membership == "ban" {
+			switch membership {
+			case "join", "leave", "ban":
 				stateKey = "state"
-			} else if membership == "invite" {
+			case "invite":
 				stateKey = "invite_state"
-			} else if membership == "knock" {
+			case "knock":
 				stateKey = "knock_state"
-			} else {
+			default:
 				return fmt.Errorf("syncMembershipIn(%s, %s, %s): unknown membership: %s", userID, roomID, membership, membership)
 			}
 		}
