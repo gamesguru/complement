@@ -184,6 +184,7 @@ The currently known blacklist tags are:
 * `venator_blacklist`
 * `congruent_blacklist`
 * `sithnapse_blacklist`
+* `zendrite_blacklist`
 
 ### Writing tests for unstable MSCs
 

@@ -46,7 +46,7 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: false # ensure if synapse fails we keep running dendrite and vice-versa
+      fail-fast: false # ensure if synapse fails we keep running Zendrite and vice-versa
       matrix:
         include:
           - homeserver: Synapse
@@ -56,13 +56,13 @@ jobs:
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1 COMPLEMENT_SHARE_ENV_PREFIX=PASS_ PASS_SYNAPSE_COMPLEMENT_DATABASE=sqlite"
             timeout: 20m
 
-          - homeserver: Dendrite
+          - homeserver: Zendrite
             repo: gamesguru/dendrite
             # Fork carrying the MSC4499 key-refresh fix; not yet in element-hq/dendrite.
             ref: dev
-            # Kept even though the test files no longer use it: runtime/hs_dendrite.go
+            # Kept even though the test files no longer use it: runtime/hs_zendrite.go
             # needs this tag to identify the homeserver for SkipIf/SkipUnless.
-            tags: dendrite_blacklist
+            tags: zendrite_blacklist
             packages: ./tests/msc2836 ./tests/msc3389 ./tests/msc3391 ./tests/msc3757 ./tests/msc3874 ./tests/msc3890 ./tests/msc3902 ./tests/msc3930 ./tests/msc3967 ./tests/msc4140 ./tests/msc4155 ./tests/msc4186 ./tests/msc4222 ./tests/msc4242 ./tests/msc4306 ./tests/msc4429 ./tests/msc4499 ./tests/msc4500
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
             timeout: 60m
@@ -123,10 +123,10 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
 
-        # Build the Complement-specific dendrite image from the dockerfile in the Dendrite repo.
+        # Build the Complement-specific Zendrite image from the dockerfile in the Dendrite repo.
         # We don't use the dockerfiles in the Complement repo as they tend to get stale quickly.
       - run: docker build -t homeserver -f build/scripts/Complement.Dockerfile .
-        if: ${{ matrix.homeserver == 'Dendrite' }}
+        if: ${{ matrix.homeserver == 'Zendrite' }}
         working-directory: homeserver
         env:
           DOCKER_BUILDKIT: 1
