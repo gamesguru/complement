@@ -60,10 +60,12 @@ jobs:
             repo: gamesguru/dendrite
             # Fork carrying the MSC4499 key-refresh fix; not yet in element-hq/dendrite.
             ref: dev
+            # Kept even though the test files no longer use it: runtime/hs_dendrite.go
+            # needs this tag to identify the homeserver for SkipIf/SkipUnless.
             tags: dendrite_blacklist
-            packages: ./tests/msc4499
+            packages: ./tests/msc2836 ./tests/msc3389 ./tests/msc3391 ./tests/msc3757 ./tests/msc3874 ./tests/msc3890 ./tests/msc3902 ./tests/msc3930 ./tests/msc3967 ./tests/msc4140 ./tests/msc4155 ./tests/msc4186 ./tests/msc4222 ./tests/msc4242 ./tests/msc4306 ./tests/msc4429 ./tests/msc4499 ./tests/msc4500
             env: "COMPLEMENT_ENABLE_DIRTY_RUNS=1"
-            timeout: 10m
+            timeout: 60m
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 // This file contains tests for "push rules of polls" as defined by MSC3930.
 // The MSC that defines the design of the polls system is MSC3381.
 //
@@ -39,7 +36,6 @@ const pollStartRuleID = ".org.matrix.msc3930.rule.poll_start"
 const pollEndRuleID = ".org.matrix.msc3930.rule.poll_end"
 
 func TestPollsLocalPushRules(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// Venator does not yet implement pushers.
 	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)
@@ -194,7 +190,6 @@ func TestPollsLocalPushRules(t *testing.T) {
 // POST /_matrix/push/v1/notify according to the MSC3930 rules: poll starts
 // notify, poll responses are silenced.
 func TestPollsPushGatewayNotifications(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// Venator does not yet implement pushers.
 	runtime.SkipIf(t, runtime.Venator)
 	deployment := complement.Deploy(t, 1)

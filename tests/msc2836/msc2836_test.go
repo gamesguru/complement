@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -27,7 +24,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 )
 
 // This test checks that federated threading works when the remote server joins after the messages
@@ -45,7 +41,6 @@ import (
 // an event which the server does have, event B, to ensure that this request also works and also does
 // federated hits to return missing events (A,C).
 func TestEventRelationships(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -200,7 +195,6 @@ func TestEventRelationships(t *testing.T) {
 // We then check that B, which wasn't on the return path on the previous request, was persisted by calling
 // /event_relationships again with event ID 'A' and direction 'down'.
 func TestFederatedEventRelationships(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
