@@ -25,6 +25,9 @@ import (
 	"github.com/matrix-org/complement/runtime"
 )
 
+// TODO: Add a regression test for jump-to-date to /messages handoff: follow the
+// context token returned by /timestamp_to_event through pagination, including
+// deep historical federation outliers and sparse auth-chain layouts.
 func TestJumpToDateEndpoint(t *testing.T) {
 	// Venator does not yet implement the federation and application-service
 	// behavior required by this mixed client/federation fixture.
