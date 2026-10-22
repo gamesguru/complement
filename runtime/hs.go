@@ -18,6 +18,7 @@ const (
 	Continuwuity = "continuwuity"
 	Venator      = "venator"
 	Congruent    = "congruent"
+	Sithnapse    = "sithnapse"
 )
 
 var Homeserver string
