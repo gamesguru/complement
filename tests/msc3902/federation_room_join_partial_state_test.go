@@ -232,7 +232,6 @@ func (s *server) WaitForEvent(
 }
 
 func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test contains the partial-join scenario matrix.
-	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
 
 	// createMemberEvent creates a membership event for the given user
@@ -614,8 +613,11 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		server.MustSendTransaction(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), []json.RawMessage{event.JSON()}, nil)
 		aliceNextBatch = awaitEventViaSync(t, alice, serverRoom.RoomID, event.EventID(), aliceNextBatch)
 
-		// The resync completes.
+		// The resync completes. `FinishStateRequest` only releases the blocked `/state_ids`
+		// response, so wait for the join to complete before the test, and with it the
+		// federation server, goes away under the resync's remaining requests.
 		psjResult.FinishStateRequest()
+		awaitPartialStateJoinCompletion(t, serverRoom, alice)
 
 		// Derek stops typing.
 		content, _ = json.Marshal(map[string]interface{}{
@@ -643,10 +645,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 	// we should be able to receive presence EDU over federation during the resync
 	t.Run("CanReceivePresenceDuringPartialStateJoin", func(t *testing.T) {
 		// See https://github.com/matrix-org/synapse/issues/13008
-		// Only Congruent handles this; the skip stays for other homeservers.
-		if runtime.Homeserver != runtime.Congruent {
-			t.Skip("Presence EDUs are currently dropped during a resync")
-		}
 		deployment := complement.Deploy(t, 1)
 		defer deployment.Destroy(t)
 		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -3149,10 +3147,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// partial state join completes.
 		t.Run("Device list no longer tracked when leaving partial state room", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/12802 has been addressed.
-			// Only Congruent handles this; the skip stays for other homeservers.
-			if runtime.Homeserver != runtime.Congruent {
-				t.Skip("Cannot yet leave a room during resync")
-			}
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t34alice")
 			defer cleanup()
@@ -3195,10 +3189,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
 			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			// Only Congruent handles this; the skip stays for other homeservers.
-			if runtime.Homeserver != runtime.Congruent {
-				t.Skip("Cannot yet abort a partial state join")
-			}
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
@@ -3374,10 +3364,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// not in a room the whole time once a partial state join completes.
 		t.Run("Device list tracking for user incorrectly believed to be in room when they rejoin before partial state join completes", func(t *testing.T) {
 			// Tracked in https://github.com/matrix-org/synapse/issues/13887.
-			// Only Congruent handles this; the skip stays for other homeservers.
-			if runtime.Homeserver != runtime.Congruent {
-				t.Skip("This edge case is being ignored for now.")
-			}
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t37alice")
 			defer cleanup()
@@ -3457,10 +3443,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 		// not share a room the whole time once a partial state join completes.
 		t.Run("Device list tracking for user incorrectly believed to be in room when they join another shared room before partial state join completes", func(t *testing.T) {
 			// Tracked in https://github.com/matrix-org/synapse/issues/13887.
-			// Only Congruent handles this; the skip stays for other homeservers.
-			if runtime.Homeserver != runtime.Congruent {
-				t.Skip("This edge case is being ignored for now.")
-			}
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t39alice")
 			defer cleanup()
@@ -3805,6 +3787,8 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Bob joins too")
+			// Bob's join is sent on to the resident server, which the fixture must accept.
+			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
 			t.Log("Bob waits to see his join")
@@ -3815,7 +3799,6 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Alice leaves the room")
-			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
