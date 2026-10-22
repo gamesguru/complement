@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -472,7 +469,6 @@ func unsafeSendMessage(t *testing.T, user *client.CSAPI, roomID string, body str
 // scenarios, covering list responses, subscriptions, deltas, filters, presence,
 // long polling, extensions, lazy loading, and error handling.
 func TestMSC4186SlidingSync(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	t.Run("Lists", testMSC4186SlidingSyncLists)
 	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
 	t.Run("ListDeltas", testMSC4186SlidingSyncListDeltas)

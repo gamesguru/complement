@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -74,7 +71,6 @@ func TestWithoutOwnedState(t *testing.T) {
 }
 
 func TestMSC3757OwnedState(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	runtime.SkipIf(t, runtime.Conduit)
 
 	deployment := complement.Deploy(t, 1)

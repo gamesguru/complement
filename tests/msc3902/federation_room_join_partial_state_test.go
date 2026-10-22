@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 // This file contains tests for joining rooms over federation, with the
 // features introduced in msc3902.
 
