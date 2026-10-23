@@ -697,12 +697,16 @@ func cleanupDelayedEvents(t *testing.T, user *client.CSAPI) {
 	body := must.ParseJSON(t, res.Body)
 	for _, delayedEvent := range body.Get("delayed_events").Array() {
 		delayID := delayedEvent.Get("delay_id").String()
-		user.MustDo(
+		// An event that came due after the listing above is already finalized, so
+		// cancelling it is rejected. That is not a cleanup failure: the check below
+		// still requires that nothing remains scheduled.
+		cancelRes := user.Do(
 			t,
 			"POST",
 			getPathForUpdateDelayedEvent(delayID, DelayedEventActionCancel),
 			client.WithJSONBody(t, map[string]interface{}{}),
 		)
+		cancelRes.Body.Close()
 	}
 
 	matchDelayedEvents(t, user, delayedEventsNumberEqual(0))
