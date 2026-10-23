@@ -478,17 +478,18 @@ func TestDelayedEvents(t *testing.T) {
 		// longer to run in all cases even for homeservers that are quick to restart because
 		// we have to wait for that large delay.
 		//
-		// We instead account for this by scheduling many delayed events at short intervals
-		// (we chose 10 seconds because that's what the test naively chose before). Then
-		// whenever the servers comes back, we can just check until it decrements by 1.
+		// We instead account for this by scheduling many delayed events at short intervals.
+		// Whenever the server comes back, we poll until the count decrements instead of
+		// sleeping for a whole interval first.
 		//
 		// We add 1 to the number of intervals to ensure that we have at least one interval
 		// to check against no matter how things are configured.
-		numberOf10SecondIntervals := int(math.Ceil(deployment.GetConfig().SpawnHSTimeout.Seconds()/10)) + 1
-		for i := 0; i < numberOf10SecondIntervals; i++ {
-			// +1 as we want to start at 10 seconds and so we don't end up with -100ms delay
-			// on the first one.
-			delay := time.Duration(i+1)*10*time.Second - 100*time.Millisecond
+		const delayedEventInterval = 2 * time.Second
+		numberOfIntervals := int(math.Ceil(deployment.GetConfig().SpawnHSTimeout.Seconds()/delayedEventInterval.Seconds())) + 1
+		for i := 0; i < numberOfIntervals; i++ {
+			// +1 as we want to start at one interval and so we don't end up with -100ms
+			// delay on the first one.
+			delay := time.Duration(i+1)*delayedEventInterval - 100*time.Millisecond
 
 			user.MustDo(
 				t,
@@ -527,9 +528,10 @@ func TestDelayedEvents(t *testing.T) {
 			return ev.Get("type").Str == eventType && ev.Get("state_key").Str == stateKey1
 		}))
 
-		// Wait until we see another delayed event being sent (ensure things resumed and are continuing).
-		time.Sleep(10 * time.Second)
-		matchDelayedEvents(t, user,
+		// Wait until we see another delayed event being sent (ensure things resumed and are
+		// continuing). Poll rather than sleeping a whole interval so a quick server finishes
+		// as soon as the next event fires.
+		matchDelayedEventsWithin(t, user, 10*time.Second,
 			delayedEventsNumberLessThan(remainingDelayedEventCount),
 		)
 		// Sanity check that the other delayed events also updated the room state correctly.
@@ -658,10 +660,19 @@ func delayedEventsNumberLessThan(target int) delayedEventsCheckOpt {
 func matchDelayedEvents(t *testing.T, user *client.CSAPI, checks ...delayedEventsCheckOpt) *http.Response {
 	t.Helper()
 
+	return matchDelayedEventsWithin(t, user, 500*time.Millisecond, checks...)
+}
+
+// matchDelayedEventsWithin is like matchDelayedEvents but keeps polling until the checks
+// pass or the timeout expires. Checks run every few hundred milliseconds, so callers
+// waiting for a time-based event can proceed as soon as it appears.
+func matchDelayedEventsWithin(t *testing.T, user *client.CSAPI, timeout time.Duration, checks ...delayedEventsCheckOpt) *http.Response {
+	t.Helper()
+
 	// We need to retry this as replication can sometimes lag.
 	return user.MustDo(t, "GET", getPathForDelayedEvents(),
 		client.WithRetryUntil(
-			500*time.Millisecond,
+			timeout,
 			func(res *http.Response) bool {
 				for _, check := range checks {
 					err := check(res)
