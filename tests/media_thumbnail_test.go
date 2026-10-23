@@ -3,6 +3,8 @@ package tests
 import (
 	"bytes"
 	"context"
+	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -13,16 +15,15 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/matrix-org/gomatrixserverlib/fclient"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/internal/data"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/matrix-org/gomatrixserverlib/fclient"
 )
-
-// TODO: add JPEG testing
 
 // sytest: POSTed media can be thumbnailed
 func TestLocalPngThumbnail(t *testing.T) {
@@ -50,6 +51,46 @@ func TestLocalPngThumbnail(t *testing.T) {
 		fetchAndValidateThumbnail(t, alice, uri, true)
 	})
 
+}
+
+// generateJpeg returns a JPEG large enough that it has to be scaled down to 32x32.
+func generateJpeg(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 256, 256))
+	for y := 0; y < 256; y++ {
+		for x := 0; x < 256; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x ^ y), A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatalf("failed to encode test jpeg: %s", err)
+	}
+	return buf.Bytes()
+}
+
+func TestLocalJpegThumbnail(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+
+	jpegBytes := generateJpeg(t)
+
+	uri := alice.UploadContent(t, jpegBytes, "test.jpg", "image/jpeg")
+
+	t.Run("test /_matrix/media/v3 endpoint", func(t *testing.T) {
+		// Synapse no longer allows downloads over the unauthenticated media endpoints by default
+		runtime.SkipIf(t, runtime.Synapse)
+		// Venator always returns M_NOT_FOUND on the unauthenticated API
+		runtime.SkipIf(t, runtime.Venator)
+		fetchAndValidateThumbnail(t, alice, uri, false)
+	})
+
+	t.Run("test /_matrix/client/v1/media endpoint", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		fetchAndValidateThumbnail(t, alice, uri, true)
+	})
 }
 
 // sytest: Remote media can be thumbnailed
@@ -85,6 +126,29 @@ func TestRemotePngThumbnail(t *testing.T) {
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected HTTP status: %d, got %d", http.StatusUnauthorized, res.StatusCode)
 	}
+}
+
+func TestRemoteJpegThumbnail(t *testing.T) {
+	// Venator: does not yet implement federation
+	runtime.SkipIf(t, runtime.Venator)
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+
+	uri := alice.UploadContent(t, generateJpeg(t), "test.jpg", "image/jpeg")
+
+	t.Run("test /_matrix/media/v3 endpoint", func(t *testing.T) {
+		// Synapse no longer allows downloads over the unauthenticated media endpoints by default
+		runtime.SkipIf(t, runtime.Synapse)
+		fetchAndValidateThumbnail(t, bob, uri, false)
+	})
+
+	t.Run("test /_matrix/client/v1/media endpoint", func(t *testing.T) {
+		runtime.SkipIf(t, runtime.Dendrite)
+		fetchAndValidateThumbnail(t, bob, uri, true)
+	})
 }
 
 func TestFederationThumbnail(t *testing.T) {
@@ -212,19 +276,20 @@ func fetchAndValidateThumbnail(t *testing.T, c *client.CSAPI, mxcUri string, aut
 	// https://spec.matrix.org/v1.2/client-server-api/#thumbnails
 	//
 	// We're just picking common ones found "in the wild" and validate them on their own dime.
-	if mimeType == "image/png" {
+	switch mimeType {
+	case "image/png":
 		_, err := png.Decode(bytes.NewReader(body))
 
 		if err != nil {
 			t.Fatalf("validating png thumbnail failed: %s", err)
 		}
-	} else if mimeType == "image/jpg" || mimeType == "image/jpeg" {
+	case "image/jpg", "image/jpeg":
 		_, err := jpeg.Decode(bytes.NewReader(body))
 
 		if err != nil {
 			t.Fatalf("validating jp(e)g thumbnail failed: %s", err)
 		}
-	} else {
+	default:
 		// TODO: more mimetypes?
 		t.Fatalf("Encountered unknown mimetype %s", mimeType)
 	}

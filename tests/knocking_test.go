@@ -1,6 +1,4 @@
 // Knocking is not yet implemented on Dendrite
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
 
 // This file contains Client-Server and Federation API tests for knocking
 // https://spec.matrix.org/1.2/client-server-api/#knocking-on-rooms
@@ -15,11 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement"
-	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement"
+	"github.com/matrix-org/complement/runtime"
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"

@@ -1,5 +1,3 @@
-//go:build !dendrite_blacklist
-
 // Tests the GET /_matrix/client/v1/room_summary/{roomIdOrAlias} endpoint
 // as specified in https://spec.matrix.org/v1.15/client-server-api/#get_matrixclientv1room_summaryroomidoralias
 
@@ -19,7 +17,6 @@ import (
 // allowed_room_ids for rooms with restricted join rules, and omits the field
 // for rooms that do not use restricted join rules.
 func TestRoomSummaryAllowedRoomIDs(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// Venator: does not support room version 8 (>=v10 only)
 	runtime.SkipIf(t, runtime.Venator)
 

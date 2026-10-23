@@ -4,8 +4,9 @@ import (
 	"context"
 	"slices"
 
-	"github.com/matrix-org/complement/ct"
 	"github.com/moby/moby/client"
+
+	"github.com/matrix-org/complement/ct"
 )
 
 const (
@@ -16,6 +17,9 @@ const (
 	Tuwunel      = "tuwunel"
 	Continuwuity = "continuwuity"
 	Venator      = "venator"
+	Congruent    = "congruent"
+	Sithnapse    = "sithnapse"
+	Zendrite     = "zendrite"
 )
 
 var Homeserver string
@@ -33,13 +37,13 @@ var ContainerKillFunc = func(cli *client.Client, containerID string) error {
 //
 // The homeserver being tested is detected via the presence of a `*_blacklist` tag e.g:
 //
-//	go test -tags="dendrite_blacklist"
+//	go test -tags="zendrite_blacklist"
 //
 // This means it is important to always specify this tag when running tests. Failure to do
 // so will result in a warning being printed to stdout, and the test will be run. When a new server
 // implementation is added, a respective `hs_$name.go` needs to be created in this directory. This
 // file pairs together the tag name with a string constant declared in this package
-// e.g. dendrite_blacklist == runtime.Dendrite
+// e.g. zendrite_blacklist == runtime.Zendrite
 var parents = map[string][]string{
 	Conduwuit:    {Conduit},
 	Continuwuity: {Conduwuit, Conduit},
@@ -49,8 +53,14 @@ var parents = map[string][]string{
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
 var Exemptions = map[string][]string{
 	"TestPartialStateJoin":      {Tuwunel},
-	"TestTxnIdempotency":        {Continuwuity, Tuwunel},
-	"TestTxnIdWithRefreshToken": {},
+	"TestTxnIdempotency":        {Conduwuit, Continuwuity, Tuwunel},
+	"TestTxnIdWithRefreshToken": {Conduwuit, Continuwuity, Tuwunel},
+}
+
+// Congruent is not skipped by SkipIf (it runs every test the Conduit family
+// would skip), but it satisfies SkipUnless for the servers it derives from.
+var derivedFrom = map[string][]string{
+	Congruent: {Conduwuit, Continuwuity, Conduit},
 }
 
 func isParent(child, parent string) bool {
@@ -111,6 +121,11 @@ func SkipUnless(t ct.TestLike, hses ...string) {
 	t.Helper()
 	if slices.Contains(hses, Homeserver) {
 		return
+	}
+	for _, hs := range derivedFrom[Homeserver] {
+		if slices.Contains(hses, hs) {
+			return
+		}
 	}
 	if Homeserver == "" {
 		t.Logf(

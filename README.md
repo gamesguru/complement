@@ -169,6 +169,11 @@ COMPLEMENT_BASE_IMAGE=complement-synapse:latest go test -v -tags="synapse_blackl
 ```
 
 This runs Complement with a Synapse HS and ignores tests which Synapse doesn't implement.
+For a Sithnapse image, use its separate identity tag:
+
+```
+COMPLEMENT_BASE_IMAGE=complement-sithnapse:latest go test -v -tags="sithnapse_blacklist" ./tests/...
+```
 
 The currently known blacklist tags are:
 
@@ -177,6 +182,9 @@ The currently known blacklist tags are:
 * `conduit_blacklist`
 * `conduwuit_blacklist`
 * `venator_blacklist`
+* `congruent_blacklist`
+* `sithnapse_blacklist`
+* `zendrite_blacklist`
 
 ### Writing tests for unstable MSCs
 

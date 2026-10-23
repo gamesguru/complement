@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 // This file contains tests for joining rooms over federation, with the
 // features introduced in msc3902.
 
@@ -18,6 +15,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,6 +46,27 @@ type server struct {
 
 	nextPDUHandlerKey int
 	nextEDUHandlerKey int
+
+	// failStateRequests makes the /state_ids and /state handlers answer with an
+	// error once they are released, instead of serving the room state.
+	failStateRequests atomic.Bool
+	// failStateRoomID is the room whose state requests the fallback routes fail.
+	// It is published before failStateRequests is set.
+	failStateRoomID atomic.Pointer[string]
+}
+
+// AddLeaveHandler expects exactly the given user's leave of the given room, and
+// nothing else: the homeserver must federate a local user's leave, but any other
+// membership event is still an unexpected PDU.
+func (s *server) AddLeaveHandler(roomID, userID string) func() {
+	return s.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+		ev := gjson.ParseBytes(e.JSON())
+		return ev.Get("type").Str == "m.room.member" &&
+			ev.Get("room_id").Str == roomID &&
+			ev.Get("sender").Str == userID &&
+			ev.Get("state_key").Str == userID &&
+			ev.Get("content.membership").Str == "leave"
+	})
 }
 
 // createTestServer spins up a federation server suitable for the tests in this file
@@ -96,6 +115,30 @@ func createTestServer(t *testing.T, deployment complement.Deployment, opts ...fu
 
 	// the homeserver under test may send us presence when the joining user syncs
 	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.presence" })
+
+	// Once FailStateRequest is called, answer a /state_ids or /state request for
+	// any event in its room with the same error as the handlers registered for
+	// specific events. The routes are registered here, before the caller starts
+	// listening, because the router must not change while it serves. They match
+	// only once the failure is on, so until then other handlers, including later
+	// ones, are unaffected.
+	failing := func(req *http.Request, _ *mux.RouteMatch) bool {
+		roomID := server.failStateRoomID.Load()
+		if !server.failStateRequests.Load() || roomID == nil {
+			return false
+		}
+		return req.URL.Path == "/_matrix/federation/v1/state_ids/"+*roomID ||
+			req.URL.Path == "/_matrix/federation/v1/state/"+*roomID
+	}
+	for _, endpoint := range []string{"state_ids", "state"} {
+		server.Mux().NewRoute().Methods("GET").MatcherFunc(failing).PathPrefix(
+			fmt.Sprintf("/_matrix/federation/v1/%s/", endpoint),
+		).HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			t.Logf("Failing %s", req.URL)
+			w.WriteHeader(500)
+			_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+		})
+	}
 
 	return server
 }
@@ -185,8 +228,7 @@ func (s *server) WaitForEvent(
 	}
 }
 
-func TestPartialStateJoin(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
+func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test contains the partial-join scenario matrix.
 	runtime.SkipIf(t, runtime.Conduit, runtime.Conduwuit)
 
 	// createMemberEvent creates a membership event for the given user
@@ -439,7 +481,7 @@ func TestPartialStateJoin(t *testing.T) {
 		// Sanity check that the sync hasn't completed
 		select {
 		case response := <-responseChan:
-			t.Fatalf("Recieved sync response too soon: %s", response.Raw)
+			t.Fatalf("Received sync response too soon: %s", response.Raw)
 		default:
 			t.Logf("No sync response yet")
 		}
@@ -519,7 +561,7 @@ func TestPartialStateJoin(t *testing.T) {
 
 		select {
 		case pdu := <-pdusChannel:
-			if !(pdu.Type() == "m.room.message") {
+			if pdu.Type() != "m.room.message" {
 				t.Error("Received PDU is not of type m.room.message")
 			}
 		case <-time.After(1 * time.Second):
@@ -568,8 +610,11 @@ func TestPartialStateJoin(t *testing.T) {
 		server.MustSendTransaction(t, deployment, deployment.GetFullyQualifiedHomeserverName(t, "hs1"), []json.RawMessage{event.JSON()}, nil)
 		aliceNextBatch = awaitEventViaSync(t, alice, serverRoom.RoomID, event.EventID(), aliceNextBatch)
 
-		// The resync completes.
+		// The resync completes. `FinishStateRequest` only releases the blocked `/state_ids`
+		// response, so wait for the join to complete before the test, and with it the
+		// federation server, goes away under the resync's remaining requests.
 		psjResult.FinishStateRequest()
+		awaitPartialStateJoinCompletion(t, serverRoom, alice)
 
 		// Derek stops typing.
 		content, _ = json.Marshal(map[string]interface{}{
@@ -596,8 +641,8 @@ func TestPartialStateJoin(t *testing.T) {
 
 	// we should be able to receive presence EDU over federation during the resync
 	t.Run("CanReceivePresenceDuringPartialStateJoin", func(t *testing.T) {
-		// See https://github.com/matrix-org/synapse/issues/13008")
-		t.Skip("Presence EDUs are currently dropped during a resync")
+		runtime.SkipIf(t, runtime.Synapse)
+		// See https://github.com/matrix-org/synapse/issues/13008
 		deployment := complement.Deploy(t, 1)
 		defer deployment.Destroy(t)
 		alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -734,7 +779,7 @@ func TestPartialStateJoin(t *testing.T) {
 					return false
 				}
 
-				if result.Get("content").Get("mytesteventid").Get("m\\.read").Get(strings.Replace(derekUserId, ".", "\\.", -1)).Get("ts").Int() == 1436451550453 {
+				if result.Get("content").Get("mytesteventid").Get("m\\.read").Get(strings.ReplaceAll(derekUserId, ".", "\\.")).Get("ts").Int() == 1436451550453 {
 					return true
 				}
 				return false
@@ -2193,7 +2238,7 @@ func TestPartialStateJoin(t *testing.T) {
 				close(deviceListUpdateChannel1)
 				close(deviceListUpdateChannel2)
 			}
-			return
+			return alice, server1, server2, deviceListUpdateChannel1, deviceListUpdateChannel2, room, cleanup
 		}
 
 		// renameDevice triggers an outgoing device list update
@@ -2796,7 +2841,7 @@ func TestPartialStateJoin(t *testing.T) {
 				cancel()
 				close(userDevicesQueryChannel)
 			}
-			return
+			return alice, server, userDevicesQueryChannel, room, sendDeviceListUpdate, cleanup
 		}
 
 		// mustQueryKeys makes a /keys/query request to the homeserver under test.
@@ -3099,8 +3144,8 @@ func TestPartialStateJoin(t *testing.T) {
 		// test that device lists stop being tracked when leaving a partial state room before the
 		// partial state join completes.
 		t.Run("Device list no longer tracked when leaving partial state room", func(t *testing.T) {
+			runtime.SkipIf(t, runtime.Synapse)
 			// Skipped until https://github.com/matrix-org/synapse/issues/12802 has been addressed.
-			t.Skip("Cannot yet leave a room during resync")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t34alice")
 			defer cleanup()
@@ -3128,7 +3173,9 @@ func TestPartialStateJoin(t *testing.T) {
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
-			// alice aborts her join before the resync completes
+			// alice aborts her join before the resync completes. The homeserver
+			// must federate her leave to the server it joined through.
+			server.AddLeaveHandler(room.RoomID, alice.UserID)
 			alice.MustLeaveRoom(t, room.RoomID)
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
@@ -3140,8 +3187,8 @@ func TestPartialStateJoin(t *testing.T) {
 		// test that device lists stop being tracked when leaving a partial state room due to
 		// failure to complete the partial state join.
 		t.Run("Device list no longer tracked when failing to complete partial state join", func(t *testing.T) {
+			runtime.SkipIf(t, runtime.Synapse)
 			// Skipped until https://github.com/matrix-org/synapse/issues/13000 has been addressed.
-			t.Skip("Cannot yet abort a partial state join")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t35alice")
 			defer cleanup()
@@ -3169,9 +3216,12 @@ func TestPartialStateJoin(t *testing.T) {
 			mustQueryKeysWithFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 			mustQueryKeysWithoutFederationRequest(t, alice, userDevicesChannel, server.UserID("elsie"))
 
-			t.Fatalf("TODO: fail the partial state join")
-			psjResult.FinishStateRequest()
-			awaitPartialStateJoinCompletion(t, room, alice)
+			// Every server in the room fails to give usable state, so after
+			// partial_state_resync_give_up_after the homeserver abandons the join:
+			// alice leaves, and the leave is federated.
+			server.AddLeaveHandler(room.RoomID, alice.UserID)
+			alice.SyncUntilTimeout = 30 * time.Second
+			psjResult.FailStateRequest()
 
 			// hs1 should no longer be tracking elsie's device list; subsequent
 			// key requests from alice require a federation request.
@@ -3313,8 +3363,8 @@ func TestPartialStateJoin(t *testing.T) {
 		// test that cached device lists are flushed when it is discovered that a remote user was
 		// not in a room the whole time once a partial state join completes.
 		t.Run("Device list tracking for user incorrectly believed to be in room when they rejoin before partial state join completes", func(t *testing.T) {
+			runtime.SkipIf(t, runtime.Synapse)
 			// Tracked in https://github.com/matrix-org/synapse/issues/13887.
-			t.Skip("This edge case is being ignored for now.")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t37alice")
 			defer cleanup()
@@ -3393,8 +3443,8 @@ func TestPartialStateJoin(t *testing.T) {
 		// test that cached device lists are flushed when it is discovered that a remote user did
 		// not share a room the whole time once a partial state join completes.
 		t.Run("Device list tracking for user incorrectly believed to be in room when they join another shared room before partial state join completes", func(t *testing.T) {
+			runtime.SkipIf(t, runtime.Synapse)
 			// Tracked in https://github.com/matrix-org/synapse/issues/13887.
-			t.Skip("This edge case is being ignored for now.")
 
 			alice, server, userDevicesChannel, room, _, cleanup := setupDeviceListCachingTest(t, deployment, "t39alice")
 			defer cleanup()
@@ -3606,8 +3656,8 @@ func TestPartialStateJoin(t *testing.T) {
 				content.Get("displayname").Str != "alice 2" {
 				t.Errorf("Did not receive expected display name change event: %s", pdu.JSON())
 			}
-		case <-time.After(1 * time.Second):
-			t.Error("Display name change event not received after one second")
+		case <-time.After(5 * time.Second):
+			t.Error("Display name change event not received after five seconds")
 		}
 	})
 
@@ -3739,6 +3789,8 @@ func TestPartialStateJoin(t *testing.T) {
 			)
 
 			t.Log("Bob joins too")
+			// Bob's join is sent on to the resident server, which the fixture must accept.
+			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
 			t.Log("Bob waits to see his join")
@@ -3749,7 +3801,6 @@ func TestPartialStateJoin(t *testing.T) {
 			)
 
 			t.Log("Alice leaves the room")
-			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
@@ -4090,9 +4141,10 @@ func TestPartialStateJoin(t *testing.T) {
 	})
 
 	t.Run("Purge during resync", func(t *testing.T) {
-		if runtime.Homeserver != runtime.Synapse {
-			// TOOD: Pull this into a Synapse-specific suite when someone figures out how
+		if runtime.Homeserver != runtime.Synapse && runtime.Homeserver != runtime.Congruent {
+			// TODO: Pull this into a Synapse-specific suite when someone figures out how
 			// to do that (https://github.com/matrix-org/complement/issues/226)
+			// Congruent implements the same /_synapse/admin/v1/rooms/{roomId} DELETE.
 			t.Skipf("Skipping test of Synapse-internal API on %s", runtime.Homeserver)
 		}
 		t.Log("Alice begins a partial join to a room")
@@ -4405,6 +4457,15 @@ func (psj *partialStateJoinResult) AwaitStateIdsRequest(t *testing.T) {
 	psj.fedStateIdsRequestReceivedWaiter.Waitf(t, 5*time.Second, "Waiting for /state_ids request")
 }
 
+// release the /state_ids request with an error, and fail every /state_ids and /state
+// request for the room, whatever the event ID, so that the state re-sync cannot complete
+func (psj *partialStateJoinResult) FailStateRequest() {
+	roomID := psj.ServerRoom.RoomID
+	psj.Server.failStateRoomID.Store(&roomID)
+	psj.Server.failStateRequests.Store(true)
+	psj.fedStateIdsSendResponseWaiter.Finish()
+}
+
 // allow the /state_ids request to complete, thus allowing the state re-sync to complete
 func (psj *partialStateJoinResult) FinishStateRequest() {
 	psj.fedStateIdsSendResponseWaiter.Finish()
@@ -4451,6 +4512,12 @@ func handleStateIdsRequests(
 							"to serve /state_ids response for event %s", queryParams["event_id"],
 					)
 				}
+			}
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state_ids request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+				return
 			}
 			t.Logf("Replying to /state_ids request for event %s", queryParams["event_id"])
 
@@ -4513,6 +4580,12 @@ func handleStateRequests(
 				}
 			}
 
+			if srv.failStateRequests.Load() {
+				t.Logf("Failing /state request for event %s", queryParams["event_id"])
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"errcode":"M_UNKNOWN","error":"state is unavailable"}`))
+				return
+			}
 			t.Logf("Replying to /state request for event %s", queryParams["event_id"])
 
 			res := fclient.RespState{

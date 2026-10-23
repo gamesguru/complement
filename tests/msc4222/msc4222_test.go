@@ -5,12 +5,13 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/complement/should"
-	"github.com/tidwall/gjson"
 )
 
 func TestSync(t *testing.T) {

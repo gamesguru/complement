@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -53,6 +54,15 @@ type Complement struct {
 	// starting the container. Responsiveness is detected by `HEALTHCHECK` being healthy *and*
 	// the `/versions` endpoint returning 200 OK.
 	SpawnHSTimeout time.Duration
+	// Name: COMPLEMENT_STOP_TIMEOUT_SECS
+	// Default: 1
+	// Description: The number of seconds to wait for a Homeserver container to stop gracefully
+	// (SIGTERM) before Docker force-kills it, when printServerLogs is true (see
+	// COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS). The 1s default is enough for a bare single-process
+	// homeserver to flush its logs, but a multi-process (worker-mode) container also running
+	// Postgres, Redis, and nginx under supervisord needs more time for every process to shut
+	// down cleanly and flush before the grace period expires and Docker sends SIGKILL instead.
+	StopTimeout time.Duration
 	// Name: COMPLEMENT_CONTAINER_CPU_CORES
 	// Default: 0
 	// Description: The number of CPU cores available for the container to use (can be
@@ -92,6 +102,8 @@ type Complement struct {
 
 	// The namespace for all complement created blueprints and deployments
 	PackageNamespace string
+	// A per-process suffix used to keep Docker object names unique across runs.
+	RunID string
 	// Certificate Authority generated values for this run of complement. Homeservers will use this
 	// as a base to derive their own signed Federation certificates.
 	CACertificate *x509.Certificate
@@ -158,6 +170,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	cfg.EnvVarsPropagatePrefix = os.Getenv("COMPLEMENT_SHARE_ENV_PREFIX")
 	cfg.PostTestScript = os.Getenv("COMPLEMENT_POST_TEST_SCRIPT")
 	cfg.SpawnHSTimeout = time.Duration(parseEnvWithDefault("COMPLEMENT_SPAWN_HS_TIMEOUT_SECS", 30)) * time.Second
+	cfg.StopTimeout = time.Duration(parseEnvWithDefault("COMPLEMENT_STOP_TIMEOUT_SECS", 1)) * time.Second
 	if os.Getenv("COMPLEMENT_VERSION_CHECK_ITERATIONS") != "" {
 		fmt.Fprintln(os.Stderr, "Deprecated: COMPLEMENT_VERSION_CHECK_ITERATIONS will be removed in a later version. Use COMPLEMENT_SPAWN_HS_TIMEOUT_SECS instead which does the same thing and is clearer.")
 		// each iteration had a 50ms sleep between tries so the timeout is 50 * iteration ms
@@ -194,6 +207,7 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	if namespacePrefix := os.Getenv("COMPLEMENT_PACKAGE_NAMESPACE_PREFIX"); namespacePrefix != "" {
 		cfg.PackageNamespace = namespacePrefix + "_" + cfg.PackageNamespace
 	}
+	cfg.RunID = generateRunID()
 
 	// create CA certs and keys
 	if err := cfg.GenerateCA(); err != nil {
@@ -213,6 +227,14 @@ func NewConfigFromEnvVars(pkgNamespace, baseImageURI string) *Complement {
 	// HSPortBindingIP is fixed here, but used by homerunner to override.
 	cfg.HSPortBindingIP = "127.0.0.1"
 	return cfg
+}
+
+func generateRunID() string {
+	var b [6]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 }
 
 func (c *Complement) GenerateCA() error {

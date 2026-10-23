@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/matrix-org/complement/internal/docker"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
+
+	"github.com/matrix-org/complement/internal/docker"
 )
 
 type Snapshot struct {
@@ -45,9 +46,10 @@ func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDura
 		}
 		var bw, br uint64
 		for _, block := range sj.BlkioStats.IoServiceBytesRecursive {
-			if block.Op == "read" {
+			switch block.Op {
+			case "read":
 				br = block.Value
-			} else if block.Op == "write" {
+			case "write":
 				bw = block.Value
 			}
 		}
@@ -66,5 +68,5 @@ func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDura
 			BytesRead:        br,
 		})
 	}
-	return
+	return snapshots
 }

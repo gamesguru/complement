@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -17,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
@@ -24,7 +23,6 @@ import (
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
 	"github.com/matrix-org/complement/runtime"
-	"github.com/tidwall/gjson"
 )
 
 const maxSafeJSONInteger = 1<<53 - 1
@@ -471,7 +469,6 @@ func unsafeSendMessage(t *testing.T, user *client.CSAPI, roomID string, body str
 // scenarios, covering list responses, subscriptions, deltas, filters, presence,
 // long polling, extensions, lazy loading, and error handling.
 func TestMSC4186SlidingSync(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	t.Run("Lists", testMSC4186SlidingSyncLists)
 	t.Run("Subscriptions", testMSC4186SlidingSyncSubscriptions)
 	t.Run("ListDeltas", testMSC4186SlidingSyncListDeltas)

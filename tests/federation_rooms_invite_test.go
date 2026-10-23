@@ -1,6 +1,5 @@
-// These tests currently fail on Dendrite, due to Dendrite bugs.
-//go:build !dendrite_blacklist && !venator_blacklist
-// +build !dendrite_blacklist,!venator_blacklist
+//go:build !venator_blacklist
+// +build !venator_blacklist
 
 // Venator: does not yet implement federation
 
@@ -10,9 +9,10 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"

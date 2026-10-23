@@ -5,8 +5,9 @@ import (
 	"log"
 	"regexp"
 
-	"github.com/matrix-org/complement/b"
 	"github.com/tidwall/gjson"
+
+	"github.com/matrix-org/complement/b"
 )
 
 var ignoredEventType = map[string]bool{
@@ -71,7 +72,7 @@ func ConvertToBlueprint(s *Snapshot, serverName string) (*b.Blueprint, error) {
 	return bp, nil
 }
 
-func convertRoom(sr *AnonSnapshotRoom) *b.Room {
+func convertRoom(sr *AnonSnapshotRoom) *b.Room { //nolint:gocyclo // conversion covers the complete snapshot schema.
 	if len(sr.State) == 0 {
 		return convertTimelineOnlyRoom(sr)
 	}

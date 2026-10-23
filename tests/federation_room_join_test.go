@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement"
 	"github.com/matrix-org/gomatrix"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+
+	"github.com/matrix-org/complement"
 
 	"github.com/matrix-org/gomatrixserverlib"
 

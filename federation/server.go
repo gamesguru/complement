@@ -705,7 +705,7 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
-		return
+		return nil
 	}
 	var wg sync.WaitGroup
 	wg.Add(1)
