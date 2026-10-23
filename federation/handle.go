@@ -44,7 +44,7 @@ func MakeJoinRequestsHandler(s *Server, w http.ResponseWriter, req *http.Request
 	makeJoinResp, err := MakeRespMakeJoin(s, room, userID)
 	if err != nil {
 		w.WriteHeader(500)
-		w.Write([]byte(fmt.Sprintf("complement: HandleMakeSendJoinRequests %s", err)))
+		fmt.Fprintf(w, "complement: HandleMakeSendJoinRequests %s", err)
 		return
 	}
 
@@ -305,7 +305,7 @@ func HandleEventRequests() func(*Server) {
 
 			if event == nil {
 				w.WriteHeader(404)
-				w.Write([]byte(fmt.Sprintf(`complement: failed to find event: %s`, eventID)))
+				fmt.Fprintf(w, `complement: failed to find event: %s`, eventID)
 				return
 			}
 
@@ -319,7 +319,7 @@ func HandleEventRequests() func(*Server) {
 			resp, err := json.Marshal(txn)
 			if err != nil {
 				w.WriteHeader(500)
-				w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+				fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 				return
 			}
 			w.WriteHeader(200)
@@ -382,7 +382,7 @@ func HandleEventAuthRequests() func(*Server) {
 			respJSON, err := json.Marshal(resp)
 			if err != nil {
 				w.WriteHeader(500)
-				w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+				fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 				return
 			}
 			w.WriteHeader(200)
@@ -598,7 +598,7 @@ func HandleTransactionRequests(pduCallback func(gomatrixserverlib.PDU), eduCallb
 			if err != nil {
 				log.Printf("complement: Transaction '%s': Failed to marshal JSON response: %s", transaction.TransactionID, err.Error())
 				w.WriteHeader(500)
-				w.Write([]byte(fmt.Sprintf(`complement: failed to marshal JSON response: %s`, err)))
+				fmt.Fprintf(w, `complement: failed to marshal JSON response: %s`, err)
 				return
 			}
 			w.WriteHeader(200)

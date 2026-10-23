@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 // This file contains tests for local notification settings as
 // defined by MSC3890, which you can read here:
 // https://github.com/matrix-org/matrix-doc/pull/3890
@@ -17,11 +14,9 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 )
 
 func TestDeletingDeviceRemovesDeviceLocalNotificationSettings(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	// Create a deployment with a single user
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -19,7 +16,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 	"github.com/matrix-org/complement/should"
 )
 
@@ -38,7 +34,6 @@ const (
 // it is implemented in a homeserver.
 
 func TestDelayedEvents(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -452,7 +447,6 @@ func TestDelayedEvents(t *testing.T) {
 
 	t.Run("delayed state events are kept on server restart", func(t *testing.T) {
 		// Spec cannot enforce server restart behaviour
-		runtime.SkipIf(t, runtime.Dendrite)
 
 		defer cleanupDelayedEvents(t, user)
 

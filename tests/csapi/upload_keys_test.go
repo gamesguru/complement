@@ -292,9 +292,10 @@ func TestUploadKeyIdempotencyOverlap(t *testing.T) {
 	}
 	for i, reqBody := range requests {
 		expectedOTKCount := 0
-		if i == 1 {
+		switch i {
+		case 1:
 			expectedOTKCount = 3
-		} else if i == 2 {
+		case 2:
 			expectedOTKCount = 4
 		}
 		resp := alice.MustDo(t, "POST", []string{"_matrix", "client", "v3", "keys", "upload"}, reqBody)

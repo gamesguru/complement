@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 package tests
 
 import (
@@ -16,7 +13,6 @@ import (
 	"github.com/matrix-org/complement/helpers"
 	"github.com/matrix-org/complement/match"
 	"github.com/matrix-org/complement/must"
-	"github.com/matrix-org/complement/runtime"
 )
 
 const hs1Name = "hs1"
@@ -34,7 +30,6 @@ type InviteFilterConfig struct {
 }
 
 func TestInviteFiltering(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite)
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 

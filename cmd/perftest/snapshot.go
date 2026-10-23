@@ -46,9 +46,10 @@ func snapshotStats(spanName, desc string, deployment *docker.Deployment, absDura
 		}
 		var bw, br uint64
 		for _, block := range sj.BlkioStats.IoServiceBytesRecursive {
-			if block.Op == "read" {
+			switch block.Op {
+			case "read":
 				br = block.Value
-			} else if block.Op == "write" {
+			case "write":
 				bw = block.Value
 			}
 		}

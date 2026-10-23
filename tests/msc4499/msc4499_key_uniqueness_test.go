@@ -2001,7 +2001,7 @@ func testMSC4499KeyHistoricalEventVerification(t *testing.T) {
 // copy triggers a refresh rather than a permanent rejection.
 //
 // References:
-//   - ../proposals/proposals/4499-key-caching.md:508-514 — "an event signed at
+//   - tests/msc4499/docs/4499-key-caching.md:508-514 — "an event signed at
 //     time T is valid iff the key's valid_until_ts >= T" (restating room v5+)
 //   - ../spec/spec/rooms/fragments/v5-signing-requirements.txt:2-11 — servers
 //     MUST NOT accept an event unless the signing key's valid_until_ts >= the
@@ -3164,9 +3164,10 @@ func testMSC4499KeyProvisionalOverrideFreeze(t *testing.T) {
 			"(MSC4499 L147-157)")
 	}
 
-	if foundKey == pubKeyABase64 {
+	switch foundKey {
+	case pubKeyABase64:
 		t.Logf("hs1 correctly returned frozen provisional key A despite expired valid_until_ts")
-	} else if foundKey == "" {
+	case "":
 		t.Logf("hs1 correctly omitted the server (expired key A can't satisfy constraint, key B rejected)")
 	}
 }

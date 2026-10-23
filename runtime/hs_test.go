@@ -47,6 +47,7 @@ func TestSkipIfInheritanceAndExemptions(t *testing.T) {
 	}{
 		// Basic exact match skips
 		{Conduit, "TestSomeFunc", []string{Conduit}, true},
+		{Zendrite, "TestSomeFunc", []string{Zendrite}, true},
 		{Conduit, "TestSomeFunc", []string{Conduwuit}, false},
 
 		// Inheritance skips

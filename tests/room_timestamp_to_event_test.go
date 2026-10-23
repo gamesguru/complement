@@ -1,6 +1,3 @@
-//go:build !dendrite_blacklist
-// +build !dendrite_blacklist
-
 // This file contains tests for the `/timestamp_to_event` client and federation API
 // endpoints (also known as *jump to date*). As defined by MSC3030, which you can read
 // here: https://github.com/matrix-org/matrix-doc/pull/3030
@@ -28,6 +25,9 @@ import (
 	"github.com/matrix-org/complement/runtime"
 )
 
+// TODO: Add a regression test for jump-to-date to /messages handoff: follow the
+// context token returned by /timestamp_to_event through pagination, including
+// deep historical federation outliers and sparse auth-chain layouts.
 func TestJumpToDateEndpoint(t *testing.T) {
 	// Venator does not yet implement the federation and application-service
 	// behavior required by this mixed client/federation fixture.
@@ -517,10 +517,11 @@ func getDebugMessageListFromMessagesResponse(t *testing.T, c *client.CSAPI, room
 		eventID := ev.Get("event_id").String()
 		eventIDString := eventID
 		labelString := paddingString
-		if eventID == expectedEventId {
+		switch eventID {
+		case expectedEventId:
 			eventIDString = decorateStringWithAnsiColor(eventID, AnsiColorGreen)
 			labelString = "(want) "
-		} else if eventID == actualEventId {
+		case actualEventId:
 			eventIDString = decorateStringWithAnsiColor(eventID, AnsiColorRed)
 			labelString = " (got) "
 		}

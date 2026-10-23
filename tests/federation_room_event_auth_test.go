@@ -1,6 +1,5 @@
-// These tests currently fail on Dendrite, due to Dendrite bugs.
-//go:build !dendrite_blacklist && !venator_blacklist
-// +build !dendrite_blacklist,!venator_blacklist
+//go:build !venator_blacklist
+// +build !venator_blacklist
 
 // Venator: does not yet implement federation
 
