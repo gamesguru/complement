@@ -478,18 +478,17 @@ func TestDelayedEvents(t *testing.T) {
 		// longer to run in all cases even for homeservers that are quick to restart because
 		// we have to wait for that large delay.
 		//
-		// We instead account for this by scheduling many delayed events at short intervals.
-		// Whenever the server comes back, we poll until the count decrements instead of
-		// sleeping for a whole interval first.
+		// We instead account for this by scheduling many delayed events at short intervals
+		// (we chose 10 seconds because that's what the test naively chose before). Then
+		// whenever the servers comes back, we can just check until it decrements by 1.
 		//
 		// We add 1 to the number of intervals to ensure that we have at least one interval
 		// to check against no matter how things are configured.
-		const delayedEventInterval = 2 * time.Second
-		numberOfIntervals := int(math.Ceil(deployment.GetConfig().SpawnHSTimeout.Seconds()/delayedEventInterval.Seconds())) + 1
-		for i := 0; i < numberOfIntervals; i++ {
-			// +1 as we want to start at one interval and so we don't end up with -100ms
-			// delay on the first one.
-			delay := time.Duration(i+1)*delayedEventInterval - 100*time.Millisecond
+		numberOf10SecondIntervals := int(math.Ceil(deployment.GetConfig().SpawnHSTimeout.Seconds()/10)) + 1
+		for i := 0; i < numberOf10SecondIntervals; i++ {
+			// +1 as we want to start at 10 seconds and so we don't end up with -100ms delay
+			// on the first one.
+			delay := time.Duration(i+1)*10*time.Second - 100*time.Millisecond
 
 			user.MustDo(
 				t,
