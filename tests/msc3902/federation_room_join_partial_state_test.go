@@ -116,8 +116,11 @@ func createTestServer(t *testing.T, deployment complement.Deployment, opts ...fu
 	// the homeserver under test may send us presence when the joining user syncs
 	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.presence" })
 	// It also sends device-list updates for the joining user to the other
-	// servers in the room. Tests that care about those add their own handler;
-	// this one just stops the shared harness treating them as unexpected.
+	// servers in the room. That is required by the spec whenever a user joins
+	// servers which were not already receiving their updates, and is covered by
+	// TestDeviceListsUpdateOverFederationOnRoomJoin. Tests that care about the
+	// contents add their own handler; this one just stops the shared harness
+	// treating the required EDU as unexpected.
 	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.device_list_update" })
 
 	// Once FailStateRequest is called, answer a /state_ids or /state request for
