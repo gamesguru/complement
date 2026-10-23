@@ -25,7 +25,6 @@ import (
 
 // sytest: GET /rooms/:room_id/messages returns a message
 func TestSendAndFetchMessage(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite) // flakey
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -56,7 +55,10 @@ func TestSendAndFetchMessage(t *testing.T) {
 	must.MatchResponse(t, res, match.HTTPResponse{
 		StatusCode: http.StatusOK,
 		JSON: []match.JSON{
-			match.JSONArrayEach("chunk", func(r gjson.Result) error {
+			// /messages also returns state events such as
+			// m.room.history_visibility; only require the sent message to be
+			// present in the chunk.
+			match.JSONArraySome("chunk", func(r gjson.Result) error {
 				if r.Get("type").Str == "m.room.message" && r.Get("content").Get("body").Str == testMessage {
 					return nil
 				}
