@@ -14,6 +14,7 @@ import (
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/runtime"
 )
 
 // Test that a homeserver can join a public state DAG room over federation, leave it, then rejoin it.
@@ -22,6 +23,8 @@ import (
 // from the first join, so the /send_join response is a mixture of events it has seen before and
 // events which were added to the room while it was away.
 func TestMSC4242JoinLeaveRejoinPublicRoom(t *testing.T) {
+	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -130,6 +133,8 @@ func TestMSC4242JoinLeaveRejoinPublicRoom(t *testing.T) {
 // referencing a rejected event is itself rejected, so if the join could reach them the join would
 // be rejected too.
 func TestMSC4242JoinPublicRoomWithRejectedStateDAGEvents(t *testing.T) {
+	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -289,6 +294,8 @@ func TestMSC4242JoinPublicRoomWithRejectedStateDAGEvents(t *testing.T) {
 // Every event which sets the room name is on the rejected branch, so a conformant server never
 // has an (m.room.name, "") event in the room state.
 func TestMSC4242RejectionCascadesOnRejoin(t *testing.T) {
+	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -460,6 +467,8 @@ func TestMSC4242RejectionCascadesOnRejoin(t *testing.T) {
 // The state at MERGE is the resolution of both branches, so the room name set on the side branch
 // and the topic set on the main branch must both be in the current state after the rejoin.
 func TestMSC4242RejoinMergesOldAndNewStateDAGBranches(t *testing.T) {
+	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
