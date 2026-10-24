@@ -2890,7 +2890,11 @@ func testMSC4499KeyCorroborationTierRetention(t *testing.T, deployment complemen
 		VerifyKey: gomatrixserverlib.VerifyKey{
 			Key: spec.Base64Bytes(pubKeyA),
 		},
-		ExpiredTS: spec.AsTimestamp(time.Now().Add(-2 * time.Hour)),
+		// Deliberately retire A before every uncorroborated key, including the
+		// 72-hour-old phase-1 filler. A server that evicts purely by age would
+		// otherwise drop A first, so A surviving only demonstrates the
+		// corroboration tier rule if it is the oldest eligible binding here.
+		ExpiredTS: spec.AsTimestamp(time.Now().Add(-96 * time.Hour)),
 	}
 
 	for i := 0; i < 2999; i++ {

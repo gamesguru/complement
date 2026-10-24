@@ -115,6 +115,13 @@ func createTestServer(t *testing.T, deployment complement.Deployment, opts ...fu
 
 	// the homeserver under test may send us presence when the joining user syncs
 	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.presence" })
+	// It also sends device-list updates for the joining user to the other
+	// servers in the room. That is required by the spec whenever a user joins
+	// servers which were not already receiving their updates, and is covered by
+	// TestDeviceListsUpdateOverFederationOnRoomJoin. Tests that care about the
+	// contents add their own handler; this one just stops the shared harness
+	// treating the required EDU as unexpected.
+	server.AddEDUHandler(func(edu gomatrixserverlib.EDU) bool { return edu.Type == "m.device_list_update" })
 
 	// Once FailStateRequest is called, answer a /state_ids or /state request for
 	// any event in its room with the same error as the handlers registered for
@@ -3790,7 +3797,13 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 
 			t.Log("Bob joins too")
 			// Bob's join is sent on to the resident server, which the fixture must accept.
-			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool { return true })
+			server.AddPDUHandler(func(e gomatrixserverlib.PDU) bool {
+				if e.Type() != "m.room.member" || string(e.SenderID()) != bob.UserID ||
+					e.StateKey() == nil || *e.StateKey() != bob.UserID {
+					return false
+				}
+				return gjson.ParseBytes(e.Content()).Get("membership").Str == "join"
+			})
 			bob.MustJoinRoom(t, serverRoom.RoomID, []spec.ServerName{server.ServerName()})
 
 			t.Log("Bob waits to see his join")
@@ -3801,6 +3814,9 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Alice leaves the room")
+			// The homeserver must federate Alice's local leave to the resident
+			// server; the fixture otherwise treats it as an unexpected PDU.
+			server.AddLeaveHandler(serverRoom.RoomID, alice.UserID)
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
