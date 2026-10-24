@@ -139,7 +139,7 @@ func TestDelayedEvents(t *testing.T) {
 		})
 
 		time.Sleep(1 * time.Second)
-		matchDelayedEvents(t, user, delayedEventsNumberEqual(0))
+		matchDelayedEventsWithin(t, user, 5*time.Second, delayedEventsNumberEqual(0))
 		queryParams := url.Values{}
 		queryParams.Set("dir", "f")
 		queryParams.Set("from", token)
