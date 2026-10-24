@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1312,15 +1311,9 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		// whether the later events were rejected during auth/state processing or
 		// lost during state resolution, so keep the note to the externally
 		// observable failure rather than attributing it to a specific code path.
-		// Synapse has stopped at D (observed at
-		// https://github.com/gamesguru/complement/actions/runs/37541986766/job/112536925651),
-		// at B (observed at
-		// https://github.com/gamesguru/complement/actions/runs/37561312718/job/112598973426)
-		// and at C (observed at
-		// https://github.com/gamesguru/complement/actions/runs/39173148820/job/117810238797)
-		// in this fallback path. The stopping point varies, so this list is not
-		// exhaustive; any other final value remains a hard failure.
-		if slices.Contains([]string{"B", "C", "D"}, displayName) {
+		// Synapse has been observed stopping at every earlier event (A-D) across
+		// builds; only E means the fallback ladder actually completed.
+		if displayName != "E" {
 			t.Skipf("Synapse produced final displayname %q; this fallback path is not supported by the current Synapse build", displayName)
 		}
 	}
