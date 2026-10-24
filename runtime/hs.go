@@ -48,6 +48,7 @@ var parents = map[string][]string{
 	Conduwuit:    {Conduit},
 	Continuwuity: {Conduwuit, Conduit},
 	Tuwunel:      {Conduwuit, Conduit},
+	Zendrite:     {Dendrite},
 }
 
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
@@ -81,6 +82,17 @@ func isExempt(testName string, hs string) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// Matches reports whether the running homeserver matches any of the provided
+// homeserver names, either directly or via inheritance.
+func Matches(hses ...string) bool {
+	for _, hs := range hses {
+		if Homeserver == hs || isParent(Homeserver, hs) {
+			return true
 		}
 	}
 	return false

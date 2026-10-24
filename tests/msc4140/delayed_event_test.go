@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -516,7 +517,7 @@ func TestDelayedEvents(t *testing.T) {
 			// We should see at-least one less than we had before the restart (the first
 			// delayed event should have been sent). Other delayed events may have been sent
 			// by the time the server actually came back up.
-			delayedEventsNumberLessThan(numberOfDelayedEvents-1),
+			delayedEventsNumberLessThan(numberOfDelayedEvents),
 		)
 		// Capture whatever number of delayed events are remaining after the server restart.
 		remainingDelayedEventCount := countDelayedEvents(t, delayedEventResponse)
@@ -591,6 +592,7 @@ func countDelayedEventsInternal(res *http.Response) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("countDelayedEventsInternal: Failed to read response body: %s", err)
 	}
+	res.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	parsedBody := gjson.ParseBytes(body)
 	return len(parsedBody.Get("delayed_events").Array()), nil
