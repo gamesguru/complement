@@ -1661,7 +1661,7 @@ func TestMSC4311RejectInvalidStrippedStateFederation(t *testing.T) {
 	// adapt and support MSC4311), see https://github.com/element-hq/synapse/issues/19943
 	runtime.SkipIf(t, runtime.Synapse, runtime.Sithnapse)
 	// does not implement it yet
-	runtime.SkipIf(t, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

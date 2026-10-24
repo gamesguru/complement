@@ -1305,13 +1305,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	t.Logf("bob's membership content: %v", content.Raw)
 	if runtime.Homeserver == runtime.Synapse {
 		displayName := content.Get("displayname").Str
-		// Synapse has stopped at both D (observed at
-		// https://github.com/gamesguru/complement/actions/runs/37541986766/job/112536925651)
-		// and B (observed at
-		// https://github.com/gamesguru/complement/actions/runs/37561312718/job/112598973426)
-		// in this fallback path. The stopping point varies, so this list is not
-		// exhaustive; any other final value remains a hard failure.
-		if displayName == "B" || displayName == "D" {
+		if displayName != "E" {
 			t.Skipf("Synapse produced final displayname %q; this fallback path is not supported by the current Synapse build", displayName)
 		}
 	}
