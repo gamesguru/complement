@@ -25,7 +25,7 @@ import (
 
 // sytest: GET /rooms/:room_id/messages returns a message
 func TestSendAndFetchMessage(t *testing.T) {
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite) // flakey
+	runtime.SkipIf(t, runtime.Dendrite) // flakey on Dendrite; Zendrite is covered
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
