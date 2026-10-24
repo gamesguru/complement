@@ -3814,6 +3814,9 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			)
 
 			t.Log("Alice leaves the room")
+			// The homeserver must federate Alice's local leave to the resident
+			// server; the fixture otherwise treats it as an unexpected PDU.
+			server.AddLeaveHandler(serverRoom.RoomID, alice.UserID)
 			alice.MustLeaveRoom(t, serverRoom.RoomID)
 
 			t.Log("Alice sees Alice's leave")
