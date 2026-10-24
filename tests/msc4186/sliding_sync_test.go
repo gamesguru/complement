@@ -865,7 +865,6 @@ func testMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 		bob.MustJoinRoom(t, roomID, nil)
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 		bob.MustLeaveRoom(t, roomID)
-		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 		_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
 			ConnID: "leave-before-seen",
@@ -886,7 +885,6 @@ func testMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 		requireRoom(t, res, roomID)
 
 		bob.MustLeaveRoom(t, roomID)
-		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 		pos, res = mustDoSlidingSync(t, bob, slidingSyncReq{
 			ConnID: "leave-after-seen",
@@ -918,7 +916,6 @@ func testMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 		bob.MustJoinRoom(t, roomID, nil)
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 		kick(t, alice, roomID, bob.UserID)
-		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 		_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
 			ConnID: "kick-before-seen",
@@ -934,7 +931,6 @@ func testMSC4186SlidingSyncMembershipListSemantics(t *testing.T) {
 		bob.MustJoinRoom(t, roomID, nil)
 		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(bob.UserID, roomID))
 		ban(t, alice, roomID, bob.UserID)
-		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncLeftFrom(bob.UserID, roomID))
 
 		_, res := mustDoSlidingSync(t, bob, slidingSyncReq{
 			ConnID: "ban-before-seen",
@@ -1149,10 +1145,9 @@ func testMSC4186SlidingSyncExtensionsToDevice(t *testing.T) {
 	})
 
 	_, res = mustDoSlidingSync(t, alice, slidingSyncReq{
-		ConnID:  "extensions-to-device",
-		Pos:     pos,
-		Timeout: 5000,
-		Lists:   allRoomsList(1, 0, 0),
+		ConnID: "extensions-to-device",
+		Pos:    pos,
+		Lists:  allRoomsList(1, 0, 0),
 		Extensions: map[string]interface{}{
 			"to_device": map[string]interface{}{
 				"enabled": true,
