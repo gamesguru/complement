@@ -57,7 +57,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 		must.Equal(t, status, 200, "MSC0501 room digest status")
 
 		digest := gjson.ParseBytes(body)
-		must.Equal(t, digest.Get("digest_type").Str, "algebraic_v1", "digest type")
+		must.Equal(t, digest.Get("digest_type").Str, "algebraic_v1.0.0", "digest type")
 		must.Equal(t, digest.Get("digest").Str != "", true, "digest")
 		frameID = digest.Get("frame_id").Str
 		must.Equal(t, frameID != "", true, "frame id")
@@ -71,7 +71,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 		must.Equal(t, status, 200, "MSC0501 room digest strata status")
 
 		digest := gjson.ParseBytes(body)
-		must.Equal(t, digest.Get("digest_type").Str, "algebraic_v1", "digest type")
+		must.Equal(t, digest.Get("digest_type").Str, "algebraic_v1.0.0", "digest type")
 		must.Equal(t, digest.Get("digest").Str != "", true, "digest")
 		must.Equal(t, digest.Get("frame_id").Str, frameID, "frame id")
 		must.Equal(t, digest.Get("known_event_count").Int() > 0, true, "known event count")
@@ -109,7 +109,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 			"mode":                    "sketch",
 			"frame_id":                frameID,
 			"local_digest":            local.Accumulator().EncodeDigest(),
-			"digest_type":             "algebraic_v1",
+			"digest_type":             "algebraic_v1.0.0",
 			"local_known_event_count": local.Accumulator().Count,
 			"frame_event_ids":         frameEventIDs,
 			"estimated_delta":         1,
@@ -131,7 +131,7 @@ func testActiveRoomReconciliation(t *testing.T) {
 		must.Equal(t, res.StatusCode, 200, "MSC0501 room diff status")
 
 		response := gjson.ParseBytes(body)
-		must.Equal(t, response.Get("digest_type").Str, "algebraic_v1", "room diff digest type")
+		must.Equal(t, response.Get("digest_type").Str, "algebraic_v1.0.0", "room diff digest type")
 		must.Equal(t, response.Get("frame_id").Str, frameID, "room diff frame")
 		must.Equal(t, len(response.Get("missing_event_ids").Array()), 0, "homeserver has no event absent from inspector")
 		hash := reconcileHash(t, extra.EventID())

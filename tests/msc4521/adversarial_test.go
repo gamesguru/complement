@@ -132,7 +132,7 @@ func (p *scriptedPeer) digestJSON(withStrata bool) map[string]interface{} {
 		}
 	}
 	out := map[string]interface{}{
-		"digest_type": "algebraic_v1", "digest": k.Accumulator().EncodeDigest(),
+		"digest_type": "algebraic_v1.0.0", "digest": k.Accumulator().EncodeDigest(),
 		"frame_id": p.frameID, "known_event_count": k.Accumulator().Count,
 		"frame_event_ids": p.anchors, "extremity_event_ids": p.anchors,
 		"depth_range": []int{0, 0}, "origin_server_ts_range": []int{0, 0},
@@ -168,7 +168,9 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 	m.HandleFunc("/_matrix/federation/v1/version", func(w http.ResponseWriter, _ *http.Request) {
 		features := map[string]bool{}
 		if p.advertise {
-			features["tk.nutra.msc4521.digest.algebraic_v1"] = true
+			features["tk.nutra.msc4521.digest.algebraic_v1.0.0"] = true
+			features["tk.nutra.msc4521.binding.event_id_v1"] = true
+			features["tk.nutra.msc0501.strata"] = true
 			features["tk.nutra.msc0501.reconciliation"] = true
 		}
 		reply(w, http.StatusOK, map[string]interface{}{
@@ -200,7 +202,7 @@ func newPeer(t *testing.T, deployment complement.Deployment, roomID string, join
 		p.mu.Unlock()
 		d := p.digestJSON(false)
 		reply(w, 200, map[string]interface{}{
-			"digest_type": "algebraic_v1", "frame_id": p.frameID,
+			"digest_type": "algebraic_v1.0.0", "frame_id": p.frameID,
 			"missing_event_ids": offered, "requester_only_short_ids": []string{},
 			"expected_requester_side_accumulator": "AAAAAAAAAAAAAAAAAAAAAA",
 			"remote_known_event_count":            d["known_event_count"],
