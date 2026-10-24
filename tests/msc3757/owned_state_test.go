@@ -71,7 +71,7 @@ func TestWithoutOwnedState(t *testing.T) {
 }
 
 func TestMSC3757OwnedState(t *testing.T) {
-	runtime.SkipIf(t, runtime.Conduit, runtime.Dendrite)
+	runtime.SkipIf(t, runtime.Conduit)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)

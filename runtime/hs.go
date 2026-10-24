@@ -48,7 +48,6 @@ var parents = map[string][]string{
 	Conduwuit:    {Conduit},
 	Continuwuity: {Conduwuit, Conduit},
 	Tuwunel:      {Conduwuit, Conduit},
-	Zendrite:     {Dendrite},
 }
 
 // Exemptions maps test name (or prefix) to homeservers that should not inherit skips for that test.
