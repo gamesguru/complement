@@ -511,7 +511,7 @@ func TestDelayedEvents(t *testing.T) {
 		time.Sleep(1 * time.Second)
 		deployment.StartServer(t, hsName)
 
-		delayedEventResponse := matchDelayedEvents(t, user,
+		delayedEventResponse := matchDelayedEventsWithin(t, user, 10*time.Second,
 			// We should still see some delayed events left after the restart.
 			delayedEventsNumberGreaterThan(0),
 			// We should see at-least one less than we had before the restart (the first
