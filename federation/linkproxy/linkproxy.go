@@ -19,6 +19,7 @@
 package linkproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -31,15 +32,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobyclient "github.com/moby/moby/client"
+
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/ct"
+	"github.com/matrix-org/complement/internal/docker"
 )
 
 // Mode is how traffic on a link is treated.
@@ -375,25 +379,71 @@ func (p *Proxy) certFor(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return c, nil
 }
 
-// dockerOutput runs the Docker CLI with ctx and returns its combined stdout and
-// stderr with surrounding whitespace removed, together with any execution error.
-func dockerOutput(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+// dockerExec runs a shell command inside the given container through the
+// deployment's Docker client, returning combined stdout+stderr.
+func dockerExec(deployment complement.Deployment, containerID string, script string) (string, error) {
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		return "", fmt.Errorf("container exec requires a Docker-backed deployment, got %T", deployment)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	exec, err := dockerDeployment.Deployer.Docker.ExecCreate(ctx, containerID, mobyclient.ExecCreateOptions{
+		Cmd:          []string{"sh", "-c", script},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	attach, err := dockerDeployment.Deployer.Docker.ExecAttach(ctx, exec.ID, mobyclient.ExecAttachOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer attach.Close()
+
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
+		return stdout.String() + stderr.String(), err
+	}
+	output := stdout.String() + stderr.String()
+
+	inspect, err := dockerDeployment.Deployer.Docker.ExecInspect(ctx, exec.ID, mobyclient.ExecInspectOptions{})
+	if err != nil {
+		return output, err
+	}
+	if inspect.ExitCode != 0 {
+		return output, fmt.Errorf("command exited with code %d", inspect.ExitCode)
+	}
+	return output, nil
 }
 
 // containerIP returns hs's container IP on the deployment network. Inspection
 // has a 20-second timeout; an execution error or empty address terminates the test.
 func containerIP(t ct.TestLike, deployment complement.Deployment, hs string) string {
 	t.Helper()
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		ct.Fatalf(t, "linkproxy: containerIP requires a Docker-backed deployment, got %T", deployment)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, deployment.Network())
-	ip, err := dockerOutput(ctx, "inspect", "-f", format, deployment.ContainerID(t, hs))
-	if err != nil || ip == "" {
-		ct.Fatalf(t, "linkproxy: cannot find IP of %s: %v %s", hs, err, ip)
+
+	inspect, err := dockerDeployment.Deployer.Docker.ContainerInspect(ctx, deployment.ContainerID(t, hs), mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		ct.Fatalf(t, "linkproxy: cannot inspect container for %s: %v", hs, err)
 	}
-	return ip
+	if inspect.Container.NetworkSettings == nil {
+		ct.Fatalf(t, "linkproxy: container %s has no network settings", hs)
+	}
+	netSetting, ok := inspect.Container.NetworkSettings.Networks[deployment.Network()]
+	if !ok || !netSetting.IPAddress.IsValid() {
+		ct.Fatalf(t, "linkproxy: container %s has no IP on network %q", hs, deployment.Network())
+	}
+	return netSetting.IPAddress.String()
 }
 
 // pointAtHost appends an /etc/hosts mapping in hs for peers, using the first
@@ -401,10 +451,8 @@ func containerIP(t ct.TestLike, deployment complement.Deployment, hs string) str
 // timeout, and execution errors terminate the test.
 func pointAtHost(t ct.TestLike, deployment complement.Deployment, hs, hostName string, peers []string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 	script := fmt.Sprintf(`set -- $(grep -m1 %s /etc/hosts); echo "$1 %s" >> /etc/hosts`, hostName, strings.Join(peers, " "))
-	out, err := dockerOutput(ctx, "exec", deployment.ContainerID(t, hs), "sh", "-c", script)
+	out, err := dockerExec(deployment, deployment.ContainerID(t, hs), script)
 	if err != nil {
 		ct.Fatalf(t, "linkproxy: cannot rewrite /etc/hosts in %s: %v %s", hs, err, out)
 	}
