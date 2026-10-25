@@ -741,6 +741,9 @@ func TestCorruptedAuthChain(t *testing.T) {
 			"displayname": "A",
 		},
 	})
+	// Keep A-E origin_server_ts strictly increasing so state resolution orders
+	// them deterministically instead of falling back to event ID tie-breaks.
+	time.Sleep(2 * time.Millisecond)
 	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -755,6 +758,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 	srvRoom.TimelineMutex.Lock()
 	srvRoom.Timeline = append(srvRoom.Timeline, eventB)
 	srvRoom.TimelineMutex.Unlock()
+	time.Sleep(2 * time.Millisecond)
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -766,6 +770,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 		PrevEvents: []string{eventB.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -777,6 +782,7 @@ func TestCorruptedAuthChain(t *testing.T) {
 		PrevEvents: []string{eventC.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1033,6 +1039,9 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 			"displayname": "A",
 		},
 	})
+	// Keep A-E origin_server_ts strictly increasing so state resolution orders
+	// them deterministically instead of falling back to event ID tie-breaks.
+	time.Sleep(2 * time.Millisecond)
 	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1044,6 +1053,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		PrevEvents: []string{eventA.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1055,6 +1065,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		PrevEvents: []string{eventB.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1066,6 +1077,7 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		PrevEvents: []string{eventC.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1371,6 +1383,9 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 			"displayname": "A",
 		},
 	})
+	// Keep A-E origin_server_ts strictly increasing so state resolution orders
+	// them deterministically instead of falling back to event ID tie-breaks.
+	time.Sleep(2 * time.Millisecond)
 	eventB := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1382,6 +1397,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		PrevEvents: []string{eventA.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventA.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventC := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1393,6 +1409,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		PrevEvents: []string{eventB.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventB.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventD := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
@@ -1404,6 +1421,7 @@ func TestStateIdsFallbackRecoversAfterMalformedGetMissingEventsResponse(t *testi
 		PrevEvents: []string{eventC.EventID()},
 		AuthEvents: []string{createEvent.EventID(), plEvent.EventID(), jrEvent.EventID(), eventC.EventID()},
 	})
+	time.Sleep(2 * time.Millisecond)
 	eventE := srv.MustCreateEvent(t, srvRoom, federation.Event{
 		Type:     spec.MRoomMember,
 		Sender:   bob,
