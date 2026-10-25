@@ -64,13 +64,20 @@ func TestLinkProxy(t *testing.T) {
 		// /send retry or pulled by hs2 with MSC4521 reconciliation, possibly even
 		// before the release. Either way it reached hs2 without a blocked /send.
 		viaSend, viaReconcile := false, false
-		for _, e := range proxy.Log()[blocked:] {
-			switch {
-			case e.Src == "hs1" && e.Dst == "hs2" && strings.Contains(e.Path, "/send/") && e.Status == 200:
-				viaSend = true
-			case e.Src == "hs2" && e.Dst == "hs1" && strings.Contains(e.Path, "room_digest"):
-				viaReconcile = true
+		pollDeadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(pollDeadline) {
+			for _, e := range proxy.Log()[blocked:] {
+				switch {
+				case e.Src == "hs1" && e.Dst == "hs2" && strings.Contains(e.Path, "/send/") && e.Status == 200:
+					viaSend = true
+				case e.Src == "hs2" && e.Dst == "hs1" && strings.Contains(e.Path, "room_digest"):
+					viaReconcile = true
+				}
 			}
+			if viaSend || viaReconcile {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 		must.Equal(t, viaSend || viaReconcile, true, "the event reached hs2 via /send or reconciliation")
 		t.Logf("healed via /send: %t, via reconciliation: %t", viaSend, viaReconcile)
