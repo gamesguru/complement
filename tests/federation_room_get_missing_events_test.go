@@ -1305,6 +1305,14 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 	t.Logf("bob's membership content: %v", content.Raw)
 	if runtime.Homeserver == runtime.Synapse {
 		displayName := content.Get("displayname").Str
+		// The test observes that Synapse requests and receives every /event
+		// response, accepts the later sentinel, but leaves the membership state
+		// at an earlier event. Complement cannot tell from these observations
+		// whether the later events were rejected during auth/state processing or
+		// lost during state resolution, so keep the note to the externally
+		// observable failure rather than attributing it to a specific code path.
+		// Synapse has been observed stopping at every earlier event (A-D) across
+		// builds; only E means the fallback ladder actually completed.
 		if displayName != "E" {
 			t.Skipf("Synapse produced final displayname %q; this fallback path is not supported by the current Synapse build", displayName)
 		}
