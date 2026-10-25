@@ -330,7 +330,7 @@ func (e *bulkEnv) record(t *testing.T, eventID string) {
 
 func (e *bulkEnv) testDigestAndStrata(t *testing.T) {
 	d := e.digestOf(t, "hs1")
-	must.Equal(t, d.Get("digest_type").Str, "algebraic_v1.0.0", "digest type")
+	must.Equal(t, d.Get("digest_type").Str, "algebraic_v1", "digest type")
 	body, status := getRoomDigestFrom(t, e.prober, e.deployment, "hs1", e.roomID, "/strata")
 	must.Equal(t, status, 200, "strata status")
 	must.Equal(t, len(gjson.ParseBytes(body).Get("strata").Array()), 32, "strata count")
@@ -369,7 +369,7 @@ func (e *bulkEnv) testExactEventSet(t *testing.T) {
 		d := e.digestOf(t, hsName(i))
 		req, err := json.Marshal(map[string]interface{}{
 			"mode": "sketch", "frame_id": d.Get("frame_id").Str,
-			"local_digest": e.wantDigest, "digest_type": "algebraic_v1.0.0",
+			"local_digest": e.wantDigest, "digest_type": "algebraic_v1",
 			"local_known_event_count": e.expected.Accumulator().Count,
 			"frame_event_ids":         d.Get("frame_event_ids").Value(), "estimated_delta": 0,
 			"requests":       []map[string]interface{}{{"depth": 0, "prefix": "0", "capacity": 2}},

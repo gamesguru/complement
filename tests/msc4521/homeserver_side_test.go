@@ -305,7 +305,7 @@ func diffBody(t *testing.T, f frame, local reconcile.ResidentKernel, h64s []uint
 		"mode":                    "sketch",
 		"frame_id":                f.id,
 		"local_digest":            local.Accumulator().EncodeDigest(),
-		"digest_type":             "algebraic_v1.0.0",
+		"digest_type":             "algebraic_v1",
 		"local_known_event_count": local.Accumulator().Count,
 		"frame_event_ids":         f.anchors,
 		"estimated_delta":         1,
