@@ -114,6 +114,22 @@ func (d *Deployer) CreateDirtyServer(hsName string) (*HomeserverDeployment, erro
 	return hsDeployment, nil
 }
 
+// CreateEmptyDirtyDeployment creates a dirty deployment with no homeservers, and
+// makes its network, so that CreateDirtyServer can then be called concurrently
+// without racing to create the network. Returns nil and a wrapped error if the
+// network cannot be found or created.
+func (d *Deployer) CreateEmptyDirtyDeployment() (*Deployment, error) {
+	if _, err := createNetworkIfNotExists(d.Docker, d.config.PackageNamespace, d.config.RunID, "dirty"); err != nil {
+		return nil, fmt.Errorf("CreateEmptyDirtyDeployment: %w", err)
+	}
+	return &Deployment{
+		Deployer: d,
+		Dirty:    true,
+		HS:       map[string]*HomeserverDeployment{},
+		Config:   d.config,
+	}, nil
+}
+
 // CreateDirtyDeployment creates a clean HS without any blueprints. More HSes can be added later via
 // CreateDirtyServer()
 func (d *Deployer) CreateDirtyDeployment() (*Deployment, error) {
@@ -413,6 +429,14 @@ func isRetryableDeployBootstrapError(err error) bool {
 	}
 }
 
+// deployImageOnce creates and starts one homeserver container on networkName,
+// installs its application-service registrations and CA files, and waits for it
+// to become responsive. cfg controls host mappings, mounts, resources, and readiness
+// timeout; extraEnv adds container environment variables.
+// On success it returns the deployment with host-accessible client and federation URLs.
+// Docker, file-copy, CA-encoding, URL-discovery, and readiness errors are returned
+// without retrying or removing the container. On failure after container creation,
+// the returned deployment contains at least its container ID; creation failure returns nil.
 // nolint
 func deployImageOnce(
 	docker *client.Client, imageID string, containerName, pkgNamespace, blueprintName, hsName string,
@@ -429,6 +453,13 @@ func deployImageOnce(
 		// Note: this feature of docker landed in Docker 20.10,
 		// see https://github.com/moby/moby/pull/40007
 		extraHosts = []string{fmt.Sprintf("%s:host-gateway", cfg.HostnameRunningComplement)}
+	}
+	// Link-proxy peers resolve to the host on every platform, Docker Desktop included.
+	for i := 1; i <= cfg.LinkProxyHomeservers; i++ {
+		peer := fmt.Sprintf("hs%d", i)
+		if peer != hsName {
+			extraHosts = append(extraHosts, peer+":host-gateway")
+		}
 	}
 
 	for _, m := range cfg.HostMounts {
@@ -561,6 +592,7 @@ func deployImageOnce(
 		return stubDeployment, fmt.Errorf("failed to copy CA key to container: %s", err)
 	}
 
+	containerStartTime := time.Now()
 	_, err = docker.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	if err != nil {
 		return stubDeployment, fmt.Errorf("ContainerStart: %s", err)
@@ -607,11 +639,12 @@ func deployImageOnce(
 	iterCount, err := waitForContainer(ctx, docker, d, stopTime)
 	if err != nil {
 		return d, fmt.Errorf("%s: failed to check server is up. %w", contextStr, err)
-	} else {
-		if cfg.DebugLoggingEnabled {
-			log.Printf("%s: Server is responding after %d iterations", contextStr, iterCount)
-		}
 	}
+	// Always logged, in a fixed format, so CI can measure homeserver startup cost.
+	log.Printf(
+		"%s: deploy-timing container=%s ready_after=%.2fs iterations=%d",
+		contextStr, containerID, time.Since(containerStartTime).Seconds(), iterCount,
+	)
 	return d, nil
 }
 
