@@ -1659,7 +1659,7 @@ func TestMSC4311FullEventsOnStrippedStateFederation(t *testing.T) {
 func TestMSC4311RejectInvalidStrippedStateFederation(t *testing.T) {
 	// FIXME: Run these tests after 2027-06-01 (to allow some time for the ecosystem to
 	// adapt and support MSC4311), see https://github.com/element-hq/synapse/issues/19943
-	runtime.SkipIf(t, runtime.Synapse, runtime.Sithnapse)
+	runtime.SkipIf(t, runtime.Synapse, runtime.Sithnapse, runtime.Zendrite)
 	// does not implement it yet
 	runtime.SkipIf(t, runtime.Dendrite)
 

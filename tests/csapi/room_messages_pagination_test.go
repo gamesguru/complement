@@ -89,7 +89,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// the failure actually reproduces, so a fix on either
 				// homeserver is caught rather than masked.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite, runtime.Zendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// limit=3 is an intermittent Dendrite/Zendrite gap: the very first
@@ -102,7 +102,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// the same shape once it fires. Confirmed at
 				// https://github.com/gamesguru/complement/actions/runs/33334604841/job/99319138496.
 				if limit == 3 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Dendrite, runtime.Zendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Dendrite)
 					return
 				}
 				// limit=50 is a confirmed Dendrite/Zendrite gap: backward pagination
@@ -111,7 +111,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// event repeating the previous page's last event). Confirmed at
 				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
 				if limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite, runtime.Zendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, eventIDs, limit)
@@ -284,7 +284,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// See the limit=1 note in "Clean messages only" above — same
 				// confirmed gap on Synapse and Dendrite.
 				if limit == 1 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite, runtime.Zendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
@@ -298,7 +298,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				if limit == 3 || limit == 7 || limit == 50 {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
 						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig)
-					}, runtime.Dendrite, runtime.Zendrite)
+					}, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
@@ -361,8 +361,8 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				// reordering — see matchesPartialBackfillReorder.
 				if limit == 1 {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
-						return matchesBackfillGap(sig) || ((runtime.Homeserver == runtime.Dendrite || runtime.Homeserver == runtime.Zendrite) && matchesPartialBackfillReorder(sig))
-					}, runtime.Synapse, runtime.Dendrite, runtime.Zendrite)
+						return matchesBackfillGap(sig) || ((runtime.Homeserver == runtime.Dendrite) && matchesPartialBackfillReorder(sig))
+					}, runtime.Synapse, runtime.Dendrite)
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
@@ -378,11 +378,11 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 				if limit == 3 {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, func(sig paginationFailureSignature) bool {
 						return matchesRoomCreateBoundaryDuplicate(sig) || matchesBackfillGap(sig) || matchesPartialBackfillReorder(sig)
-					}, runtime.Dendrite, runtime.Zendrite)
+					}, runtime.Dendrite)
 					return
 				}
 				if limit == 7 || limit == 50 {
-					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite, runtime.Zendrite)
+					assertPaginationIntegrityKnownIssue(t, bob, roomID, trackedEventIDs, limit, matchesRoomCreateBoundaryDuplicate, runtime.Dendrite)
 					return
 				}
 				assertPaginationIntegrity(t, bob, roomID, trackedEventIDs, limit)
@@ -658,7 +658,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 				// Only skip when the failure actually matches the documented
 				// forward-pagination-stall shape. A single duplicate or missing
 				// event from another regression must still fail.
-				if (runtime.Homeserver == runtime.Dendrite || runtime.Homeserver == runtime.Zendrite) && matchesForwardPaginationStall(sig) {
+				if (runtime.Homeserver == runtime.Dendrite) && matchesForwardPaginationStall(sig) {
 					t.Skipf("known Dendrite-family forward-pagination gap, skipping:\n%s", strings.Join(failures, "\n"))
 				}
 				for _, failure := range failures {
@@ -964,7 +964,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) { //nolint:gocyc
 				// fail.
 				matchesKnownGap := len(duplicates) == 1 && len(duplicateTypeCounts) == 1 &&
 					duplicateTypeCounts["m.room.create"] == 1 && len(missingPreAway) == 0
-				if (runtime.Homeserver == runtime.Dendrite || runtime.Homeserver == runtime.Zendrite) && matchesKnownGap {
+				if (runtime.Homeserver == runtime.Dendrite) && matchesKnownGap {
 					t.Skipf("known Dendrite-family stale-token-resume gap, skipping:\n%s", strings.Join(failures, "\n"))
 				}
 				for _, failure := range failures {

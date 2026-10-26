@@ -561,6 +561,7 @@ func deployImageOnce(
 		return stubDeployment, fmt.Errorf("failed to copy CA key to container: %s", err)
 	}
 
+	containerStartTime := time.Now()
 	_, err = docker.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	if err != nil {
 		return stubDeployment, fmt.Errorf("ContainerStart: %s", err)
@@ -607,11 +608,12 @@ func deployImageOnce(
 	iterCount, err := waitForContainer(ctx, docker, d, stopTime)
 	if err != nil {
 		return d, fmt.Errorf("%s: failed to check server is up. %w", contextStr, err)
-	} else {
-		if cfg.DebugLoggingEnabled {
-			log.Printf("%s: Server is responding after %d iterations", contextStr, iterCount)
-		}
 	}
+	// Always logged, in a fixed format, so CI can measure homeserver startup cost.
+	log.Printf(
+		"%s: deploy-timing container=%s ready_after=%.2fs iterations=%d",
+		contextStr, containerID, time.Since(containerStartTime).Seconds(), iterCount,
+	)
 	return d, nil
 }
 

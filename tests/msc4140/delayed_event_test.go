@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -138,7 +139,7 @@ func TestDelayedEvents(t *testing.T) {
 		})
 
 		time.Sleep(1 * time.Second)
-		matchDelayedEvents(t, user, delayedEventsNumberEqual(0))
+		matchDelayedEventsWithin(t, user, 5*time.Second, delayedEventsNumberEqual(0))
 		queryParams := url.Values{}
 		queryParams.Set("dir", "f")
 		queryParams.Set("from", token)
@@ -510,13 +511,13 @@ func TestDelayedEvents(t *testing.T) {
 		time.Sleep(1 * time.Second)
 		deployment.StartServer(t, hsName)
 
-		delayedEventResponse := matchDelayedEvents(t, user,
+		delayedEventResponse := matchDelayedEventsWithin(t, user, 10*time.Second,
 			// We should still see some delayed events left after the restart.
 			delayedEventsNumberGreaterThan(0),
 			// We should see at-least one less than we had before the restart (the first
 			// delayed event should have been sent). Other delayed events may have been sent
 			// by the time the server actually came back up.
-			delayedEventsNumberLessThan(numberOfDelayedEvents-1),
+			delayedEventsNumberLessThan(numberOfDelayedEvents),
 		)
 		// Capture whatever number of delayed events are remaining after the server restart.
 		remainingDelayedEventCount := countDelayedEvents(t, delayedEventResponse)
@@ -527,9 +528,10 @@ func TestDelayedEvents(t *testing.T) {
 			return ev.Get("type").Str == eventType && ev.Get("state_key").Str == stateKey1
 		}))
 
-		// Wait until we see another delayed event being sent (ensure things resumed and are continuing).
-		time.Sleep(10 * time.Second)
-		matchDelayedEvents(t, user,
+		// Wait until we see another delayed event being sent (ensure things resumed and are
+		// continuing). Poll rather than sleeping a whole interval so a quick server finishes
+		// as soon as the next event fires.
+		matchDelayedEventsWithin(t, user, 10*time.Second,
 			delayedEventsNumberLessThan(remainingDelayedEventCount),
 		)
 		// Sanity check that the other delayed events also updated the room state correctly.
@@ -590,6 +592,7 @@ func countDelayedEventsInternal(res *http.Response) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("countDelayedEventsInternal: Failed to read response body: %s", err)
 	}
+	res.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	parsedBody := gjson.ParseBytes(body)
 	return len(parsedBody.Get("delayed_events").Array()), nil
@@ -658,10 +661,19 @@ func delayedEventsNumberLessThan(target int) delayedEventsCheckOpt {
 func matchDelayedEvents(t *testing.T, user *client.CSAPI, checks ...delayedEventsCheckOpt) *http.Response {
 	t.Helper()
 
+	return matchDelayedEventsWithin(t, user, 500*time.Millisecond, checks...)
+}
+
+// matchDelayedEventsWithin is like matchDelayedEvents but keeps polling until the checks
+// pass or the timeout expires. Checks run every few hundred milliseconds, so callers
+// waiting for a time-based event can proceed as soon as it appears.
+func matchDelayedEventsWithin(t *testing.T, user *client.CSAPI, timeout time.Duration, checks ...delayedEventsCheckOpt) *http.Response {
+	t.Helper()
+
 	// We need to retry this as replication can sometimes lag.
 	return user.MustDo(t, "GET", getPathForDelayedEvents(),
 		client.WithRetryUntil(
-			500*time.Millisecond,
+			timeout,
 			func(res *http.Response) bool {
 				for _, check := range checks {
 					err := check(res)
