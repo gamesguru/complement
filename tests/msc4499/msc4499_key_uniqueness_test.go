@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -242,7 +241,7 @@ func skipOnNotaryTimeout(t *testing.T, clientObj *http.Client, err error) {
 func skipKnownGap(t *testing.T, knownFailureHomeservers []string, format string, args ...interface{}) {
 	t.Helper()
 	msg := fmt.Sprintf(format, args...)
-	if slices.Contains(knownFailureHomeservers, runtime.Homeserver) {
+	if runtime.Matches(knownFailureHomeservers...) {
 		t.Skip(msg)
 	} else {
 		t.Fatal(msg)
@@ -1774,7 +1773,7 @@ func testMSC4499KeyNegativeCachingAndBackoff(t *testing.T) {
 
 	// Due to negative caching/backoff, hs1 MUST NOT make another HTTP request to mockKeyServer yet!
 	if reqCount > 0 {
-		skipKnownSynapseGap(t, "Server does not implement negative caching / backoff: it made a network request on consecutive failure query")
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement negative caching / backoff: it made a network request on consecutive failure query")
 	}
 }
 

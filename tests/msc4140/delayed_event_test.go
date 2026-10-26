@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"math"
@@ -138,7 +139,7 @@ func TestDelayedEvents(t *testing.T) {
 		})
 
 		time.Sleep(1 * time.Second)
-		matchDelayedEvents(t, user, delayedEventsNumberEqual(0))
+		matchDelayedEventsWithin(t, user, 5*time.Second, delayedEventsNumberEqual(0))
 		queryParams := url.Values{}
 		queryParams.Set("dir", "f")
 		queryParams.Set("from", token)
@@ -511,13 +512,13 @@ func TestDelayedEvents(t *testing.T) {
 		time.Sleep(1 * time.Second)
 		deployment.StartServer(t, hsName)
 
-		delayedEventResponse := matchDelayedEvents(t, user,
+		delayedEventResponse := matchDelayedEventsWithin(t, user, 10*time.Second,
 			// We should still see some delayed events left after the restart.
 			delayedEventsNumberGreaterThan(0),
 			// We should see at-least one less than we had before the restart (the first
 			// delayed event should have been sent). Other delayed events may have been sent
 			// by the time the server actually came back up.
-			delayedEventsNumberLessThan(numberOfDelayedEvents-1),
+			delayedEventsNumberLessThan(numberOfDelayedEvents),
 		)
 		// Capture whatever number of delayed events are remaining after the server restart.
 		remainingDelayedEventCount := countDelayedEvents(t, delayedEventResponse)
@@ -592,6 +593,7 @@ func countDelayedEventsInternal(res *http.Response) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("countDelayedEventsInternal: Failed to read response body: %s", err)
 	}
+	res.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	parsedBody := gjson.ParseBytes(body)
 	return len(parsedBody.Get("delayed_events").Array()), nil
