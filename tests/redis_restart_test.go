@@ -47,9 +47,23 @@ func dockerExec(deployment complement.Deployment, containerID string, script str
 	}
 	defer attach.Close()
 
+	// stdcopy.StdCopy blocks on the hijacked connection, so close the attach
+	// when the context expires to unblock a stalled read. Stop the watcher as
+	// soon as the copy finishes normally so we don't close it early.
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			attach.Close()
+		case <-readDone:
+		}
+	}()
+
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, attach.Reader); err != nil {
-		return stdout.String() + stderr.String(), err
+	_, copyErr := stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
+	close(readDone)
+	if copyErr != nil {
+		return stdout.String() + stderr.String(), copyErr
 	}
 	output := stdout.String() + stderr.String()
 
@@ -100,6 +114,10 @@ func findRedisServerPID(deployment complement.Deployment, containerID string) (s
 func TestRedisRestartRecovery(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
+
+	if _, ok := deployment.(*docker.Deployment); !ok {
+		t.Skip("Redis restart recovery requires a Docker-backed deployment")
+	}
 
 	containerID := deployment.ContainerID(t, "hs1")
 

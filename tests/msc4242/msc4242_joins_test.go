@@ -24,7 +24,7 @@ import (
 // events which were added to the room while it was away.
 func TestMSC4242JoinLeaveRejoinPublicRoom(t *testing.T) {
 	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
+	runtime.SkipIf(t, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -134,7 +134,7 @@ func TestMSC4242JoinLeaveRejoinPublicRoom(t *testing.T) {
 // be rejected too.
 func TestMSC4242JoinPublicRoomWithRejectedStateDAGEvents(t *testing.T) {
 	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
+	runtime.SkipIf(t, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -295,7 +295,7 @@ func TestMSC4242JoinPublicRoomWithRejectedStateDAGEvents(t *testing.T) {
 // has an (m.room.name, "") event in the room state.
 func TestMSC4242RejectionCascadesOnRejoin(t *testing.T) {
 	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
+	runtime.SkipIf(t, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
@@ -468,7 +468,7 @@ func TestMSC4242RejectionCascadesOnRejoin(t *testing.T) {
 // and the topic set on the main branch must both be in the current state after the rejoin.
 func TestMSC4242RejoinMergesOldAndNewStateDAGBranches(t *testing.T) {
 	// Deferred: Zendrite does not yet merge state DAGs correctly on rejoin.
-	runtime.SkipIf(t, runtime.Dendrite, runtime.Zendrite)
+	runtime.SkipIf(t, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
