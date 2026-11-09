@@ -92,7 +92,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Synapse, runtime.Dendrite)
 					return
 				}
-				// limit=3 is an intermittent Dendrite/Zendrite gap: the very first
+				// limit=3 is an intermittent Dendrite gap: the very first
 				// backward pagination request occasionally returns zero events
 				// with no `end` token, terminating the pagination loop
 				// immediately (e.g. "1 requests, 0 total events, pages: [0]",
@@ -105,7 +105,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 					assertPaginationIntegrityKnownIssue(t, bob, roomID, eventIDs, limit, matchesBackfillGap, runtime.Dendrite)
 					return
 				}
-				// limit=50 is a confirmed Dendrite/Zendrite gap: backward pagination
+				// limit=50 is a confirmed Dendrite gap: backward pagination
 				// duplicates the room's m.room.create event once, at the very
 				// last page boundary (e.g. "pages: [50 50 6 1]" with the final
 				// event repeating the previous page's last event). Confirmed at
@@ -288,10 +288,10 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
-				// confirmed Dendrite/Zendrite room.create boundary duplicate, also
+				// confirmed Dendrite room.create boundary duplicate, also
 				// hit at limit=3 and limit=7 here (this room's total event
 				// count lands the final page at size 1 for all three). limit=3
-				// also intermittently hits the separate Dendrite/Zendrite
+				// also intermittently hits the separate Dendrite
 				// zero-events-first-page backfill gap (pages: [0], 100/100
 				// missing) documented in "Clean messages only" above, so
 				// accept either shape here too.
@@ -366,7 +366,7 @@ func testMessagesPaginationStressNoDuplicates(t *testing.T) {
 					return
 				}
 				// See the limit=50 note in "Clean messages only" above — same
-				// confirmed Dendrite/Zendrite room.create boundary duplicate, also
+				// confirmed Dendrite room.create boundary duplicate, also
 				// hit at limit=3 and limit=7 here. This re-join scenario's
 				// limit=3 case additionally shows the backfill gap, or the
 				// partial-backfill-with-reorder shape, alongside the duplicate
@@ -423,7 +423,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 		startToken := findRoomStartToken(t, bob, roomID)
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				// Confirmed Dendrite/Zendrite gap at all four limits: forward
+				// Confirmed Dendrite gap at all four limits: forward
 				// pagination (dir=f) from a start token doesn't advance
 				// properly — most pages repeat the previous page's events
 				// instead of moving on (e.g. at limit=3, 52 duplicates across
@@ -433,7 +433,7 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 				matches := func(sig paginationFailureSignature) bool {
 					return matchesForwardPaginationStall(sig) || matchesDendriteForwardStart(sig, limit)
 				}
-				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite, runtime.Zendrite}, matches)
+				assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "f", startToken, []string{runtime.Dendrite}, matches)
 			})
 		}
 	})
@@ -442,11 +442,11 @@ func testMessagesPaginationStressForwardAndJumpToStart(t *testing.T) { //nolint:
 	t.Run("Backward from end", func(t *testing.T) {
 		for _, limit := range []int{1, 3, 7, 50} {
 			t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
-				// limit=50 is the confirmed Dendrite/Zendrite room.create boundary
+				// limit=50 is the confirmed Dendrite room.create boundary
 				// duplicate described in NoDuplicates/"Clean messages only"
 				// above.
 				if limit == 50 {
-					assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "b", "", []string{runtime.Dendrite, runtime.Zendrite}, matchesRoomCreateBoundaryDuplicate)
+					assertPaginationIntegrityWithDirFrom(t, bob, roomID, eventIDs, limit, "b", "", []string{runtime.Dendrite}, matchesRoomCreateBoundaryDuplicate)
 					return
 				}
 				assertPaginationIntegrityWithDir(t, bob, roomID, eventIDs, limit, "b")
@@ -954,7 +954,7 @@ func testMessagesPaginationStressStaleTokenResume(t *testing.T) { //nolint:gocyc
 			}
 
 			if len(failures) > 0 {
-				// Confirmed Dendrite/Zendrite gap (limit=3 and limit=7 both hit
+				// Confirmed Dendrite gap (limit=3 and limit=7 both hit
 				// it): a single m.room.create duplicate at the pre-away/resume
 				// boundary, and nothing else wrong. Confirmed at
 				// https://github.com/gamesguru/complement/actions/runs/33331323960/job/99310254908.
@@ -1267,7 +1267,7 @@ func (s paginationFailureSignature) onlyDuplicateType(eventType string) bool {
 	return len(s.duplicateTypes) == 1 && s.duplicateTypes[eventType] == s.duplicateCount
 }
 
-// matchesForwardPaginationStall matches the confirmed Dendrite/Zendrite gap where
+// matchesForwardPaginationStall matches the confirmed Dendrite gap where
 // forward pagination (dir=f) from a start token doesn't advance properly:
 // most pages repeat the previous page's events instead of moving on,
 // producing either many duplicates or, at small limits, entirely missing
@@ -1325,7 +1325,7 @@ func TestMatchesDendriteForwardStart(t *testing.T) {
 	}
 }
 
-// matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite/Zendrite gap
+// matchesRoomCreateBoundaryDuplicate matches the confirmed Dendrite gap
 // where backward pagination duplicates the room's m.room.create event once,
 // at the final page boundary, with nothing else wrong.
 func matchesRoomCreateBoundaryDuplicate(sig paginationFailureSignature) bool {
@@ -1341,7 +1341,7 @@ func matchesBackfillGap(sig paginationFailureSignature) bool {
 	return sig.missingCount > 0 && sig.missingCount == sig.expectedMessageCount
 }
 
-// matchesPartialBackfillReorder matches a confirmed Dendrite/Zendrite gap distinct
+// matchesPartialBackfillReorder matches a confirmed Dendrite gap distinct
 // from matchesBackfillGap: rather than truncating the entire history, backward
 // pagination drops a small subset of the oldest expected messages (not all of
 // them). Seen specifically in the leave-then-rejoin scenario, where the
