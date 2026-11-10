@@ -71,7 +71,7 @@ func newCluster(t *testing.T, n int) *cluster {
 	// Wait until all homeservers (and the prober's access) agree on it.
 	c.known = roomEventIDs(t, c.users[0], c.roomID)
 	want, count := c.expectedDigest(t)
-	c.waitDigest(t, c.all(), want, count, "the cluster to agree on its starting state")
+	c.waitDigestWithin(t, 20*time.Second, c.all(), want, count, "the cluster to agree on its starting state")
 	// Every join and send above was homeserver-to-homeserver. If none crossed
 	// the proxy it is not in the path, and every later assertion about links
 	// would pass or fail for the wrong reason.
@@ -125,7 +125,15 @@ func (c *cluster) expectedDigest(t *testing.T) (string, int64) {
 // A longer wait hides a missing federation update or stale digest.
 func (c *cluster) waitDigest(t *testing.T, servers []int, digest string, count int64, what string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	c.waitDigestWithin(t, 3*time.Second, servers, digest, count, what)
+}
+
+// waitDigestWithin is waitDigest with an explicit deadline, for setup waits that
+// depend on the homeservers' own catch-up cadence rather than on the behaviour
+// under test.
+func (c *cluster) waitDigestWithin(t *testing.T, within time.Duration, servers []int, digest string, count int64, what string) {
+	t.Helper()
+	deadline := time.Now().Add(within)
 	for {
 		ok, last := true, ""
 		for _, i := range servers {
