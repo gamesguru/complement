@@ -3044,29 +3044,20 @@ func testMSC4499KeyBackoffClearedOnSuccess(t *testing.T) {
 		t.Skipf("Server does not implement backoff — made %d request(s) during backoff window", phase1bCount)
 	}
 
-	// Phase 2: Unblock mock. hs1 has nothing cached, so it fetches again once
-	// its backoff expires. The document must still be valid after the wait
-	// below: a server may reject a key response that has already expired.
+	// Phase 2: Unblock mock, set short valid_until so hs1 will try again
 	mockKeyServer.mu.Lock()
 	mockKeyServer.shouldFail = false
 	mockKeyServer.requestCount = 0
+	mockKeyServer.validUntil = time.Now().Add(2 * time.Second)
 	mockKeyServer.mu.Unlock()
 
 	// Wait for backoff to expire. Implementations should configure a short
 	// backoff for testing (e.g., 2s via msc4499_backoff_secs). The spec mandates
 	// ≥60s in production, but that's too slow for CI.
-	//
-	// Phase 3: Poll until the backoff expires — mock is now healthy, so the
-	// query should succeed and clear the backoff. Polling returns as soon as
-	// the server fetches again instead of always waiting out the full window.
-	var foundKey string
-	for deadline := time.Now().Add(3 * time.Second); ; {
-		foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
-		if foundKey == wantKey || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	time.Sleep(3 * time.Second)
+
+	// Phase 3: Query again — mock is now healthy, should succeed and clear backoff
+	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
 	if foundKey != wantKey {
 		t.Skipf("Server enforces strict backoff >3s — skipping clear-on-success verification (got %q, want %q)", foundKey, wantKey)
 	}
