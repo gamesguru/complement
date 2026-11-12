@@ -43,6 +43,15 @@ type lateEventFixture struct {
 
 func newLateEventFixture(t *testing.T, deployment complement.Deployment) (*lateEventFixture, func()) {
 	t.Helper()
+	f, _, cancel := newLateEventFixtureWithHistory(t, deployment, 0)
+	return f, cancel
+}
+
+// newLateEventFixtureWithHistory is newLateEventFixture, except the Complement
+// server first sends historyLen messages into the room, before hs1 joins. hs1
+// can only learn them over /backfill. The event IDs are returned oldest first.
+func newLateEventFixtureWithHistory(t *testing.T, deployment complement.Deployment, historyLen int) (*lateEventFixture, []string, func()) {
+	t.Helper()
 	f := &lateEventFixture{}
 
 	f.srv = federation.NewServer(t, deployment,
@@ -74,9 +83,16 @@ func newLateEventFixture(t *testing.T, deployment complement.Deployment) (*lateE
 	f.room = f.srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, f.charlie), federation.WithImpl(impl))
 	alias := f.srv.MakeAliasMapping("late-ordering", f.room.RoomID)
 
+	history := make([]string, 0, historyLen)
+	for i := 1; i <= historyLen; i++ {
+		ev := f.createCharlieMessage(t, fmt.Sprintf("history %d", i), 0, nil, 0)
+		f.room.AddEvent(ev)
+		history = append(history, ev.EventID())
+	}
+
 	f.alice.MustJoinRoom(t, alias, []spec.ServerName{f.srv.ServerName()})
 	f.bob.MustJoinRoom(t, alias, []spec.ServerName{f.srv.ServerName()})
-	return f, cancel
+	return f, history, cancel
 }
 
 // createCharlieMessage creates (but does not send) a message from the remote
@@ -482,6 +498,68 @@ func TestFederationBackfillAheadOfStaleCursor(t *testing.T) {
 	}
 	t.Logf("X3 (fetchable via /event) came down /sync %d times (informational)", syncSeen[x3.EventID()])
 	hb.logRequests()
+}
+
+// TestFederationBackfilledHistoryReachableFromPrevBatch checks that history
+// which hs1 backfills while a client pages back is still returned when the
+// client pages back again from the same /sync `prev_batch`, as happens on every
+// client reload that restores the cached sync token.
+//
+// The room has history from before hs1 joined, so hs1 only learns it via
+// /backfill. The backfilled events are persisted after Alice's `prev_batch`
+// was issued, so their stream positions are higher than the token. They are
+// still older history and must not be hidden from a /messages walk that starts
+// at that token. (spec: /messages from a prev_batch token returns the events
+// before the timeline.)
+//
+// Expectations:
+//   - Both walks return every history message exactly once.
+//   - The second walk is not shorter than the first.
+func TestFederationBackfilledHistoryReachableFromPrevBatch(t *testing.T) {
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	const historyLen = 30
+	f, history, cancel := newLateEventFixtureWithHistory(t, deployment, historyLen)
+	defer cancel()
+	roomID := f.room.RoomID
+
+	// Serve /backfill (and the state lookups it triggers) from the room's
+	// timeline.
+	hb := newHiddenBranchServer(t, f)
+	hb.register()
+	defer hb.logRequests()
+
+	// Alice's /sync from before any backfill: remember the room's prev_batch.
+	var prevBatch string
+	f.alice.MustSyncUntil(t, client.SyncReq{}, func(_ string, sync gjson.Result) error {
+		pb := sync.Get("rooms.join." + client.GjsonEscape(roomID) + ".timeline.prev_batch")
+		if !pb.Exists() || pb.Str == "" {
+			return fmt.Errorf("no prev_batch for %s yet", roomID)
+		}
+		prevBatch = pb.Str
+		return nil
+	})
+	t.Logf("prev_batch = %s", prevBatch)
+
+	// First walk: hs1 backfills the history while we page.
+	const limit = 10
+	firstPages, _ := paginateBackward(t, f.alice, roomID, prevBatch, limit, 0)
+	first := flatten(firstPages)
+	t.Logf("first walk pages: %v", firstPages)
+	assertNoDuplicates(t, "first /messages walk", first)
+	assertEachOnce(t, "first /messages walk", first, history)
+
+	// Second walk from the very same prev_batch. Everything is stored locally
+	// now, so this must return the same history.
+	secondPages, _ := paginateBackward(t, f.alice, roomID, prevBatch, limit, 0)
+	second := flatten(secondPages)
+	t.Logf("second walk pages: %v", secondPages)
+	assertNoDuplicates(t, "second /messages walk from the same prev_batch", second)
+	assertEachOnce(t, "second /messages walk from the same prev_batch", second, history)
+	if len(second) < len(first) {
+		ct.Errorf(t, "second walk returned %d events, fewer than the first walk's %d", len(second), len(first))
+	}
 }
 
 // sendNumberedMessages sends M1..Mn from c into roomID, returning their IDs.
