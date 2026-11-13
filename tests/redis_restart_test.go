@@ -1,26 +1,80 @@
 package tests
 
 import (
-	"os/exec"
+	"bytes"
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/moby/moby/api/pkg/stdcopy"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/matrix-org/complement"
 	"github.com/matrix-org/complement/b"
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/internal/docker"
 )
 
-// dockerExec runs a shell command inside the given container via
-// `docker exec sh -c <script>`, returning combined stdout+stderr. The
-// complement-synapse image is minimal and has neither a supervisorctl
-// control socket nor even `ps`/`pgrep`/`pkill`, so process discovery and
-// signalling below goes straight through /proc instead of relying on any
-// of those.
-func dockerExec(containerID string, script string) (string, error) {
-	out, err := exec.Command("docker", "exec", containerID, "sh", "-c", script).CombinedOutput()
-	return string(out), err
+// dockerExec runs a shell command inside the given container through the
+// deployment's Docker client, returning combined stdout+stderr. The
+// complement-synapse image is minimal and has neither a supervisorctl control
+// socket nor even `ps`/`pgrep`/`pkill`, so process discovery and signalling
+// below goes straight through /proc instead of relying on any of those.
+func dockerExec(deployment complement.Deployment, containerID string, script string) (string, error) {
+	dockerDeployment, ok := deployment.(*docker.Deployment)
+	if !ok {
+		return "", fmt.Errorf("container exec requires a Docker-backed deployment, got %T", deployment)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	exec, err := dockerDeployment.Deployer.Docker.ExecCreate(ctx, containerID, mobyclient.ExecCreateOptions{
+		Cmd:          []string{"sh", "-c", script},
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	attach, err := dockerDeployment.Deployer.Docker.ExecAttach(ctx, exec.ID, mobyclient.ExecAttachOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer attach.Close()
+
+	// stdcopy.StdCopy blocks on the hijacked connection, so close the attach
+	// when the context expires to unblock a stalled read. Stop the watcher as
+	// soon as the copy finishes normally so we don't close it early.
+	readDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			attach.Close()
+		case <-readDone:
+		}
+	}()
+
+	var stdout, stderr bytes.Buffer
+	_, copyErr := stdcopy.StdCopy(&stdout, &stderr, attach.Reader)
+	close(readDone)
+	if copyErr != nil {
+		return stdout.String() + stderr.String(), copyErr
+	}
+	output := stdout.String() + stderr.String()
+
+	inspect, err := dockerDeployment.Deployer.Docker.ExecInspect(ctx, exec.ID, mobyclient.ExecInspectOptions{})
+	if err != nil {
+		return output, err
+	}
+	if inspect.ExitCode != 0 {
+		return output, fmt.Errorf("command exited with code %d", inspect.ExitCode)
+	}
+	return output, nil
 }
 
 // findRedisServerPID returns the redis-server PID (as seen from /proc)
@@ -34,8 +88,8 @@ for p in /proc/[0-9]*; do
 done
 `
 
-func findRedisServerPID(containerID string) (string, error) {
-	out, err := dockerExec(containerID, findRedisServerPIDScript)
+func findRedisServerPID(deployment complement.Deployment, containerID string) (string, error) {
+	out, err := dockerExec(deployment, containerID, findRedisServerPIDScript)
 	return strings.TrimSpace(out), err
 }
 
@@ -61,9 +115,13 @@ func TestRedisRestartRecovery(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
+	if _, ok := deployment.(*docker.Deployment); !ok {
+		t.Skip("Redis restart recovery requires a Docker-backed deployment")
+	}
+
 	containerID := deployment.ContainerID(t, "hs1")
 
-	pid, err := findRedisServerPID(containerID)
+	pid, err := findRedisServerPID(deployment, containerID)
 	if err != nil {
 		t.Fatalf("failed to inspect %s for redis-server: %v", containerID, err)
 	}
@@ -86,7 +144,7 @@ func TestRedisRestartRecovery(t *testing.T) {
 	// redis-server between tests sharing a container) -- "No such process"
 	// here means the crash-and-respawn we wanted already happened on its
 	// own, not that the test is broken, so it isn't fatal.
-	if out, err := dockerExec(containerID, "kill -9 "+pid); err != nil && !strings.Contains(out, "No such process") {
+	if out, err := dockerExec(deployment, containerID, "kill -9 "+pid); err != nil && !strings.Contains(out, "No such process") {
 		t.Fatalf("failed to kill redis-server (pid %s): %v (output: %s)", pid, err, out)
 	}
 
@@ -95,7 +153,7 @@ func TestRedisRestartRecovery(t *testing.T) {
 	// crash by timing out later in MustSyncUntil with a confusing error.
 	respawned := false
 	for i := 0; i < 50; i++ {
-		newPID, _ := findRedisServerPID(containerID)
+		newPID, _ := findRedisServerPID(deployment, containerID)
 		if newPID != "" && newPID != pid {
 			respawned = true
 			break

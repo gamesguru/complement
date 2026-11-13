@@ -224,14 +224,13 @@ func testMSC4500StateOutbound(t *testing.T) {
 		federation.HandleMakeSendJoinRequests(),
 	)
 	srv.Mux().HandleFunc("/_matrix/federation/v1/send/{transactionID}", func(w http.ResponseWriter, req *http.Request) {
-		defer func() {
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				return
-			}
-			// Check the transaction for the state_hashes extension after reading it.
+		// Read the whole request body before writing the response. With HTTP/1,
+		// the server may consume an unread request body while writing the
+		// response, making a deferred read unable to observe the transaction.
+		body, err := io.ReadAll(req.Body)
+		if err == nil {
 			checkMSC4500Outbound(body, found, &mu, &observedAfter, &observedDigest)
-		}()
+		}
 		w.WriteHeader(200)
 		w.Write([]byte(`{"pdus":{}}`))
 	}).Methods("PUT")

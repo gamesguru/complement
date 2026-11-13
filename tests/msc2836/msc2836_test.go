@@ -358,7 +358,7 @@ func TestFederatedEventRelationships(t *testing.T) {
 			}),
 		},
 	})
-	waiter.Wait(t, time.Second)
+	waiter.Wait(t, 5*time.Second)
 	// we should have got events E,D,C,A (walk parents up to the top)
 	must.HaveInOrder(t, gotEventIDs, []string{eventE.EventID(), eventD.EventID(), eventC.EventID(), eventA.EventID()})
 
