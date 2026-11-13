@@ -25,7 +25,6 @@ import (
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
-	"github.com/matrix-org/complement/runtime"
 )
 
 // lateEventFixture is a room owned by a Complement federation server which hs1
@@ -804,7 +803,6 @@ func (h *hiddenBranchServer) walkBack(from []string, limit int) []gomatrixserver
 // then place that block on the wrong side of the timeline (for example, recent
 // messages above the room's create event).
 func TestFederationMessagesDoesNotBackfillNewerGaps(t *testing.T) {
-	runtime.SkipUnless(t, runtime.Dendrite, runtime.Zendrite)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
