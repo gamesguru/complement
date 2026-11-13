@@ -470,6 +470,20 @@ func TestPartialStateJoin(t *testing.T) { //nolint:gocyclo // integration test c
 			t.Fatal("Sync shouldn't include the joined room until resync is over")
 		}
 
+		// Registration notifies the sync API of the default push rules
+		// asynchronously. If that notification lands after the complete sync
+		// above, the next incremental sync returns it immediately. Drain
+		// pending account data so the long poll below is only woken by the
+		// partial-state resync.
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+			var pending gjson.Result
+			pending, nextBatch = alice.MustSync(t, client.SyncReq{Since: nextBatch, TimeoutMillis: "0"})
+			if len(pending.Get("account_data.events").Array()) == 0 {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		// Begin a long polling sync that shouldn't return yet since no change happened
 
 		responseChan := make(chan gjson.Result, 1)
