@@ -1,0 +1,4 @@
+[submodule "docs"]
+	path = docs
+	url = gcrypt::git@gitlab.com:wombat-foundation/complement-docs.git
+	update = none

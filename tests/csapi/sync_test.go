@@ -156,6 +156,14 @@ func TestSync(t *testing.T) {
 			_, nextBatch := alice.MustSync(t, client.SyncReq{Filter: filterID})
 			roomID := alice.MustCreateRoom(t, map[string]interface{}{})
 			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(alice.UserID, roomID))
+			// createRoom persists the tail of its initial events (power levels,
+			// join rules, history visibility, guest access) after the join. On a
+			// worker deployment the synchrotron can apply those events after the
+			// master has already acknowledged the creation, so wait for the last
+			// one before taking the incremental-sync baseline token.
+			alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHas(roomID, func(ev gjson.Result) bool {
+				return ev.Get("type").Str == "m.room.guest_access"
+			}))
 			res, nextBatch := alice.MustSync(t, client.SyncReq{Filter: filterID, Since: nextBatch})
 			checkJoinFieldsExist(t, res, roomID)
 			res, _ = alice.MustSync(t, client.SyncReq{Filter: filterID, Since: nextBatch})
