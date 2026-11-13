@@ -592,7 +592,25 @@ func deployImageOnce(
 		return stubDeployment, fmt.Errorf("failed to copy CA key to container: %s", err)
 	}
 
+	// Always logged once the container is started, in a fixed format, so CI can
+	// measure homeserver startup cost on both successful and failed deployments.
 	containerStartTime := time.Now()
+	iterCount := 0
+	deployResult := "error"
+	defer func() {
+		elapsed := time.Since(containerStartTime).Seconds()
+		if deployResult == "ok" {
+			log.Printf(
+				"%s: deploy-timing container=%s ready_after=%.2fs iterations=%d",
+				contextStr, containerID, elapsed, iterCount,
+			)
+			return
+		}
+		log.Printf(
+			"%s: deploy-timing container=%s result=error failed_after=%.2fs iterations=%d",
+			contextStr, containerID, elapsed, iterCount,
+		)
+	}()
 	_, err = docker.ContainerStart(ctx, containerID, client.ContainerStartOptions{})
 	if err != nil {
 		return stubDeployment, fmt.Errorf("ContainerStart: %s", err)
@@ -636,15 +654,11 @@ func deployImageOnce(
 	}
 
 	stopTime := time.Now().Add(cfg.SpawnHSTimeout)
-	iterCount, err := waitForContainer(ctx, docker, d, stopTime)
+	iterCount, err = waitForContainer(ctx, docker, d, stopTime)
 	if err != nil {
 		return d, fmt.Errorf("%s: failed to check server is up. %w", contextStr, err)
 	}
-	// Always logged, in a fixed format, so CI can measure homeserver startup cost.
-	log.Printf(
-		"%s: deploy-timing container=%s ready_after=%.2fs iterations=%d",
-		contextStr, containerID, time.Since(containerStartTime).Seconds(), iterCount,
-	)
+	deployResult = "ok"
 	return d, nil
 }
 

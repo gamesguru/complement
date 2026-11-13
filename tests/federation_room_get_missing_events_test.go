@@ -1325,7 +1325,8 @@ func TestStateIdsFallbackFetchesFullAuthChain(t *testing.T) {
 		// observable failure rather than attributing it to a specific code path.
 		// Synapse has been observed stopping at every earlier event (A-D) across
 		// builds; only E means the fallback ladder actually completed.
-		if displayName != "E" {
+		switch displayName {
+		case "A", "B", "C", "D":
 			t.Skipf("Synapse produced final displayname %q; this fallback path is not supported by the current Synapse build", displayName)
 		}
 	}

@@ -532,7 +532,9 @@ func TestDelayedEvents(t *testing.T) {
 		// Wait until we see another delayed event being sent (ensure things resumed and are
 		// continuing). Poll rather than sleeping a whole interval so a quick server finishes
 		// as soon as the next event fires.
-		matchDelayedEventsWithin(t, user, 10*time.Second,
+		// Use a window longer than the 10s event interval so that a final poll can
+		// still observe an event which becomes due right at the deadline.
+		matchDelayedEventsWithin(t, user, 15*time.Second,
 			delayedEventsNumberLessThan(remainingDelayedEventCount),
 		)
 		// Sanity check that the other delayed events also updated the room state correctly.
