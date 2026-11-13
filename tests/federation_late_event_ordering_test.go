@@ -25,6 +25,7 @@ import (
 	"github.com/matrix-org/complement/ct"
 	"github.com/matrix-org/complement/federation"
 	"github.com/matrix-org/complement/helpers"
+	"github.com/matrix-org/complement/runtime"
 )
 
 // lateEventFixture is a room owned by a Complement federation server which hs1
@@ -794,4 +795,49 @@ func (h *hiddenBranchServer) walkBack(from []string, limit int) []gomatrixserver
 		}
 	}
 	return out
+}
+
+// TestFederationMessagesDoesNotBackfillNewerGaps checks that a backward
+// /messages request positioned before every stored event ends the history
+// instead of backfilling from backward extremities that sit later in the room.
+// Backfilling one of those returns events newer than the cursor, and clients
+// then place that block on the wrong side of the timeline (for example, recent
+// messages above the room's create event).
+func TestFederationMessagesDoesNotBackfillNewerGaps(t *testing.T) {
+	runtime.SkipUnless(t, runtime.Dendrite, runtime.Zendrite)
+	deployment := complement.Deploy(t, 1)
+	defer deployment.Destroy(t)
+
+	const historyLen = 30
+	f, _, cancel := newLateEventFixtureWithHistory(t, deployment, historyLen)
+	defer cancel()
+	roomID := f.room.RoomID
+
+	// Serve /backfill from the test so the test can tell whether it is called
+	// at all, and let Alice see the room so her join is in hs1's timeline.
+	hb := newHiddenBranchServer(t, f)
+	hb.register()
+	defer hb.logRequests()
+	f.alice.MustSyncUntil(t, client.SyncReq{}, client.SyncJoinedTo(f.alice.UserID, roomID))
+
+	// hs1 holds only the join, so its backward extremity (the join's missing
+	// prev event) sits at the join's depth. Both cursors are older than that.
+	for _, from := range []string{"t1_0", "t2_0"} {
+		q := url.Values{}
+		q.Set("dir", "b")
+		q.Set("limit", "10")
+		q.Set("from", from)
+		res := f.alice.MustDo(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"}, client.WithQueries(q))
+		body := gjson.ParseBytes(client.ParseJSON(t, res))
+		if chunk := body.Get("chunk"); chunk.Exists() && len(chunk.Array()) > 0 {
+			ct.Errorf(t, "backward /messages from %s returned %d events newer than the cursor: %s", from, len(chunk.Array()), chunk.Raw)
+		}
+	}
+
+	hb.mu.Lock()
+	reqs := append([][]string(nil), hb.backfillReqs...)
+	hb.mu.Unlock()
+	if len(reqs) > 0 {
+		ct.Errorf(t, "backward /messages before all stored history backfilled newer gaps: %v", reqs)
+	}
 }
