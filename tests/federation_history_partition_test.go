@@ -145,7 +145,7 @@ func (rr *realRoom) event(t *testing.T, body string, prev []string, depth int64,
 	return ev
 }
 
-// join makes a second remote user join: a state event in the middle of history,
+// remoteJoin makes a second remote user join: a state event in the middle of history,
 // which the homeserver will receive as part of the room state when it joins
 // (stored without a timeline position), not as history.
 func (rr *realRoom) remoteJoin(t *testing.T, localpart string) gomatrixserverlib.PDU {
@@ -339,7 +339,8 @@ func (rr *realRoom) logRequests(t *testing.T) {
 
 // partitionHole builds the partition stretch: a long linear run, a fork that
 // is merged again, a state event in the middle, and a second long run. It
-// returns every event of the stretch, oldest first by depth, and the tip.
+// returns every timeline event of the stretch (oldest first by depth), the ID of
+// the state-only join in the middle of it, and the tip.
 //
 //	p1 ─ p2 ─ ... ─ p12 ─ dave ─┬─ a1 ─ a2 ─ a3 ─┬─ merge ─ p13 ─ ... ─ p24
 //	                            │  (side branch)  │
@@ -350,7 +351,7 @@ func (rr *realRoom) logRequests(t *testing.T) {
 //	        on join, with no timeline position.
 //	 a1-a3 are served but not on the room's main line; merge has both
 //	 a3 and b3 as prev_events.
-func (rr *realRoom) partitionHole(t *testing.T) (ids []string, tip gomatrixserverlib.PDU) {
+func (rr *realRoom) partitionHole(t *testing.T) (ids []string, dave string, tip gomatrixserverlib.PDU) {
 	t.Helper()
 	add := func(ev gomatrixserverlib.PDU) { ids = append(ids, ev.EventID()) }
 
@@ -361,8 +362,9 @@ func (rr *realRoom) partitionHole(t *testing.T) (ids []string, tip gomatrixserve
 	}
 	// A state event in the middle of the history: the homeserver receives it as
 	// state when it joins, without any position in the timeline.
-	add(rr.remoteJoin(t, "dave"))
-	last, _ = rr.room.GetEventInTimeline(ids[len(ids)-1])
+	daveJoin := rr.remoteJoin(t, "dave")
+	dave = daveJoin.EventID()
+	last = daveJoin
 
 	// A fork from the last event: branch a (side) and branch b (main line),
 	// three events each, merged by one event with both tips as prev_events.
@@ -389,7 +391,7 @@ func (rr *realRoom) partitionHole(t *testing.T) (ids []string, tip gomatrixserve
 		last = rr.event(t, fmt.Sprintf("partition %d", i), nil, 0, true)
 		add(last)
 	}
-	return ids, last
+	return ids, dave, last
 }
 
 // walkAll pages /messages backwards from `from` until the history is
@@ -484,7 +486,7 @@ func TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap(t *testing.T) {
 		for i := 1; i <= 6; i++ {
 			oldIDs = append(oldIDs, rr.event(t, fmt.Sprintf("above the wedge %d", i), nil, 0, true).EventID())
 		}
-		partition, _ = rr.partitionHole(t)
+		partition, _, _ = rr.partitionHole(t)
 		for i := 1; i <= 3; i++ {
 			recent = append(recent, rr.event(t, fmt.Sprintf("recent %d", i), nil, 0, true).EventID())
 		}
@@ -543,7 +545,7 @@ func TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap(t *testing.T) {
 //
 //	time ───────────────────────────────────────────────────────────>
 //
-//	server  [before] ──────── [partition stretch, 25 events] ──── [live]
+//	server  [before] ──────── [partition stretch, 32 events] ──── [live]
 //	            │                 (created, never delivered)          │
 //	            │ delivered              ╳ partition ╳                │ delivered
 //	            v                                                     v
@@ -554,7 +556,7 @@ func TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap(t *testing.T) {
 //	              answer 1: newest 20 only (limit), fork spends the cap
 //	              answer 2..n: hs1 keeps asking until `before` is reached
 //	                                                                  v
-//	client  /messages: before, p1..p24 (with fork), live  — once, in order
+//	client  /messages: before, the 32-event stretch (with fork), live  — once, in order
 func TestFederationPartitionHealsOverForkedMissingEvents(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
@@ -575,7 +577,8 @@ func TestFederationPartitionHealsOverForkedMissingEvents(t *testing.T) {
 	}))
 
 	// The partition: the stretch is created and never delivered.
-	partition, _ = rr.partitionHole(t)
+	var dave string
+	partition, dave, _ = rr.partitionHole(t)
 
 	// The partition heals with one live event.
 	live := rr.event(t, "first event after the partition", nil, 0, true)
@@ -583,7 +586,9 @@ func TestFederationPartitionHealsOverForkedMissingEvents(t *testing.T) {
 
 	rr.alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, live.EventID()))
 
-	want := append(append([]string{}, partition...), live.EventID())
+	// hs1 fetches the stretch with /get_missing_events, so the join in the middle
+	// of it arrives as a timeline event too.
+	want := append(append([]string{}, partition...), dave, live.EventID())
 	var walk []string
 	for attempt := 1; attempt <= 6; attempt++ {
 		walk = walkAll(t, rr.alice, roomID, "")
@@ -597,4 +602,15 @@ func TestFederationPartitionHealsOverForkedMissingEvents(t *testing.T) {
 	}
 	assertNoDuplicates(t, "/messages walk", walk)
 	assertTopologicalNewestFirst(t, rr, "/messages walk", walk)
+
+	// The stretch is longer than the served cap, so recovering it takes more
+	// than one /get_missing_events answer; with fewer it was found another way
+	// and this test is not exercising a truncated answer.
+	rr.mu.Lock()
+	gme := len(rr.gmeLimits)
+	rr.mu.Unlock()
+	if gme < 2 {
+		ct.Errorf(t, "hs1 sent %d /get_missing_events requests, want at least 2 for a %d-event stretch capped at %d",
+			gme, len(want)-1, gmeServedLimit)
+	}
 }
