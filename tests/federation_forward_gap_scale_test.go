@@ -10,6 +10,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -35,6 +37,70 @@ const forwardGapScaleGaps = 500
 // measurement of scaling: a slow runner or a mildly super-linear implementation
 // can still pass or fail it.
 const forwardGapWarmBudget = 2 * time.Second
+
+func forwardGapScaleCount(t *testing.T) int {
+	t.Helper()
+	if raw, ok := os.LookupEnv("COMPLEMENT_FORWARD_GAP_SCALE_GAPS"); ok {
+		gaps, err := strconv.Atoi(raw)
+		if err != nil || gaps < 10 {
+			t.Fatalf("COMPLEMENT_FORWARD_GAP_SCALE_GAPS must be an integer >= 10, got %q", raw)
+		}
+		return gaps
+	}
+	return forwardGapScaleGaps
+}
+
+func forwardGapRequestCount(rr *realRoom) int {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	return len(rr.backfillFroms)
+}
+
+func assertForwardGapRequests(t *testing.T, rr *realRoom, gaps int, lostIDs []string, settleRequests int) int {
+	t.Helper()
+	asked := map[string]int{}
+	rr.mu.Lock()
+	for _, from := range rr.backfillFroms {
+		for _, id := range from {
+			asked[id]++
+		}
+	}
+	total := len(rr.backfillFroms)
+	rr.mu.Unlock()
+	tried := 0
+	for _, id := range lostIDs {
+		if asked[id] > 0 {
+			tried++
+		}
+	}
+	t.Logf("remote saw %d /backfill requests for %d gaps (%d distinct gaps tried), over %d settling requests",
+		total, gaps, tried, settleRequests)
+	if tried < gaps*9/10 {
+		t.Fatalf("the fixture is broken: hs1 asked the remote about only %d of %d gaps, so the scale checks would not exercise them",
+			tried, gaps)
+	}
+	if limit := 3 * gaps; total > limit {
+		t.Errorf("the remote saw %d /backfill requests for %d gaps (limit %d): failed gaps are being re-fetched instead of remembered",
+			total, gaps, limit)
+	}
+	return total
+}
+
+func assertForwardGapWarmRequests(t *testing.T, gaps int, forward func() (int, string, time.Duration)) {
+	t.Helper()
+	for i := 1; i <= 3; i++ {
+		status, body, elapsed := forward()
+		t.Logf("warm request %d: status %d in %s", i, status, elapsed)
+		if status != http.StatusOK {
+			t.Errorf("warm request %d returned %d, want 200: %s", i, status, body)
+			continue
+		}
+		if elapsed > forwardGapWarmBudget {
+			t.Errorf("warm request %d took %s with %d open gaps (budget %s): the request is far slower than a request over stored history should be",
+				i, elapsed, gaps, forwardGapWarmBudget)
+		}
+	}
+}
 
 // TestFederationForwardGapWithManyOpenGapsStaysBounded checks that a forward
 // /messages request with hundreds of open gaps settles, asks the remote a
@@ -71,6 +137,9 @@ const forwardGapWarmBudget = 2 * time.Second
 //  3. Progress is made at all: the request settles with a 200 in bounded
 //     time rather than answering "history is still being fetched" forever.
 func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
+	// Override the default for local scaling experiments. Keep the same room
+	// shape and assertions at each size; setup is logged separately below.
+	gaps := forwardGapScaleCount(t)
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 	hs1 := deployment.GetFullyQualifiedHomeserverName(t, "hs1")
@@ -105,12 +174,13 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 
 	// Build the chain. Li is registered as lost before Ei is delivered, so hs1
 	// can never fetch it and Ei stays a backward extremity.
+	buildStart := time.Now()
 	depth := int64(before.Depth()) + 1
 	prev := before.EventID()
 	var lostIDs []string
 	var chain []json.RawMessage
 	var lastID string
-	for i := 1; i <= forwardGapScaleGaps; i++ {
+	for i := 1; i <= gaps; i++ {
 		lost := rr.event(t, fmt.Sprintf("lost %d", i), []string{prev}, depth, true)
 		rr.mu.Lock()
 		rr.lost[lost.EventID()] = true
@@ -122,6 +192,8 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		prev, lastID = held.EventID(), held.EventID()
 		depth += 2
 	}
+	t.Logf("generated %d open gaps (%d events) in %s", gaps, 2*gaps, time.Since(buildStart))
+	ingestStart := time.Now()
 	// 50 is the most PDUs a transaction may carry.
 	for start := 0; start < len(chain); start += 50 {
 		end := start + 50
@@ -131,13 +203,14 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		rr.srv.MustSendTransaction(t, deployment, hs1, chain[start:end], nil)
 	}
 	rr.alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, lastID))
+	t.Logf("ingested %d held events and synced the tip in %s", gaps, time.Since(ingestStart))
 
 	// A filter that matches nothing, with a limit that covers the whole chain.
 	forward := func() (int, string, time.Duration) {
 		q := url.Values{}
 		q.Set("dir", "f")
 		q.Set("from", cursor)
-		q.Set("limit", fmt.Sprintf("%d", 2*forwardGapScaleGaps+50))
+		q.Set("limit", fmt.Sprintf("%d", 2*gaps+50))
 		q.Set("filter", `{"types":["org.example.matches.nothing"]}`)
 		start := time.Now()
 		res := rr.alice.Do(t, "GET", []string{"_matrix", "client", "v3", "rooms", roomID, "messages"}, client.WithQueries(q))
@@ -165,7 +238,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		}
 		if time.Now().After(settleBy) {
 			ct.Fatalf(t, "the filtered forward request did not settle within 3m (%d requests); hs1 is not making progress through %d open gaps",
-				requests, forwardGapScaleGaps)
+				requests, gaps)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -188,17 +261,17 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		}
 	}
 	t.Logf("remote saw %d /backfill requests for %d gaps (%d distinct gaps tried), over %d settling requests",
-		total, forwardGapScaleGaps, tried, requests)
-	if tried < forwardGapScaleGaps*9/10 {
+		total, gaps, tried, requests)
+	if tried < gaps*9/10 {
 		ct.Fatalf(t, "the fixture is broken: hs1 asked the remote about only %d of %d gaps, so the scale checks would not exercise them",
-			tried, forwardGapScaleGaps)
+			tried, gaps)
 	}
 
 	// (1) Bounded federation cost: a failed gap is remembered, not re-asked on
 	// every request. Allow a few attempts per gap for retries on the way in.
-	if limit := 3 * forwardGapScaleGaps; total > limit {
+	if limit := 3 * gaps; total > limit {
 		ct.Errorf(t, "the remote saw %d /backfill requests for %d gaps (limit %d): failed gaps are being re-fetched instead of remembered",
-			total, forwardGapScaleGaps, limit)
+			total, gaps, limit)
 	}
 
 	// (2) With every gap tried, a request is cheap and silent.
@@ -211,7 +284,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		}
 		if elapsed > forwardGapWarmBudget {
 			ct.Errorf(t, "warm request %d took %s with %d open gaps (budget %s): the request is far slower than a request over stored history should be",
-				i, elapsed, forwardGapScaleGaps, forwardGapWarmBudget)
+				i, elapsed, gaps, forwardGapWarmBudget)
 		}
 	}
 	rr.mu.Lock()
