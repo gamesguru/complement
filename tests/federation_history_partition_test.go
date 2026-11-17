@@ -239,6 +239,11 @@ func (rr *realRoom) handleBackfill(fr *fclient.FederationRequest, _ map[string]s
 			queue = append(queue, ev.PrevEventIDs()...)
 		}
 	}
+	ids := make([]string, 0, len(out))
+	for _, ev := range out {
+		ids = append(ids, ev.EventID())
+	}
+	rr.tb.Logf("/backfill: v=%v limit=%d answering %d events: %v", from, limit, len(out), ids)
 	return rr.txn(out)
 }
 
@@ -302,8 +307,14 @@ func (rr *realRoom) handleGetMissingEvents(fr *fclient.FederationRequest, _ map[
 	}
 	var queue []string
 	for _, l := range body.Get("latest_events").Array() {
-		if ev, ok := rr.lookup(l.Str); ok {
+		ev, ok := rr.lookup(l.Str)
+		rr.tb.Logf("/get_missing_events: latest=%s servable=%v earliest=%d", l.Str, ok, len(seen))
+		if ok {
 			queue = append(queue, ev.PrevEventIDs()...)
+			for _, pid := range ev.PrevEventIDs() {
+				_, pok := rr.lookup(pid)
+				rr.tb.Logf("/get_missing_events:   prev %s servable=%v inEarliest=%v", pid, pok, seen[pid])
+			}
 		}
 	}
 	var out []gomatrixserverlib.PDU
@@ -321,6 +332,7 @@ func (rr *realRoom) handleGetMissingEvents(fr *fclient.FederationRequest, _ map[
 		out = append(out, ev)
 		queue = append(queue, ev.PrevEventIDs()...)
 	}
+	rr.tb.Logf("/get_missing_events: answering %d events", len(out))
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Depth() < out[j].Depth() })
 	raw := make([]json.RawMessage, 0, len(out))
 	for _, ev := range out {
@@ -494,6 +506,11 @@ func TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap(t *testing.T) {
 	defer cancel()
 	defer rr.logRequests(t)
 
+	t.Logf("fixture: old=%v wedged=%s recent=%v", oldIDs, wedged, recent)
+	for i, id := range partition {
+		t.Logf("fixture: partition[%d]=%s", i, id)
+	}
+
 	var prevBatch string
 	rr.alice.MustSyncUntil(t, client.SyncReq{}, func(_ string, sync gjson.Result) error {
 		pb := sync.Get("rooms.join." + client.GjsonEscape(roomID) + ".timeline.prev_batch")
@@ -518,6 +535,17 @@ func TestFederationJoinedRoomFillsPartitionHoleBehindWedgedGap(t *testing.T) {
 	t.Logf("walk returned %d events", len(walk))
 
 	if missing := missingFrom(partition, walk); len(missing) > 0 {
+		have := map[string]bool{}
+		for _, id := range walk {
+			have[id] = true
+		}
+		var idx []int
+		for i, id := range partition {
+			if !have[id] {
+				idx = append(idx, i)
+			}
+		}
+		t.Logf("partition indexes missing from the walk (0 = oldest): %v; wedged=%s", idx, wedged)
 		ct.Errorf(t, "the partition stretch is missing %d of %d events after paging back (an unfillable older gap must not block it): %v",
 			len(missing), len(partition), missing)
 	}
