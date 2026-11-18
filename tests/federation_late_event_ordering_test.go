@@ -821,9 +821,18 @@ func TestFederationMessagesDoesNotBackfillNewerGaps(t *testing.T) {
 
 	strictCursor := runtime.Homeserver == runtime.Dendrite || runtime.Homeserver == runtime.Zendrite
 
+	// The cursor format is homeserver-specific: Dendrite/Zendrite use
+	// `t<depth>_<position>` (as does Congruent), Synapse/Sithnapse use
+	// `t<topological>-<stream>`. Both pairs are older than the join's backward
+	// extremity, which is all this test needs.
+	cursors := []string{"t1_0", "t2_0"}
+	if runtime.Matches(runtime.Synapse, runtime.Sithnapse) {
+		cursors = []string{"t1-0", "t2-0"}
+	}
+
 	// hs1 holds only the join, so its backward extremity (the join's missing
 	// prev event) sits at the join's depth. Both cursors are older than that.
-	for _, from := range []string{"t1_0", "t2_0"} {
+	for _, from := range cursors {
 		q := url.Values{}
 		q.Set("dir", "b")
 		q.Set("limit", "10")
