@@ -148,9 +148,8 @@ func TestFederationBackwardMessagesReturnsEveryEventOnce(t *testing.T) {
 	}
 }
 
-// TestFederationBackwardMessagesDoesNotReportStartWhileGapOpen checks that a
-// hole the homeserver cannot fill is reported as a hole, not as the start of
-// the room.
+// TestFederationBackwardMessagesDoesNotReportStartWhileGapOpen checks that the
+// homeserver does not end the timeline over a hole it has not tried to fill.
 //
 //	hs1 joins after:  [h1]--[h2]--[h3]--[lost]--[h5]--[h6]--[h7]--[h8]
 //	                                      ^^^^
@@ -158,15 +157,19 @@ func TestFederationBackwardMessagesReturnsEveryEventOnce(t *testing.T) {
 //	             so h1..h3 are not reachable by backfill and h5 has a missing
 //	             parent (a backward extremity)
 //
-// Expected: backward pagination returns h8..h5. It must not then answer "there
-// is nothing more" (no continuation token): a client reads that as the
-// beginning of the conversation and renders it over a hole. Either a
-// continuation token or a "still being fetched" (429) answer is acceptable.
+// Expected: backward pagination returns h8..h5. It must not answer "there is
+// nothing more" (no continuation token) before it has asked the remote about
+// the missing parent: a client reads that as the beginning of the conversation
+// and renders it over a hole. Once the remote has been asked and cannot serve
+// it, ending means "the end of what this homeserver can fetch right now". A walk
+// over a gap nothing can fill has to terminate, so a continuation token forever
+// is not required (other tests in this suite fail walks that never end).
 func TestFederationBackwardMessagesDoesNotReportStartWhileGapOpen(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
 	var visible []string
+	var lostID string
 	rr, roomID, cancel := newRealRoom(t, deployment, false, func(rr *realRoom) {
 		var lost string
 		for i := 1; i <= 8; i++ {
@@ -178,6 +181,7 @@ func TestFederationBackwardMessagesDoesNotReportStartWhileGapOpen(t *testing.T) 
 				visible = append(visible, ev.EventID())
 			}
 		}
+		lostID = lost
 		rr.mu.Lock()
 		rr.lost[lost] = true
 		rr.mu.Unlock()
@@ -207,7 +211,21 @@ func TestFederationBackwardMessagesDoesNotReportStartWhileGapOpen(t *testing.T) 
 		ct.Errorf(t, "the events above the gap were not returned: %v", missing)
 	}
 	if reportedStart {
-		ct.Errorf(t, "backward /messages ended with no continuation token while history below h5 is known to be missing; "+
-			"a client renders that as the beginning of the room")
+		// Ending is fine once the missing parent has been requested and could not
+		// be served. Ending before that is the beginning-of-room lie.
+		rr.mu.Lock()
+		asked := false
+		for _, from := range rr.backfillFroms {
+			for _, id := range from {
+				if id == lostID {
+					asked = true
+				}
+			}
+		}
+		rr.mu.Unlock()
+		if !asked {
+			ct.Errorf(t, "backward /messages ended with no continuation token before the homeserver asked the remote about the missing parent %s; "+
+				"a client renders that as the beginning of the room", lostID)
+		}
 	}
 }
