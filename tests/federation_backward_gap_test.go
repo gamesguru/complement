@@ -80,15 +80,17 @@ func joinedPrevBatch(t *testing.T, c *client.CSAPI, roomID string) string {
 // takes several /backfill batches, returns every event exactly once and in
 // order.
 //
-//	hs1 joins after:  [h1]--[h2]-- ... --[h60]
+//	hs1 joins after:  [h1]--[h2]-- ... --[h250]
 //
-// Expected: pages of 10, newest first, h60 down to h1, nothing missing, nothing
+// Expected: pages of 10, newest first, h250 down to h1, nothing missing, nothing
 // repeated, and no end-of-timeline before h1.
 func TestFederationBackwardMessagesReturnsEveryEventOnce(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
-	const total = 60
+	// More than one /backfill batch (a homeserver asks for at most about 100
+	// events at a time), so the history cannot arrive in a single step.
+	const total = 250
 	var history []string
 	rr, roomID, cancel := newRealRoom(t, deployment, false, func(rr *realRoom) {
 		for i := 1; i <= total; i++ {
