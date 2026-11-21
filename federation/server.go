@@ -8,9 +8,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,10 +51,17 @@ type FederationDeployment interface {
 	RoundTripper() http.RoundTripper
 }
 
+// federationAborter is implemented by deployments that can tell their homeservers to stop
+// sending to a federation server which has stopped listening.
+type federationAborter interface {
+	AbortFederationTo(t ct.TestLike, serverName spec.ServerName)
+}
+
 // EXPERIMENTAL
 // Server represents a federation server
 type Server struct {
-	t ct.TestLike
+	t          ct.TestLike
+	deployment FederationDeployment
 
 	// Default: true
 	UnexpectedRequestsAreErrors bool
@@ -71,7 +83,12 @@ type Server struct {
 }
 
 // EXPERIMENTAL
-// NewServer creates a new federation server with configured options.
+// NewServer creates a new federation server with configured options; call Listen
+// to start serving. Unless overridden by a registered handler, GET /_matrix/federation/v1/version
+// returns mock server information and MSC4521 reconciliation endpoints return
+// 404 M_UNRECOGNIZED without reporting an unexpected request. Other unhandled
+// requests report a test error by default and return 404.
+// Key or certificate generation failures terminate the test.
 func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Server)) *Server {
 	// generate signing key
 	pub, priv, err := ed25519.GenerateKey(nil)
@@ -80,10 +97,11 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 	}
 
 	srv := &Server{
-		t:     t,
-		Priv:  priv,
-		KeyID: gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:complement_%x", pub)),
-		mux:   mux.NewRouter(),
+		deployment: deployment,
+		t:          t,
+		Priv:       priv,
+		KeyID:      gomatrixserverlib.KeyID(fmt.Sprintf("ed25519:complement_%x", pub)),
+		mux:        mux.NewRouter(),
 		// The server name will be updated when the caller calls Listen() to include the port number
 		// of the HTTP server e.g "host.docker.internal:56353"
 		serverName:                  spec.ServerName(deployment.GetConfig().HostnameRunningComplement),
@@ -117,6 +135,23 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 		})
 	})
 	srv.mux.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Ask a plain mock about its capabilities and it has none, rather than
+		// being an unexpected request: a homeserver may check before using an
+		// optional feature. Anything a test registers itself matches first.
+		if req.Method == http.MethodGet && req.URL.Path == "/_matrix/federation/v1/version" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"server":{"name":"complement","version":"mock"}}`))
+			return
+		}
+		// A server that lacks an optional endpoint answers M_UNRECOGNIZED. This
+		// covers a homeserver that probes MSC4521 reconciliation without
+		// reading the mock's (empty) capabilities first.
+		if isMSC4521FallbackPath(req.Method, req.URL.Path) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(404)
+			w.Write([]byte(`{"errcode":"M_UNRECOGNIZED","error":"Unrecognized request"}`))
+			return
+		}
 		if srv.UnexpectedRequestsAreErrors {
 			body, _ := ioutil.ReadAll(req.Body)
 			ct.Errorf(t, "Server.UnexpectedRequestsAreErrors=true received unexpected request to server: %s %s\n%s", req.Method, req.URL.Path, string(body))
@@ -138,6 +173,28 @@ func NewServer(t ct.TestLike, deployment FederationDeployment, opts ...func(*Ser
 		opt(srv)
 	}
 	return srv
+}
+
+// isMSC4521FallbackPath reports whether path is one of the optional
+// reconciliation endpoints that a server without MSC4521 should reject as
+// unrecognized. Keep this narrow so unrelated unexpected requests still fail.
+func isMSC4521FallbackPath(method, path string) bool {
+	const prefix = "/_matrix/federation/unstable/tk.nutra.msc0501/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	path = strings.TrimPrefix(path, prefix)
+	parts := strings.Split(path, "/")
+	switch {
+	case method == http.MethodGet && len(parts) == 2 && parts[0] == "room_digest":
+		return parts[1] != ""
+	case method == http.MethodGet && len(parts) == 3 && parts[0] == "room_digest":
+		return parts[1] != "" && parts[2] == "strata"
+	case method == http.MethodPost && len(parts) == 2 && parts[0] == "room_diff":
+		return parts[1] != ""
+	default:
+		return false
+	}
 }
 
 // Return the server name of this federation server. Only valid AFTER calling Listen() - doing so
@@ -637,40 +694,42 @@ func (s *Server) Mux() *mux.Router {
 // This particularly happens when you try to share a `deployment` across many tests and
 // then each test creates a engineered homeservers to interact against.
 //
-// Retiring each port for the lifetime of the process keeps stray requests pointed at a
-// dead port (connection refused) instead of a live, unrelated server.
+// Retiring each port for the lifetime of the test run keeps stray requests pointed at a
+// dead port (connection refused) instead of a live, unrelated server. The marker files
+// coordinate this across the separate processes Go uses for different test packages.
 var (
-	// Use a mutex so only one thread can advance `lastUsedPort` at a time. We don't want
-	// multiple threads clobbering `lastUsedPort`.
+	// Use a mutex so only one thread in this process advances `lastUsedPort` at a time.
 	lastUsedPortMu sync.Mutex
-	// Start at 1024 (1023 + 1) to avoid the priviged ports used by the system
-	//
-	// Since we sequentially try each port, we just need to keep track of the last one we tried
+	// Start at 1024 (1023 + 1) to avoid the privileged ports used by the system.
+	// Since we sequentially try each port, we just need to keep track of the last one we tried.
 	lastUsedPort = 1023
 )
 
 // listenOnUnusedPort listens on an unused port that no other federation `Server` has
-// used before in this process.
+// used before in this test run, including servers created by other Go test binaries
+// sharing the allocator directory. Reservations remain after the listener closes.
+// Directory or reservation errors, or exhaustion of ports 1024 through 65535,
+// terminate the test; ports that cannot be bound are skipped.
 func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	lastUsedPortMu.Lock()
 	defer lastUsedPortMu.Unlock()
 
-	// We use this sequential port scan strategy over guess and check with an OS-assigned
-	// port (by using `:0`) as it's more efficient. The OS may recycle and re-use freed
-	// ports meaning we could regress to O(n^2) behavior trying to search for each new
-	// port we want to find.
-	//
-	// Using `:0` means an unused port is automatically picked for us (could be random,
-	// could be the next sequential unused port, we don't know). Ideally, we could ask for
-	// the next unused port after X to avoid a bunch of work. When using `:0`, the
-	// pathological case that is O(n^2) is if OS hands back next lowest unused port
-	// sequentially which would mean we would have to probe and hold each listener until
-	// we finally got something new.
+	// Go runs each package's tests in a separate process, so lastUsedPort alone does
+	// not prevent two packages sharing a deployment from reusing a retired port. Keep
+	// an exclusive marker for each port in a run-scoped temp directory. O_EXCL makes
+	// allocation safe across test binaries without a process-wide lock.
+	allocatorDir := portAllocatorDir()
+	if err := os.MkdirAll(allocatorDir, 0o700); err != nil {
+		ct.Fatalf(t, "listenOnUnusedPort: failed to create shared port allocator directory: %s", err)
+	}
 
-	// Try the whole port range (untested but it's probably fast to do so)
-	max_attempts := 65535
+	// Use sequential port allocation rather than `:0`: keeping each chosen port in the
+	// marker directory prevents the OS from recycling it for another test process.
+
+	// Try the remaining unprivileged port range.
+	maxAttempts := 65535 - lastUsedPort + 1
 	var lastErr error
-	for i := 0; i < max_attempts; i++ {
+	for i := 0; i < maxAttempts; i++ {
 		port := lastUsedPort + 1
 		if port > 65535 {
 			// If this ever becomes a problem, we can namespace used ports by `deployment` since
@@ -686,12 +745,23 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 			)
 		}
 
-		// Check port availability
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		lastUsedPort = port
+
+		marker := filepath.Join(allocatorDir, fmt.Sprintf("%d", port))
+		file, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			ct.Fatalf(t, "listenOnUnusedPort: failed to reserve port %d: %s", port, err)
+		}
+		_ = file.Close()
+
+		// The reservation is intentionally retained even if binding fails. It
+		// prevents another test process from attempting this candidate again.
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
 			lastErr = err
-			// Port unavailable, skip
 			continue
 		}
 
@@ -703,6 +773,30 @@ func listenOnUnusedPort(t ct.TestLike) net.Listener {
 	return nil
 }
 
+// portAllocatorDir returns the temporary directory path for shared port reservations
+// without creating it. The name is derived from COMPLEMENT_PORT_ALLOCATOR_ID when
+// set, otherwise from the GitHub run ID, attempt, and job, or the parent process ID
+// when GITHUB_RUN_ID is empty.
+func portAllocatorDir() string {
+	// CI provides a stable identifier shared by all package test processes in a
+	// job. Locally, the `go test` command is the common parent of those processes.
+	allocatorID := os.Getenv("COMPLEMENT_PORT_ALLOCATOR_ID")
+	if allocatorID == "" {
+		if runID := os.Getenv("GITHUB_RUN_ID"); runID != "" {
+			allocatorID = fmt.Sprintf("%s:%s:%s", runID, os.Getenv("GITHUB_RUN_ATTEMPT"), os.Getenv("GITHUB_JOB"))
+		} else {
+			allocatorID = fmt.Sprintf("parent:%d", os.Getppid())
+		}
+	}
+	allocatorHash := sha256.Sum256([]byte(allocatorID))
+	return filepath.Join(os.TempDir(), "complement-federation-ports-"+hex.EncodeToString(allocatorHash[:8]))
+}
+
+// Listen starts serving HTTPS on a reserved port and updates the server name to
+// include it. The returned function closes the server, waits for serving to stop,
+// and asks the deployment to abort further federation to it if supported.
+// A second call returns nil, even after the server has been closed.
+// Port allocation and shutdown failures terminate the test.
 func (s *Server) Listen() (cancel func()) {
 	if s.listening {
 		return nil
@@ -735,6 +829,9 @@ func (s *Server) Listen() (cancel func()) {
 			ct.Fatalf(s.t, "ListenFederationServer: failed to shutdown server: %s", err)
 		}
 		wg.Wait() // wait for the server to shutdown
+		if a, ok := s.deployment.(federationAborter); ok {
+			a.AbortFederationTo(s.t, s.serverName)
+		}
 	}
 }
 
