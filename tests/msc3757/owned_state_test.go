@@ -71,7 +71,7 @@ func TestWithoutOwnedState(t *testing.T) {
 }
 
 func TestMSC3757OwnedState(t *testing.T) {
-	runtime.SkipIf(t, runtime.Conduit)
+	runtime.SkipIf(t, runtime.Conduit, runtime.Zendrite, runtime.Congruent) // neither implements the MSC3757 room versions yet (Congruent is not skipped via Conduit inheritance)
 
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
