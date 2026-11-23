@@ -2,6 +2,7 @@ package complement
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -177,6 +178,10 @@ func (tp *TestPackage) Deploy(t ct.TestLike, numServers int) Deployment {
 	return dep
 }
 
+// dirtyDeploy returns the package's reusable deployment, starting any missing
+// hs1 through hsN concurrently, where N is numServers. Existing homeservers and
+// their data are retained, so the deployment may contain more than numServers.
+// Setup or startup errors terminate the test after outstanding starts finish.
 func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	tp.existingDeploymentMu.Lock()
 	defer tp.existingDeploymentMu.Unlock()
@@ -186,10 +191,10 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 		if err != nil {
 			operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 		}
-		// this creates a single hs1
-		tp.existingDeployment, err = d.CreateDirtyDeployment()
+		// no servers yet: the scale-up below starts hs1..hsN together
+		tp.existingDeployment, err = d.CreateEmptyDirtyDeployment()
 		if err != nil {
-			operationalSetupFailure(t, "CreateDirtyDeployment failed: %s", err)
+			operationalSetupFailure(t, "CreateEmptyDirtyDeployment failed: %s", err)
 		}
 	}
 
@@ -203,18 +208,37 @@ func (tp *TestPackage) dirtyDeploy(t ct.TestLike, numServers int) Deployment {
 	if err != nil {
 		operationalSetupFailure(t, "dirtyDeploy: NewDeployer returned error %s", err)
 	}
+	// Start the missing servers in parallel: each one blocks until it answers
+	// /versions, so doing them one at a time costs several seconds apiece.
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
 	for i := 1; i <= numServers; i++ {
 		hsName := fmt.Sprintf("hs%d", i)
+		mu.Lock()
 		_, ok := tp.existingDeployment.HS[hsName]
+		mu.Unlock()
 		if ok {
 			continue
 		}
-		// scale up
-		hsDep, err := d.CreateDirtyServer(hsName)
-		if err != nil {
-			operationalSetupFailure(t, "dirtyDeploy: failed to add %s: %s", hsName, err)
-		}
-		tp.existingDeployment.HS[hsName] = hsDep
+		wg.Add(1)
+		go func(hsName string) {
+			defer wg.Done()
+			hsDep, err := d.CreateDirtyServer(hsName)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, fmt.Errorf("failed to add %s: %w", hsName, err))
+				return
+			}
+			tp.existingDeployment.HS[hsName] = hsDep
+		}(hsName)
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		operationalSetupFailure(t, "dirtyDeploy: %s", err)
 	}
 
 	return tp.existingDeployment

@@ -86,6 +86,17 @@ func isExempt(testName string, hs string) bool {
 	return false
 }
 
+// Matches reports whether the running homeserver matches any of the provided
+// homeserver names, either directly or via inheritance.
+func Matches(hses ...string) bool {
+	for _, hs := range hses {
+		if Homeserver == hs || isParent(Homeserver, hs) {
+			return true
+		}
+	}
+	return false
+}
+
 func SkipIf(t ct.TestLike, hses ...string) {
 	t.Helper()
 	for _, hs := range hses {
