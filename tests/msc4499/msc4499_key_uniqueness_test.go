@@ -705,6 +705,7 @@ func TestMSC4499Key(t *testing.T) {
 
 		t.Run("§4", func(t *testing.T) {
 			t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
+			t.Run("StateBackedCollision", testMSC4499KeyStateBackedCollision)
 			t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
 		})
 	})
@@ -1338,6 +1339,81 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 				t.Fatalf("hs1 accepted event %s signed by colliding key B — First Seen Wins not enforced at event verification level", eventPoisoned.EventID())
 			}
 		}
+	}
+}
+
+// A colliding key must not verify ordinary events after First Seen Wins has
+// bound the key ID, but a state event included in an authenticated state
+// response may use another independently authenticated key body for that ID.
+func testMSC4499KeyStateBackedCollision(t *testing.T) {
+	deployment := complement.Deploy(t, 2)
+	defer deployment.Destroy(t)
+
+	srv := federation.NewServer(t, deployment,
+		federation.HandleMakeSendJoinRequests(),
+		federation.HandleTransactionRequests(nil, nil),
+	)
+	srv.UnexpectedRequestsAreErrors = false
+	cancel := srv.Listen()
+	defer cancel()
+
+	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key A", err)
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_state_collision")
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
+
+	mockKeyServer := &MockKeyServer{
+		serverName:    srv.ServerName(),
+		keyID:         keyID,
+		privKey:       privKeyA,
+		pubKey:        pubKeyA,
+		verifyKeys:    map[gomatrixserverlib.KeyID]ed25519.PublicKey{keyID: pubKeyA},
+		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
+		validUntil:    time.Now().Add(24 * time.Hour),
+	}
+	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
+	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
+
+	alice := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+	bob := deployment.Register(t, "hs2", helpers.RegistrationOpts{})
+	ver := alice.GetDefaultRoomVersion(t)
+	charlie := srv.UserID("charlie")
+
+	// Joining this room makes hs2 observe key A before the collision.
+	cacheRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	cacheAlias := srv.MakeAliasMapping("state_collision_cache", cacheRoom.RoomID)
+	alice.MustJoinRoom(t, cacheAlias, []spec.ServerName{srv.ServerName()})
+
+	// The target room is created under key A, then the server changes to key B
+	// under the same ID and places a B-signed state event in its current state.
+	stateRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
+	stateAlias := srv.MakeAliasMapping("state_collision_target", stateRoom.RoomID)
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key B", err)
+	srv.Priv = privKeyB
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys = map[gomatrixserverlib.KeyID]ed25519.PublicKey{keyID: pubKeyB}
+	mockKeyServer.validUntil = time.Now().Add(24 * time.Hour)
+	mockKeyServer.mu.Unlock()
+
+	stateEvent := srv.MustCreateEvent(t, stateRoom, federation.Event{
+		Sender:   charlie,
+		Type:     "m.room.name",
+		StateKey: b.Ptr(""),
+		Content:  map[string]interface{}{"name": "state signed by colliding key B"},
+	})
+	stateRoom.AddEvent(stateEvent)
+
+	// Joining forces hs2 to consume the host's send_join state response. The
+	// event signature is valid under B, while hs2's permanent binding remains A.
+	bob.MustJoinRoom(t, stateAlias, []spec.ServerName{srv.ServerName()})
+	name := bob.MustGetStateEventContent(t, stateRoom.RoomID, "m.room.name", "")
+	if got := name.Get("name").Str; got != "state signed by colliding key B" {
+		t.Fatalf("state response did not install the colliding-key state event: got name %q", got)
 	}
 }
 
