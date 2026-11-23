@@ -621,19 +621,20 @@ func federationClientWithSigningKey(
 	)
 }
 
-// TestMSC4499Key exercises MSC4499 server key uniqueness and verification
-// behaviour across many scenarios: first-seen-wins conflict resolution, key
-// rotation, rejection of duplicate/malformed payloads, caching/backoff, and
-// storage limits.
+// TestMSC4499Key exercises MSC4499 server key caching and collision handling
+// across many scenarios: multi-body retention with trial verification, the
+// preferred binding used for serving, key rotation, rejection of
+// duplicate/malformed payloads, caching/backoff, and storage limits.
 // Section numbers cited below (§n) index the MSC4499 proposal doc's ###
 // subsections in document order (docs/4499-key-caching.md):
 //
 //	§3  Key caching requirements       (refresh, negative caching/backoff,
 //	                                     fetch coalescing, notary two-tier
-//	                                     binding, PER-RESPONSE 50/3000 ceilings)
-//	§4  Key ID uniqueness requirement  (permanent binding, collision detection,
-//	                                     duplicate-JSON-key rejection, First
-//	                                     Seen Wins)
+//	                                     preferred binding, PER-RESPONSE 50/3000
+//	                                     ceilings)
+//	§4  Key ID collisions and multiple  (retained bodies, trial verification,
+//	     bodies                          preferred binding, duplicate-JSON-key
+//	                                     rejection, operator allowlist)
 //	§5  Key rotation procedure
 //	§6  Admin startup guardrails
 //	§7  Recovery from key loss
@@ -644,7 +645,7 @@ func federationClientWithSigningKey(
 //
 // §n is its own t.Run() level below each leaf's parent group, so it's
 // visible in the actual subtest name (e.g.
-// TestMSC4499Key/Resolution/§4/IDFirstSeenWinsDirect) — not just a comment.
+// TestMSC4499Key/Resolution/§4/TrialVerificationEventPath) — not just a comment.
 // §3 and §4 in particular both span the Validation and Resolution groups, so
 // the doc's own section boundaries don't line up with (and don't dictate)
 // this taxonomy; §n is a cross-cutting index into it, not the taxonomy
@@ -681,8 +682,8 @@ func TestMSC4499Key(t *testing.T) {
 		})
 	})
 
-	// Resolution: when valid payloads disagree, these assert the First Seen
-	// Wins and notary two-tier binding rules.
+	// Resolution: when valid payloads disagree, these assert multi-body
+	// retention, trial verification and the notary two-tier preferred binding.
 	t.Run("Resolution", func(t *testing.T) {
 		t.Run("§3", func(t *testing.T) {
 			// BindingPromotion is the only trusted-notary test that doesn't push
@@ -704,9 +705,9 @@ func TestMSC4499Key(t *testing.T) {
 		})
 
 		t.Run("§4", func(t *testing.T) {
-			t.Run("FirstSeenWinsEventPath", testMSC4499KeyFirstSeenWinsEventPath)
-			t.Run("StateBackedCollision", testMSC4499KeyStateBackedCollision)
-			t.Run("IDFirstSeenWinsDirect", testMSC4499KeyIDFirstSeenWinsDirect)
+			t.Run("TrialVerificationEventPath", testMSC4499KeyTrialVerificationEventPath)
+			t.Run("AlternateBodyStateEvent", testMSC4499KeyAlternateBodyStateEvent)
+			t.Run("PreferredBindingServedAfterCollision", testMSC4499KeyPreferredBindingServedAfterCollision)
 		})
 	})
 
@@ -737,7 +738,7 @@ func TestMSC4499Key(t *testing.T) {
 		})
 
 		t.Run("§4", func(t *testing.T) {
-			t.Run("PersistentFirstSeenWinsAcrossRestart", testMSC4499KeyPersistentFirstSeenWinsAcrossRestart)
+			t.Run("PersistentBodiesAcrossRestart", testMSC4499KeyPersistentBodiesAcrossRestart)
 		})
 		t.Run("§6", func(t *testing.T) {
 			t.Run("AdminStartupGuardrails", testMSC4499KeyAdminStartupGuardrails)
@@ -879,9 +880,16 @@ func testFederationRequestAuthenticationKeyScope(t *testing.T) {
 	}
 }
 
-// testMSC4499KeyIDFirstSeenWinsDirect tests that a homeserver strictly follows
-// "First Seen Wins" for a unique (server_name, key_id).
-func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
+// testMSC4499KeyPreferredBindingServedAfterCollision tests that a homeserver
+// keeps a stable preferred binding for a unique (server_name, key_id) while
+// retaining a colliding body as a verification candidate.
+//
+// Per MSC4499 §4, the first body observed is the preferred binding. A later
+// observation of a different body MUST be retained as a candidate (so events it
+// signed can still verify) but MUST NOT replace the preferred binding by itself.
+// The notary endpoint has only one slot per key ID, so it must keep serving the
+// preferred body (or omit the entry if it can no longer satisfy the request).
+func testMSC4499KeyPreferredBindingServedAfterCollision(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -932,39 +940,40 @@ func testMSC4499KeyIDFirstSeenWinsDirect(t *testing.T) {
 	mockKeyServer.mu.Unlock()
 
 	// Query notary again with minimum_valid_until_ts beyond the cached valid_until_ts to force a re-fetch.
-	// The MSC's invariant is: "key B is NEVER returned and NEVER cached."
-	// Two compliant behaviors exist:
-	//   1. Return pinned key A (even though it may not satisfy minimum_valid_until_ts)
-	//   2. Return 200 with the server omitted (key A can't satisfy the time constraint, key B is rejected)
-	// Both are acceptable. The invariant we assert is: key B must NOT appear.
+	// The MSC's invariant is: the served (preferred) binding is still key A.
+	// Key B is retained as a candidate, but the single-body notary endpoint must
+	// not start serving it. Two compliant behaviors exist:
+	//   1. Return preferred key A (even though it may not satisfy minimum_valid_until_ts)
+	//   2. Return 200 with the server omitted (key A can't satisfy the time constraint)
+	// Both are acceptable. The invariant we assert is: key B must NOT be served.
 	pubKeyBBase64 := base64.RawStdEncoding.EncodeToString(pubKeyB)
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 
-	// Follow-up: query with minimum_valid_until_ts: 0 to prove the cache still has key A
-	// (i.e., the cache was not poisoned by the colliding key B). Run this before
-	// skipKnownGap below so the check always executes, but fold its result into
-	// the same skip: on a server that already returned colliding key B above,
-	// the cache being poisoned afterwards is the same underlying
-	// non-conformance, not a separate failure to fatal on ahead of the skip.
+	// Follow-up: query with minimum_valid_until_ts: 0 to prove the preferred
+	// binding is still key A (i.e. the served entry was not taken over by the
+	// colliding body B). Run this before skipKnownGap below so the check always
+	// executes, but fold its result into the same skip: on a server that already
+	// served colliding key B above, the preferred binding being displaced
+	// afterwards is the same underlying non-conformance.
 	cachedKey := queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
-	cachePoisoned := cachedKey != pubKeyABase64
+	bindingChanged := cachedKey != pubKeyABase64
 	returnedCollidingKey := foundKey == pubKeyBBase64
 
-	if returnedCollidingKey || cachePoisoned {
+	if returnedCollidingKey || bindingChanged {
 		// Confirmed on Dendrite too — same failure message reproduced in CI.
-		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement First Seen Wins — hs1 returned colliding Keypair B after re-fetch (cache poisoned: %v)", cachePoisoned)
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not keep a stable preferred binding — hs1 served colliding Keypair B after re-fetch (preferred binding changed: %v)", bindingChanged)
 	}
 }
 
-// Test that a permanent key-ID binding learned via direct fetch survives a
-// homeserver restart.
+// Test that retained key material learned via direct fetch survives a homeserver
+// restart.
 //
-// Per MSC4499 cache persistence, permanent bindings MUST be persisted durably
-// enough that a restart does not allow the same `(server_name, algorithm,
-// key_id)` to be rebound to a different key body.
-func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
+// Per MSC4499 cache persistence, retained bodies MUST be persisted durably
+// enough that a restart does not require re-fetching, and the preferred binding
+// for a `(server_name, algorithm, key_id)` does not change across a restart.
+func testMSC4499KeyPersistentBodiesAcrossRestart(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1006,11 +1015,11 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
 	// Restart hs1 before introducing the collision. A compliant implementation
-	// must retain the immutable key-ID binding across this restart.
+	// must retain the persisted key material across this restart.
 	err = deployment.Restart(t)
 	must.NotError(t, "failed to restart homeserver deployment", err)
 
-	// Immediately after restart, the permanent binding must still be available
+	// Immediately after restart, the preferred binding must still be available
 	// from local state alone. Make the origin unavailable so this lookup cannot
 	// succeed via a fresh fetch.
 	mockKeyServer.mu.Lock()
@@ -1020,10 +1029,10 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 
 	status, foundKey := queryNotaryStatusAndKey(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
 	if status != 200 {
-		t.Fatalf("hs1 did not serve the persisted binding after restart — notary returned status %d instead of falling back to local state while the origin was unreachable", status)
+		t.Fatalf("hs1 did not serve the persisted preferred binding after restart — notary returned status %d instead of falling back to local state while the origin was unreachable", status)
 	}
 	if foundKey != pubKeyABase64 {
-		t.Fatalf("hs1 did not serve the persisted binding after restart — expected key %s, got %s", pubKeyABase64, foundKey)
+		t.Fatalf("hs1 did not serve the persisted preferred binding after restart — expected key %s, got %s", pubKeyABase64, foundKey)
 	}
 
 	mockKeyServer.mu.Lock()
@@ -1045,7 +1054,7 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 	// Force a re-fetch after restart. Two compliant outcomes are allowed for the
 	// minimum_valid_until_ts query itself: hs1 may either keep serving A or omit
 	// the entry because A no longer satisfies the freshness bound. What MUST NOT
-	// happen is learning or serving colliding key B after restart.
+	// happen is the preferred binding switching to colliding key B after restart.
 	minValidUntil := mockKeyServer.validUntil.Add(time.Hour).UnixMilli()
 	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), minValidUntil)
 	returnedCollidingKey := foundKey == pubKeyBBase64
@@ -1057,27 +1066,26 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 		t.Fatalf("Mock key server was not re-fetched after restart — persistence path was not exercised")
 	}
 
-	// Follow up with an unconstrained lookup to prove the restart did not poison
-	// or forget the first-seen binding. Run this before the known-gap skip so
-	// the check always executes, but fold its result into the same skip: on a
-	// server that already returned colliding key B above, the cache being
-	// poisoned afterwards is the same underlying non-conformance (the binding
-	// was never durably pinned), not a separate failure to fail hard on.
+	// Follow up with an unconstrained lookup to prove the restart did not change
+	// or forget the preferred binding. Run this before the known-gap skip so the
+	// check always executes, but fold its result into the same skip: on a server
+	// that already served colliding key B above, the preferred binding changing
+	// afterwards is the same underlying non-conformance.
 	foundKey = queryNotaryRaw(t, fedClient, "https://hs1", string(originName), string(keyID), 0)
-	cachePoisoned := foundKey != pubKeyABase64
+	bindingChanged := foundKey != pubKeyABase64
 
-	if returnedCollidingKey || cachePoisoned {
+	if returnedCollidingKey || bindingChanged {
 		// Confirmed on Dendrite and Synapse — same failure message reproduced
 		// in CI on both. For Synapse, confirmed via a clean re-fetch trace in
 		// the server's own log (ServerKeyFetcher completed 200 OK with no
 		// error nearby) at
 		// https://github.com/gamesguru/complement/actions/runs/33349998401/job/99361341769.
-		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 returned colliding Keypair B after restart and re-fetch (cache poisoned: %v) — permanent binding was not persisted", cachePoisoned)
+		skipKnownGap(t, []string{runtime.Dendrite, runtime.Synapse}, "hs1 served colliding Keypair B after restart and re-fetch (preferred binding changed: %v) — retained key material was not persisted", bindingChanged)
 	}
 }
 
 // Test that a notary faced with a colliding key response does not locally
-// "patch" its served response to substitute the first-seen key body into an
+// "patch" its served response to substitute the preferred key body into an
 // otherwise-untouched (differently-signed) payload.
 //
 // /_matrix/key/v2/server and /_matrix/key/v2/query responses are self-signed
@@ -1087,12 +1095,10 @@ func testMSC4499KeyPersistentFirstSeenWinsAcrossRestart(t *testing.T) {
 // client checking the origin's own signature — regardless of any additional
 // signature the notary itself appends.
 //
-// Per MSC4499 (Notary internal indexing): a compliant notary satisfies First
-// Seen Wins by declining to update its served cache entry when a fetch
-// contains a rejected collision, continuing to serve the last self-signed
-// payload consistent with the bindings it actually accepted. It MUST NOT
-// stitch together a hybrid document (fresh signature + old key body, or vice
-// versa).
+// Per MSC4499 (Notary behavior): a compliant notary keeps serving the
+// preferred binding's self-signed payload when a fetch presents a colliding
+// body, rather than substituting it. It MUST NOT stitch together a hybrid
+// document (fresh signature + old key body, or vice versa).
 //
 // This test asserts that, whatever entry hs1 serves for the origin after
 // observing a collision, that entry's own embedded self-signature verifies
@@ -1135,7 +1141,7 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
-	// Phase 1: hs1 fetches and caches key A as the first-seen binding.
+	// Phase 1: hs1 fetches and caches key A as the preferred binding.
 	pubKeyABase64 := base64.RawStdEncoding.EncodeToString(pubKeyA)
 	queryNotary(t, fedClient, "https://hs1", string(originName), string(keyID), 0, pubKeyABase64)
 
@@ -1174,11 +1180,11 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 		t.Fatalf("notary entry for %s contained neither verify_keys nor old_verify_keys for %s: %s", originName, keyID, rawEntry)
 	}
 
-	// First Seen Wins must still hold: the served body must reflect key A,
+	// The preferred binding must still hold: the served body must reflect key A,
 	// never the colliding key B.
 	if foundKeyBase64 == base64.RawStdEncoding.EncodeToString(pubKeyB) {
 		// Confirmed on Dendrite too — same failure message reproduced in CI.
-		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement First Seen Wins — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not keep a stable preferred binding — hs1 served colliding Keypair B in the notary entry: %s", rawEntry)
 	}
 
 	foundKeyRaw, err := base64.RawStdEncoding.DecodeString(foundKeyBase64)
@@ -1186,7 +1192,7 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 
 	// The entry's self-signature MUST verify against the key body actually
 	// present in the entry. A notary that patched a colliding response
-	// (splicing the first-seen key body into a payload signed over different
+	// (splicing the preferred key body into a payload signed over different
 	// bytes) would fail this check, since the origin's signature only covers
 	// the exact bytes it originally signed.
 	verifyErr := gomatrixserverlib.VerifyJSON(string(originName), keyID, ed25519.PublicKey(foundKeyRaw), rawEntry)
@@ -1203,10 +1209,14 @@ func testMSC4499KeyNotaryMustNotPatchCollidingResponse(t *testing.T) {
 	}
 }
 
-// Test that First Seen Wins is enforced at the event verification level, not just the notary endpoint.
-// An event signed by a colliding key B (different material for a previously-seen key ID)
-// MUST be rejected when sent via federation transaction.
-func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
+// Test trial verification at the event-verification level, not just the
+// notary endpoint.
+//
+// Once a receiver has retained a body for a key ID, an event signed by that
+// body MUST verify even when a different body is the preferred binding. An
+// event signed by a body the receiver never observed MUST still be rejected
+// (or left unresolved), not accepted on faith.
+func testMSC4499KeyTrialVerificationEventPath(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -1218,17 +1228,17 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 	cancel := srv.Listen()
 	defer cancel()
 
-	// Generate key A — this will be the "first seen" key
+	// Generate key A — the first body observed for this key ID.
 	pubKeyA, privKeyA, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate key A", err)
 
-	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_fsw_event")
+	keyID := gomatrixserverlib.KeyID("ed25519:msc4499_trial_event")
 
-	// Set srv's signing identity to key A
+	// Set srv's signing identity to key A.
 	srv.KeyID = keyID
 	srv.Priv = privKeyA
 
-	// Mock key server serves key A
+	// Mock key server serves key A.
 	mockKeyServer := &MockKeyServer{
 		serverName: srv.ServerName(),
 		keyID:      keyID,
@@ -1245,21 +1255,21 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/{keyID}", mockKeyServer).Methods("GET")
 
-	// Create room and join hs1 — this pins key A via the room creation events
+	// Create room and join hs1 — this makes hs1 observe key A.
 	alice := deployment.Register(t, "hs1", helpers.RegistrationOpts{})
 	ver := alice.GetDefaultRoomVersion(t)
 	charlie := srv.UserID("charlie")
 	serverRoom := srv.MustMakeRoom(t, ver, federation.InitialRoomEvents(ver, charlie))
-	roomAlias := srv.MakeAliasMapping("fsw_event_test", serverRoom.RoomID)
+	roomAlias := srv.MakeAliasMapping("trial_event_test", serverRoom.RoomID)
 	alice.MustJoinRoom(t, roomAlias, []spec.ServerName{srv.ServerName()})
 
-	// Phase 1: Send a valid event signed by key A — hs1 accepts and caches key A
+	// Phase 1: a valid event signed by key A is accepted.
 	eventValid := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
-			"body":    "Signed by key A (first seen)",
+			"body":    "Signed by key A (preferred body)",
 		},
 	})
 	serverRoom.AddEvent(eventValid)
@@ -1269,7 +1279,7 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 	defer cancelCtx()
 
 	resp, err := fedClient.SendTransaction(ctx, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-fsw-valid-%d", time.Now().UnixNano())),
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-trial-valid-%d", time.Now().UnixNano())),
 		Origin:        spec.ServerName(srv.ServerName()),
 		Destination:   "hs1",
 		PDUs:          []json.RawMessage{eventValid.JSON()},
@@ -1281,47 +1291,109 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 		}
 	}
 
-	// Get sync token after valid event
 	_, since := alice.MustSync(t, client.SyncReq{})
 
-	// Phase 2: Generate key B (different material, same key ID) and sign an event with it
-	_, privKeyB, err := ed25519.GenerateKey(rand.Reader)
+	// Phase 2: the origin republishes key B under the same key ID, and hs1
+	// observes it through an ordinary forced refresh.
+	pubKeyB, privKeyB, err := ed25519.GenerateKey(rand.Reader)
 	must.NotError(t, "failed to generate key B", err)
 
-	srv.KeyID = keyID
-	srv.Priv = privKeyB // sign with key B
+	mockKeyServer.mu.Lock()
+	mockKeyServer.privKey = privKeyB
+	mockKeyServer.pubKey = pubKeyB
+	mockKeyServer.verifyKeys[keyID] = pubKeyB
+	mockKeyServer.requestCount = 0
+	mockKeyServer.validUntil = time.Now().Add(48 * time.Hour)
+	mockKeyServer.mu.Unlock()
 
-	eventPoisoned := srv.MustCreateEvent(t, serverRoom, federation.Event{
+	fedHTTPClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+	minValid := time.Now().Add(25 * time.Hour).UnixMilli()
+	_ = queryNotaryRaw(t, fedHTTPClient, "https://hs1", string(srv.ServerName()), string(keyID), minValid)
+
+	mockKeyServer.mu.Lock()
+	refetchCount := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if refetchCount == 0 {
+		t.Fatalf("Mock was never re-fetched in phase 2 — test is vacuous (hs1 used stale cache)")
+	}
+
+	// Phase 3: an event signed by the newly observed body B must verify
+	// against the retained candidate, even though A is still preferred.
+	srv.KeyID = keyID
+	srv.Priv = privKeyB
+
+	eventAlternate := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
-			"body":    "Signed by key B (colliding — should be rejected)",
+			"body":    "Signed by retained body B (must verify)",
 		},
 	})
-	serverRoom.AddEvent(eventPoisoned)
+	serverRoom.AddEvent(eventAlternate)
 
-	// Restore identity to key A
 	srv.KeyID = keyID
 	srv.Priv = privKeyA
 
-	// Send the poisoned event — hs1 MUST reject it because the signature was made by key B,
-	// but the only cached key body for this key ID is key A.
 	ctx2, cancelCtx2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx2()
 
 	resp2, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-fsw-poisoned-%d", time.Now().UnixNano())),
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-trial-alternate-%d", time.Now().UnixNano())),
 		Origin:        spec.ServerName(srv.ServerName()),
 		Destination:   "hs1",
-		PDUs:          []json.RawMessage{eventPoisoned.JSON()},
+		PDUs:          []json.RawMessage{eventAlternate.JSON()},
+	})
+	must.NotError(t, "SendTransaction failed for alternate-body event", err)
+
+	alternateAccepted := true
+	for eventID, pduResp := range resp2.PDUs {
+		if pduResp.Error != "" {
+			alternateAccepted = false
+			t.Logf("hs1 rejected event %s signed by retained body B: %s", eventID, pduResp.Error)
+		}
+	}
+	if !alternateAccepted {
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement trial verification — rejected an event signed by a retained body for the same key ID")
+	}
+
+	// Phase 4: an event signed by a body the receiver never observed must not
+	// be accepted. hs1 can only fetch B for this key ID, so C has no evidence.
+	_, privKeyC, err := ed25519.GenerateKey(rand.Reader)
+	must.NotError(t, "failed to generate key C", err)
+
+	srv.KeyID = keyID
+	srv.Priv = privKeyC
+
+	eventUnknown := srv.MustCreateEvent(t, serverRoom, federation.Event{
+		Sender: charlie,
+		Type:   "m.room.message",
+		Content: map[string]interface{}{
+			"msgtype": "m.text",
+			"body":    "Signed by a body never observed (must not be accepted)",
+		},
+	})
+	serverRoom.AddEvent(eventUnknown)
+
+	srv.KeyID = keyID
+	srv.Priv = privKeyA
+
+	ctx3, cancelCtx3 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelCtx3()
+
+	resp3, err := fedClient.SendTransaction(ctx3, gomatrixserverlib.Transaction{
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-trial-unknown-%d", time.Now().UnixNano())),
+		Origin:        spec.ServerName(srv.ServerName()),
+		Destination:   "hs1",
+		PDUs:          []json.RawMessage{eventUnknown.JSON()},
 	})
 
-	rejected := false
-	if err != nil {
-		rejected = true
-	} else {
-		for _, pduResp := range resp2.PDUs {
+	rejected := err != nil
+	if !rejected {
+		for _, pduResp := range resp3.PDUs {
 			if pduResp.Error != "" {
 				rejected = true
 				break
@@ -1330,22 +1402,23 @@ func testMSC4499KeyFirstSeenWinsEventPath(t *testing.T) {
 	}
 
 	if !rejected {
-		// If no explicit rejection, check sync to see if Alice received the poisoned event
+		// If no explicit rejection, check sync to see if Alice received it.
 		time.Sleep(500 * time.Millisecond)
 		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
 		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
 		for _, ev := range events {
-			if ev.Get("event_id").Str == eventPoisoned.EventID() {
-				t.Fatalf("hs1 accepted event %s signed by colliding key B — First Seen Wins not enforced at event verification level", eventPoisoned.EventID())
+			if ev.Get("event_id").Str == eventUnknown.EventID() {
+				t.Fatalf("hs1 accepted event %s signed by a body it never observed — missing evidence was treated as valid", eventUnknown.EventID())
 			}
 		}
 	}
 }
 
-// A colliding key must not verify ordinary events after First Seen Wins has
-// bound the key ID, but a state event included in an authenticated state
-// response may use another independently authenticated key body for that ID.
-func testMSC4499KeyStateBackedCollision(t *testing.T) {
+// A state event included in an authenticated state response may verify against
+// another independently authenticated body for the same key ID. Under trial
+// verification this is the ordinary path for every event, but it is worth
+// exercising through send_join state, where peers historically diverged.
+func testMSC4499KeyAlternateBodyStateEvent(t *testing.T) {
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 
@@ -2579,12 +2652,13 @@ func testMSC4499KeyDeepDuplicateJSONKeyRejection(t *testing.T) {
 	}
 }
 
-// Test that once a key binding is confirmed via direct fetch, a subsequent direct fetch
-// presenting different key material for the same key ID is rejected (First Seen Wins
-// among direct observations).
+// Test that once a key binding is confirmed via direct fetch, a subsequent
+// direct fetch presenting different key material for the same key ID is
+// retained as a verification candidate without displacing the preferred
+// binding, and events signed by either body verify.
 //
-// Per MSC4499 L111-113: "Direct-versus-direct conflicts are always resolved by First
-// Seen Wins; the two-tier rule applies only to the notary-versus-direct case."
+// Per MSC4499 §4: a preferred binding observed directly from the origin is
+// permanent; a later direct fetch with a different body adds a candidate only.
 func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployment) {
 	srv := federation.NewServer(t, deployment,
 		federation.HandleMakeSendJoinRequests(),
@@ -2658,7 +2732,7 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 		}
 	}
 
-	_, since := alice.MustSync(t, client.SyncReq{})
+	alice.MustSync(t, client.SyncReq{})
 
 	// Phase 2: Switch mock to serve key B for the same key ID.
 	// Set valid_until to far future so the re-fetch satisfies any minimum_valid_until_ts.
@@ -2690,20 +2764,21 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 		t.Fatalf("Mock was never re-fetched in phase 2 — test is vacuous (hs1 used stale cache)")
 	}
 
-	// Phase 3: Send event signed by key B. hs1 may re-fetch (due to expired valid_until_ts)
-	// and get key B, but MUST reject it per FSW — key A is the permanent binding.
+	// Phase 3: Send an event signed by key B. hs1 has observed B on the
+	// re-fetch above, so trial verification must accept the event even though
+	// the preferred binding remains A.
 	srv.KeyID = keyID
 	srv.Priv = privKeyB
 
-	eventConflict := srv.MustCreateEvent(t, serverRoom, federation.Event{
+	eventAlternate := srv.MustCreateEvent(t, serverRoom, federation.Event{
 		Sender: charlie,
 		Type:   "m.room.message",
 		Content: map[string]interface{}{
 			"msgtype": "m.text",
-			"body":    "Signed by key B — conflicting binding, should be rejected",
+			"body":    "Signed by key B — retained candidate, should verify",
 		},
 	})
-	serverRoom.AddEvent(eventConflict)
+	serverRoom.AddEvent(eventAlternate)
 
 	// Restore identity
 	srv.KeyID = keyID
@@ -2713,34 +2788,29 @@ func testMSC4499KeyBindingPromotion(t *testing.T, deployment complement.Deployme
 	defer cancelCtx2()
 
 	resp2, err := fedClient.SendTransaction(ctx2, gomatrixserverlib.Transaction{
-		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-bind-conflict-%d", time.Now().UnixNano())),
+		TransactionID: gomatrixserverlib.TransactionID(fmt.Sprintf("msc4499-bind-alternate-%d", time.Now().UnixNano())),
 		Origin:        spec.ServerName(srv.ServerName()),
 		Destination:   "hs1",
-		PDUs:          []json.RawMessage{eventConflict.JSON()},
+		PDUs:          []json.RawMessage{eventAlternate.JSON()},
 	})
+	must.NotError(t, "SendTransaction failed for key B event", err)
 
-	rejected := false
-	if err != nil {
-		rejected = true
-	} else {
-		for _, pduResp := range resp2.PDUs {
-			if pduResp.Error != "" {
-				rejected = true
-				break
-			}
+	accepted := true
+	for eventID, pduResp := range resp2.PDUs {
+		if pduResp.Error != "" {
+			accepted = false
+			t.Logf("hs1 rejected event %s signed by retained body B: %s", eventID, pduResp.Error)
 		}
 	}
+	if !accepted {
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not implement trial verification — rejected an event signed by a retained body after a direct re-fetch")
+	}
 
-	if !rejected {
-		// Check sync — the conflicting event must NOT appear
-		time.Sleep(500 * time.Millisecond)
-		syncResp, _ := alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "0"})
-		events := syncResp.Get("rooms.join." + client.GjsonEscape(serverRoom.RoomID) + ".timeline.events").Array()
-		for _, ev := range events {
-			if ev.Get("event_id").Str == eventConflict.EventID() {
-				t.Fatalf("hs1 accepted event %s signed by conflicting key B after permanent binding of key A — FSW not enforced on direct-vs-direct conflict", eventConflict.EventID())
-			}
-		}
+	// The served preferred binding must still be key A: retaining B does not
+	// change which single body the notary endpoint returns.
+	served := queryNotaryRaw(t, fedHTTPClient, "https://hs1", string(srv.ServerName()), string(keyID), 0)
+	if served != base64.RawStdEncoding.EncodeToString(pubKeyA) {
+		skipKnownGap(t, []string{runtime.Synapse, runtime.Dendrite}, "Server does not keep a stable preferred binding — served %q instead of the original body after a direct collision", served)
 	}
 }
 
@@ -3736,7 +3806,7 @@ func testMSC4499KeyLostKeyPublicationHistoricalVerification(t *testing.T) {
 				// Same root cause as testMSC4499KeyHistoricalEventVerification:
 				// Synapse doesn't retain/serve the retired key needed for
 				// MSC4499 historical verification (see note on
-				// testMSC4499KeyIDFirstSeenWinsDirect). Known gap: skip here,
+				// testMSC4499KeyPreferredBindingServedAfterCollision). Known gap: skip here,
 				// at the point of divergence, so the run up to this point still
 				// produces normal debug output.
 				t.Skipf("hs1 rejected a historical event after the origin published the lost key in old_verify_keys")
