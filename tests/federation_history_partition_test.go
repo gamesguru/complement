@@ -70,6 +70,7 @@ type realRoom struct {
 	lost map[string]bool
 
 	gmeLimits     []int
+	gmeHandlerDur []time.Duration // handler time per /get_missing_events (diagnostic)
 	backfillFroms [][]string
 	stateIDsFor   []string
 }
@@ -292,6 +293,12 @@ func (rr *realRoom) handleStateIDs(fr *fclient.FederationRequest, _ map[string]s
 //	merge (1)                             base (9)
 //	        └─ b3 (2) ─ b2 (4) ─ b1 (6) ─┘
 func (rr *realRoom) handleGetMissingEvents(fr *fclient.FederationRequest, _ map[string]string) util.JSONResponse {
+	handlerStart := time.Now()
+	defer func() {
+		rr.mu.Lock()
+		rr.gmeHandlerDur = append(rr.gmeHandlerDur, time.Since(handlerStart))
+		rr.mu.Unlock()
+	}()
 	body := gjson.ParseBytes(fr.Content())
 	limit := int(body.Get("limit").Int())
 	if limit <= 0 || limit > gmeServedLimit {
@@ -345,6 +352,17 @@ func (rr *realRoom) logRequests(t *testing.T) {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	t.Logf("/get_missing_events limits served: %v", rr.gmeLimits)
+	if n := len(rr.gmeHandlerDur); n > 0 {
+		var sum, max time.Duration
+		for _, d := range rr.gmeHandlerDur {
+			sum += d
+			if d > max {
+				max = d
+			}
+		}
+		t.Logf("/get_missing_events handler time (fixture side only): %d calls, total %s, avg %s, max %s",
+			n, sum.Round(time.Millisecond), (sum / time.Duration(n)).Round(time.Microsecond), max.Round(time.Microsecond))
+	}
 	t.Logf("/backfill requests (v=): %v", rr.backfillFroms)
 	t.Logf("/state_ids requests (event_id=): %v", rr.stateIDsFor)
 }

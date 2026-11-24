@@ -179,6 +179,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 	prev := before.EventID()
 	var lostIDs []string
 	var chain []json.RawMessage
+	heldIDs := map[string]bool{}
 	var lastID string
 	for i := 1; i <= gaps; i++ {
 		lost := rr.event(t, fmt.Sprintf("lost %d", i), []string{prev}, depth, true)
@@ -189,6 +190,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 
 		held := rr.event(t, fmt.Sprintf("gap %d", i), []string{lost.EventID(), prev}, depth+1, true)
 		chain = append(chain, held.JSON())
+		heldIDs[held.EventID()] = true
 		prev, lastID = held.EventID(), held.EventID()
 		depth += 2
 	}
@@ -202,8 +204,56 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		}
 		rr.srv.MustSendTransaction(t, deployment, hs1, chain[start:end], nil)
 	}
-	rr.alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, lastID))
-	t.Logf("ingested %d held events and synced the tip in %s", gaps, time.Since(ingestStart))
+	// Wait for the tip without losing the ability to tell "slow" from "stuck".
+	//
+	// Ingest is setup, not the property under test, but it is not free: each gap
+	// costs about one federation round trip to the fixture. The 500-gap run
+	// that failed in CI had served about 100 /get_missing_events and about 20
+	// /state_ids when the 5s default expired, and earlier local runs of this
+	// test have taken 3.4-7.4s to ingest. The 5s SyncUntilTimeout is a client-liveness
+	// budget, not a fixture budget, and MustSyncUntil only reports a bare
+	// "timed out", so a failure says nothing about whether hs1 was still
+	// making progress. Poll here instead: a generous deadline, a stall
+	// detector, and a count of how many held events have arrived. Only this
+	// wait is widened; the measured budgets below are unchanged.
+	// Room v3+ PDUs carry no event_id field, so the IDs come from the events as
+	// they were built, not from the raw JSON.
+	held := heldIDs
+	const (
+		ingestDeadline = 60 * time.Second
+		stallAfter     = 15 * time.Second
+	)
+	seenHeld := make(map[string]bool, len(chain))
+	since := ""
+	lastCount := 0
+	lastProgress := time.Now()
+	for {
+		if elapsed := time.Since(ingestStart); elapsed > ingestDeadline {
+			ct.Fatalf(t, "ingest did not finish within %s: hs1 synced %d of %d gap events (last progress %s ago)",
+				ingestDeadline, len(seenHeld), len(held),
+				time.Since(lastProgress).Round(time.Millisecond))
+		}
+		if stalled := time.Since(lastProgress); stalled > stallAfter {
+			ct.Fatalf(t, "ingest stalled: hs1 made no progress for %s after syncing %d of %d gap events",
+				stalled.Round(time.Millisecond), len(seenHeld), len(held))
+		}
+		sync, next := rr.alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "1000"})
+		since = next
+		for _, ev := range sync.Get("rooms.join." + client.GjsonEscape(roomID) + ".timeline.events").Array() {
+			if id := ev.Get("event_id").Str; held[id] {
+				seenHeld[id] = true
+			}
+		}
+		if len(seenHeld) > lastCount {
+			lastCount = len(seenHeld)
+			lastProgress = time.Now()
+		}
+		if seenHeld[lastID] {
+			break
+		}
+	}
+	t.Logf("ingested %d held events and synced the tip in %s",
+		gaps, time.Since(ingestStart).Round(time.Millisecond))
 
 	// A filter that matches nothing, with a limit that covers the whole chain.
 	forward := func() (int, string, time.Duration) {
@@ -245,34 +295,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 
 	// The fixture must really have produced the gaps, or the checks below
 	// would pass vacuously.
-	asked := map[string]int{}
-	rr.mu.Lock()
-	for _, from := range rr.backfillFroms {
-		for _, id := range from {
-			asked[id]++
-		}
-	}
-	total := len(rr.backfillFroms)
-	rr.mu.Unlock()
-	tried := 0
-	for _, id := range lostIDs {
-		if asked[id] > 0 {
-			tried++
-		}
-	}
-	t.Logf("remote saw %d /backfill requests for %d gaps (%d distinct gaps tried), over %d settling requests",
-		total, gaps, tried, requests)
-	if tried < gaps*9/10 {
-		ct.Fatalf(t, "the fixture is broken: hs1 asked the remote about only %d of %d gaps, so the scale checks would not exercise them",
-			tried, gaps)
-	}
-
-	// (1) Bounded federation cost: a failed gap is remembered, not re-asked on
-	// every request. Allow a few attempts per gap for retries on the way in.
-	if limit := 3 * gaps; total > limit {
-		ct.Errorf(t, "the remote saw %d /backfill requests for %d gaps (limit %d): failed gaps are being re-fetched instead of remembered",
-			total, gaps, limit)
-	}
+	total := assertForwardGapRequests(t, rr, gaps, lostIDs, requests)
 
 	// (2) With every gap tried, a request is cheap and silent.
 	for i := 1; i <= 3; i++ {
