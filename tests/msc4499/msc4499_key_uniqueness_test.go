@@ -1443,7 +1443,9 @@ func testMSC4499KeyAlternateBodyStateEvent(t *testing.T) {
 		pubKey:        pubKeyA,
 		verifyKeys:    map[gomatrixserverlib.KeyID]ed25519.PublicKey{keyID: pubKeyA},
 		oldVerifyKeys: map[gomatrixserverlib.KeyID]gomatrixserverlib.OldVerifyKey{},
-		validUntil:    time.Now().Add(24 * time.Hour),
+		// Short window so the notary query below (minimum beyond this) cannot be
+		// answered from hs2's cache and must go back to the origin.
+		validUntil: time.Now().Add(time.Hour),
 	}
 	srv.Mux().Handle("/_matrix/key/v2/server", mockKeyServer).Methods("GET")
 	srv.Mux().Handle("/_matrix/key/v2/server/", mockKeyServer).Methods("GET")
@@ -1472,6 +1474,38 @@ func testMSC4499KeyAlternateBodyStateEvent(t *testing.T) {
 	mockKeyServer.verifyKeys = map[gomatrixserverlib.KeyID]ed25519.PublicKey{keyID: pubKeyB}
 	mockKeyServer.validUntil = time.Now().Add(24 * time.Hour)
 	mockKeyServer.mu.Unlock()
+
+	// hs2's store already satisfies key A, so send_join alone never refetches
+	// from the origin and would never learn B. Ask hs2's notary endpoint for a
+	// validity beyond A's expiry (B is valid for 24h) so it must contact the
+	// origin and retain B as an alternate body.
+	fedClient := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: deployment.RoundTripper(),
+	}
+	notaryBody, err := json.Marshal(map[string]interface{}{
+		"server_keys": map[string]interface{}{
+			string(srv.ServerName()): map[string]interface{}{
+				string(keyID): map[string]interface{}{
+					"minimum_valid_until_ts": time.Now().Add(2 * time.Hour).UnixMilli(),
+				},
+			},
+		},
+	})
+	must.NotError(t, "failed to marshal notary query", err)
+	mockKeyServer.mu.Lock()
+	before := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	notaryResp, err := fedClient.Post("https://hs2/_matrix/key/v2/query", "application/json", bytes.NewReader(notaryBody))
+	must.NotError(t, "failed to POST notary query", err)
+	defer notaryResp.Body.Close()
+	must.Equal(t, notaryResp.StatusCode, 200, "notary query status code mismatch")
+	mockKeyServer.mu.Lock()
+	after := mockKeyServer.requestCount
+	mockKeyServer.mu.Unlock()
+	if after <= before {
+		t.Fatalf("hs2 never contacted the origin for key B — the notary query was answered from cache")
+	}
 
 	stateEvent := srv.MustCreateEvent(t, stateRoom, federation.Event{
 		Sender:   charlie,
