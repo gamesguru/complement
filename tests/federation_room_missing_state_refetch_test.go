@@ -90,8 +90,11 @@ func TestUnverifiableStateEventIsNotRefetchedForEveryGap(t *testing.T) {
 	}
 
 	// Each pair is a prev_event that hs1 does not have, and an event built on
-	// it. Both are authed by events hs1 already knows, so only the gap, not
-	// the auth chain, sends hs1 to /state_ids.
+	// it. The gap event also names an event hs1 does have: a *pushed* event
+	// whose prev_events are all missing is rejected before any state is
+	// recovered. With one known prev it is kept as a forward gap, and state
+	// recovery runs for the missing one -- the same code path, with
+	// ignore_pull_backoff=True, that a forwarded event with an open gap takes.
 	var gapEvents []json.RawMessage
 	var missingPrevs []gomatrixserverlib.PDU
 	for i := 0; i < gaps; i++ {
@@ -105,10 +108,13 @@ func TestUnverifiableStateEventIsNotRefetchedForEveryGap(t *testing.T) {
 		srvRoom.AddEvent(prev)
 		missingPrevs = append(missingPrevs, prev)
 		ev := srv.MustCreateEvent(t, srvRoom, federation.Event{
-			Type:       "m.room.message",
-			Sender:     bob,
-			Content:    map[string]interface{}{"msgtype": "m.text", "body": fmt.Sprintf("after gap %d", i)},
-			PrevEvents: []string{prev.EventID()},
+			Type:    "m.room.message",
+			Sender:  bob,
+			Content: map[string]interface{}{"msgtype": "m.text", "body": fmt.Sprintf("after gap %d", i)},
+			// A known prev_event is required: Synapse rejects (403) a pushed
+			// event whose only prev_events are unfetchable, and only recovers
+			// state for a forward gap when it also has a known prev_event.
+			PrevEvents: []string{prev.EventID(), bobJoinEvent.EventID()},
 			AuthEvents: authEvents,
 		})
 		srvRoom.AddEvent(ev)
@@ -147,6 +153,15 @@ func TestUnverifiableStateEventIsNotRefetchedForEveryGap(t *testing.T) {
 
 	srv.Mux().Handle("/_matrix/federation/v1/event/{eventID}", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		eventID := mux.Vars(req)["eventID"]
+		// The missing prev_events must stay unfetchable, otherwise hs1 just
+		// fetches them directly and there is no gap to recover state for.
+		for _, prev := range missingPrevs {
+			if prev.EventID() == eventID {
+				w.WriteHeader(404)
+				fmt.Fprintf(w, `complement: withholding prev_event: %s`, eventID)
+				return
+			}
+		}
 		var pdu json.RawMessage
 		if eventID == unverifiable.EventID() {
 			atomic.AddInt32(&unverifiableFetches, 1)
@@ -285,15 +300,18 @@ func TestSharedMissingPrevStateIsNotRefetchedPerEvent(t *testing.T) {
 		t.Fatalf("failed to corrupt the signature: %s", err)
 	}
 
-	// Every event in the batch names the same unverifiable state event as its
-	// only prev_event.
+	// Every event in the batch names the same unverifiable state event as one
+	// of its prev_events, plus an event hs1 does have: a pushed event whose
+	// prev_events are all unfetchable is rejected before any state is
+	// recovered, so without the known prev the batch would never reach
+	// /state_ids (and the upper bound below would pass vacuously).
 	batch := make([]json.RawMessage, 0, batchSize)
 	for i := 0; i < batchSize; i++ {
 		ev := srv.MustCreateEvent(t, srvRoom, federation.Event{
 			Type:       "m.room.message",
 			Sender:     bob,
 			Content:    map[string]interface{}{"msgtype": "m.text", "body": fmt.Sprintf("batch %d", i)},
-			PrevEvents: []string{unverifiable.EventID()},
+			PrevEvents: []string{unverifiable.EventID(), bobJoinEvent.EventID()},
 			AuthEvents: authEvents,
 		})
 		srvRoom.AddEvent(ev)
