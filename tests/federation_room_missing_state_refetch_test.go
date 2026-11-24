@@ -306,6 +306,7 @@ func TestSharedMissingPrevStateIsNotRefetchedPerEvent(t *testing.T) {
 	// recovered, so without the known prev the batch would never reach
 	// /state_ids (and the upper bound below would pass vacuously).
 	batch := make([]json.RawMessage, 0, batchSize)
+	var batchIDs []string
 	for i := 0; i < batchSize; i++ {
 		ev := srv.MustCreateEvent(t, srvRoom, federation.Event{
 			Type:       "m.room.message",
@@ -316,6 +317,7 @@ func TestSharedMissingPrevStateIsNotRefetchedPerEvent(t *testing.T) {
 		})
 		srvRoom.AddEvent(ev)
 		batch = append(batch, ev.JSON())
+		batchIDs = append(batchIDs, ev.EventID())
 	}
 
 	var stateIDsRequests int32
@@ -392,6 +394,13 @@ func TestSharedMissingPrevStateIsNotRefetchedPerEvent(t *testing.T) {
 
 	// Guard that the recovery actually ran: a fix that skips the fetch
 	// entirely would make the upper bound pass vacuously.
+	// Deduplicating the recovery must not turn into dropping the work: the
+	// events whose state could not be completed are still accepted and reach
+	// the client.
+	for _, id := range batchIDs {
+		alice.MustSyncUntil(t, client.SyncReq{}, client.SyncTimelineHasEventID(roomID, id))
+	}
+
 	if states < 1 {
 		t.Fatalf("hs1 never requested /state_ids; the test did not exercise missing-state recovery")
 	}
