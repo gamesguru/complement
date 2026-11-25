@@ -275,6 +275,12 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 
 	// Settle: keep asking, as a client would, until every gap has been tried.
 	settleBy := time.Now().Add(3 * time.Minute)
+	// The next round of fetching is only triggered by the next request, so
+	// this delay is multiplied by the number of rounds: at 5 gaps tried per
+	// round a fixed 250ms pause spent ~25s asleep on a 500-gap run. Start
+	// short and back off to 125ms, so a stalled server is
+	// still polled gently. The settle is setup, not the property under test.
+	delay := 10 * time.Millisecond
 	requests := 0
 	for {
 		requests++
@@ -290,7 +296,13 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 			ct.Fatalf(t, "the filtered forward request did not settle within 3m (%d requests); hs1 is not making progress through %d open gaps",
 				requests, gaps)
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(delay)
+		if delay < 125*time.Millisecond {
+			delay *= 2
+			if delay > 125*time.Millisecond {
+				delay = 125 * time.Millisecond
+			}
+		}
 	}
 
 	// The fixture must really have produced the gaps, or the checks below
