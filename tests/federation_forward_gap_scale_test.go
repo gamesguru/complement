@@ -204,56 +204,7 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		}
 		rr.srv.MustSendTransaction(t, deployment, hs1, chain[start:end], nil)
 	}
-	// Wait for the tip without losing the ability to tell "slow" from "stuck".
-	//
-	// Ingest is setup, not the property under test, but it is not free: each gap
-	// costs about one federation round trip to the fixture. The 500-gap run
-	// that failed in CI had served about 100 /get_missing_events and about 20
-	// /state_ids when the 5s default expired, and earlier local runs of this
-	// test have taken 3.4-7.4s to ingest. The 5s SyncUntilTimeout is a client-liveness
-	// budget, not a fixture budget, and MustSyncUntil only reports a bare
-	// "timed out", so a failure says nothing about whether hs1 was still
-	// making progress. Poll here instead: a generous deadline, a stall
-	// detector, and a count of how many held events have arrived. Only this
-	// wait is widened; the measured budgets below are unchanged.
-	// Room v3+ PDUs carry no event_id field, so the IDs come from the events as
-	// they were built, not from the raw JSON.
-	held := heldIDs
-	const (
-		ingestDeadline = 60 * time.Second
-		stallAfter     = 15 * time.Second
-	)
-	seenHeld := make(map[string]bool, len(chain))
-	since := ""
-	lastCount := 0
-	lastProgress := time.Now()
-	for {
-		if elapsed := time.Since(ingestStart); elapsed > ingestDeadline {
-			ct.Fatalf(t, "ingest did not finish within %s: hs1 synced %d of %d gap events (last progress %s ago)",
-				ingestDeadline, len(seenHeld), len(held),
-				time.Since(lastProgress).Round(time.Millisecond))
-		}
-		if stalled := time.Since(lastProgress); stalled > stallAfter {
-			ct.Fatalf(t, "ingest stalled: hs1 made no progress for %s after syncing %d of %d gap events",
-				stalled.Round(time.Millisecond), len(seenHeld), len(held))
-		}
-		sync, next := rr.alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "1000"})
-		since = next
-		for _, ev := range sync.Get("rooms.join." + client.GjsonEscape(roomID) + ".timeline.events").Array() {
-			if id := ev.Get("event_id").Str; held[id] {
-				seenHeld[id] = true
-			}
-		}
-		if len(seenHeld) > lastCount {
-			lastCount = len(seenHeld)
-			lastProgress = time.Now()
-		}
-		if seenHeld[lastID] {
-			break
-		}
-	}
-	t.Logf("ingested %d held events and synced the tip in %s",
-		gaps, time.Since(ingestStart).Round(time.Millisecond))
+	waitForForwardGapIngest(t, rr, roomID, heldIDs, lastID, ingestStart)
 
 	// A filter that matches nothing, with a limit that covers the whole chain.
 	forward := func() (int, string, time.Duration) {
@@ -329,4 +280,59 @@ func TestFederationForwardGapWithManyOpenGapsStaysBounded(t *testing.T) {
 		ct.Errorf(t, "warm requests sent the remote %d more /backfill requests: gaps that already failed must not be re-asked",
 			after-total)
 	}
+}
+
+// waitForForwardGapIngest blocks until rr.alice has synced lastID, the tip of the chain of held
+// events. It fails the test if ingest stalls or overruns.
+func waitForForwardGapIngest(t *testing.T, rr *realRoom, roomID string, held map[string]bool, lastID string, ingestStart time.Time) {
+	t.Helper()
+	// Wait for the tip without losing the ability to tell "slow" from "stuck".
+	//
+	// Ingest is setup, not the property under test, but it is not free: each gap
+	// costs about one federation round trip to the fixture. The 500-gap run
+	// that failed in CI had served about 100 /get_missing_events and about 20
+	// /state_ids when the 5s default expired, and earlier local runs of this
+	// test have taken 3.4-7.4s to ingest. The 5s SyncUntilTimeout is a client-liveness
+	// budget, not a fixture budget, and MustSyncUntil only reports a bare
+	// "timed out", so a failure says nothing about whether hs1 was still
+	// making progress. Poll here instead: a generous deadline, a stall
+	// detector, and a count of how many held events have arrived. Only this
+	// wait is widened; the measured budgets below are unchanged.
+	// Room v3+ PDUs carry no event_id field, so the IDs come from the events as
+	// they were built, not from the raw JSON.
+	const (
+		ingestDeadline = 60 * time.Second
+		stallAfter     = 15 * time.Second
+	)
+	seenHeld := make(map[string]bool, len(held))
+	since := ""
+	lastCount := 0
+	lastProgress := time.Now()
+	for {
+		if elapsed := time.Since(ingestStart); elapsed > ingestDeadline {
+			ct.Fatalf(t, "ingest did not finish within %s: hs1 synced %d of %d gap events (last progress %s ago)",
+				ingestDeadline, len(seenHeld), len(held),
+				time.Since(lastProgress).Round(time.Millisecond))
+		}
+		if stalled := time.Since(lastProgress); stalled > stallAfter {
+			ct.Fatalf(t, "ingest stalled: hs1 made no progress for %s after syncing %d of %d gap events",
+				stalled.Round(time.Millisecond), len(seenHeld), len(held))
+		}
+		sync, next := rr.alice.MustSync(t, client.SyncReq{Since: since, TimeoutMillis: "1000"})
+		since = next
+		for _, ev := range sync.Get("rooms.join." + client.GjsonEscape(roomID) + ".timeline.events").Array() {
+			if id := ev.Get("event_id").Str; held[id] {
+				seenHeld[id] = true
+			}
+		}
+		if len(seenHeld) > lastCount {
+			lastCount = len(seenHeld)
+			lastProgress = time.Now()
+		}
+		if seenHeld[lastID] {
+			break
+		}
+	}
+	t.Logf("ingested %d held events and synced the tip in %s",
+		len(held), time.Since(ingestStart).Round(time.Millisecond))
 }
